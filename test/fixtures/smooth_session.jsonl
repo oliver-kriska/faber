@@ -1,0 +1,2 @@
+{"type":"user","uuid":"u1","sessionId":"s2","timestamp":"2026-01-02T00:00:00.000Z","message":{"role":"user","content":"hello, can you explain how this code works"}}
+{"type":"assistant","uuid":"a1","timestamp":"2026-01-02T00:00:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"sure, here is the explanation"}]}}
