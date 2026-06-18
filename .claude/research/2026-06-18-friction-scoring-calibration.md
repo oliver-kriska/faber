@@ -58,11 +58,37 @@ Net: a more meaningful ranking.
 
 **New minor finding:** subagent/sidechain transcripts (`isSidechain: true`) appear as
 near-duplicate sessions sharing a `session_id` (e.g. several `subagents/ff4b234b` rows).
-A dedup / sidechain-filter pass is a future scan refinement.
+A dedup / sidechain-filter pass is a future scan refinement. **(RESOLVED — see Finding 3.)**
 
-## Real-history snapshot (2026-06-18)
+## Finding 3 — sidechain dedup collapses ~70% of rows (APPLIED, M2 Phase 3)
 
-`mix faber.scan`: **4,607** non-trivial sessions ranked in **~4 s** (14-way
-`Task.async_stream`), **3,358** tier-2 eligible. Highest-friction projects: `scriptorium`,
-`xuku-enaia`, `scribe`, `elixir-live-claude-engineer`. `retry_loops` dominant across the
-board (see Finding 2). Zero parse errors observed across the corpus.
+`Faber.Scan.run/1` now groups results by `session_id` and keeps the **richest** member
+(most messages, then highest `raw`); rows with no `session_id` pass through. Controlled by
+`:dedupe` (default `true`) / `mix faber.scan --no-dedupe`.
+
+The effect on real history is large and correct: **4,609 → 1,391** ranked sessions (a ~70%
+collapse). The cause isn't a few sidechains — Claude Code writes **one transcript file per
+subagent invocation**, all carrying the parent's `session_id`. A single heavily-orchestrated
+session produced **180 files**; several others 100+. Without dedup those sessions appear
+dozens-to-hundreds of times and dominate the ranking; with it, each session is counted once.
+(54 files carry a blank `session_id` and pass through individually — acceptable.)
+
+The richest-member rule matters: the parent transcript (full conversation) beats its short
+subagent fragments, so the surviving row has the real message/tool/error counts.
+
+## Finding 4 — fingerprint + opportunity surfaced per session (M2 Phase 2–3)
+
+Each `Result` now carries a `fingerprint` (`type` + `confidence`) and an `opportunity` score
+(missed-automation, 0–1) with `missed`/`used` skill lists. On real history the top of the
+ranking is a healthy mix of `bug-fix`, `feature`, and `review` sessions with OPP `0.4–0.8` —
+i.e. the highest-friction sessions are also where skills (investigate / plan / verify /
+review) would most plausibly have helped. `tier2` now trips on any of: friction > 0.35,
+opportunity > 0.5, a skill already used, or > 50 messages.
+
+## Real-history snapshot (2026-06-18, post-Phase-3)
+
+`mix faber.scan`: **1,391** deduped non-trivial sessions ranked in **~3.5 s** (14-way
+`Task.async_stream`), **1,181** tier-2 eligible (**4,609 / 3,704** with `--no-dedupe`).
+Highest-friction projects: `xuku-enaia`, `articles`, `scriptorium`, `scribe`, `job-hunt`.
+Dominant signal is now `context_compactions` / `user_corrections` (see Finding 2). Zero parse
+errors across the corpus.

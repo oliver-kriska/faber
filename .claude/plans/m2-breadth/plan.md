@@ -23,4 +23,4 @@ Final gate: full `mix test` + real-data smoke run. Commit per phase.
 - [x] [P3-T4] Scan tests — dedup on/off, fingerprint/opportunity fields present, tier2 gate (isolated test/fixtures_dedup/)
 
 ## Phase 4 — Final gate
-- [ ] [P4-T1] Full `mix test`; real-data smoke run; update calibration research note; final commit
+- [x] [P4-T1] Full `mix test` (37 pass); real-data smoke (1,391 deduped / 4,609 raw, ~3.5s); calibration note updated (Findings 3–4); final commit
