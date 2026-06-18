@@ -1,7 +1,7 @@
 # Plan: M3–M6 Review Fixes
 
 **Source:** `.claude/plans/m3-m6/reviews/faber-m3-m6-review.md` (verdict: REQUIRES CHANGES)
-**Status:** NOT STARTED
+**Status:** COMPLETE — all phases done; 83 hermetic / 84 full Elixir + 16 Python green
 **Created:** 2026-06-18
 
 Every finding from the consolidated review maps to exactly one task below. Severity order:
@@ -48,76 +48,76 @@ cd python && python3 -m unittest discover -s tests   # 16 tests
 
 ## Phase 2 — Test-confidence BLOCKERs
 
-- [ ] [P2-T1][testing] **BL4 — Replace the vacuous `refine/3` test with a sequencing stub.**
+- [x] [P2-T1][testing] **BL4 — Replace the vacuous `refine/3` test with a sequencing stub.** — added nested `SeqSidecar` (reads scores from a `:seq_agent` Agent via opts) + `FailingLLM`; refine test now asserts a real keep→revert→stuck (best 0.6, 1 keep / 3 reverts) + a `{:error, :llm_unavailable}` no-crash case. Added a multi-iteration `Loop.Server` test (testing W3).
   `test/faber/loop_test.exs:186-198`. The current stubs (`Sidecar.Stub`=0.9, `LLM.Stub`=constant)
   make `:stuck` inevitable regardless of logic. Use a sequencing eval stub (like the `Loop.run/1`
   tests' `scorer/1` cell) so the test actually exercises a keep→improve→revert transition and
   asserts `best_composite`/history reflect real keep/revert decisions. Pair with the BL3 error-path
   assertion so a propose failure is covered too.
 
-- [ ] [P2-T2][testing] **BL5 — Make native↔sidecar parity run in CI.**
+- [x] [P2-T2][testing] **BL5 — Make native↔sidecar parity run in CI.** — `:sidecar` was never excluded (so it silently ran in every `mix test`, needing python3); now excluded by default in `test_helper.exs`, run via the new `mix test.full` alias (+ `def cli` preferred_envs). Parity now runs on two inputs (good + bad, folds testing W5). Documented in CLAUDE.md + README. `mix test` → 80 (hermetic), `mix test.full` → 81.
   `test/faber/eval_test.exs:71-94` is `@tag :sidecar`-gated. Add a `mix test.full` alias (or a
   `test --include sidecar` step) in `mix.exs`, document it in `CLAUDE.md`/README, and run parity
   on TWO inputs (good + bad/edge) rather than one (folds in testing W5).
 
 ## Phase 3 — WARNINGs
 
-- [ ] [P3-T1][elixir] **W1 — Sidecar: match the exit code.** `lib/faber/sidecar/system.ex:31`.
+- [x] [P3-T1][elixir] **W1 — Sidecar: match the exit code.** `lib/faber/sidecar/system.ex:31`.
   `case System.cmd(...) do {out, 0} -> Jason.decode(out)…; {out, code} -> {:error, {:sidecar_exit, code, out}} end`.
   (ClaudeCLI and Git already do this — bring sidecar to parity.) *Flagged by 4/8 agents.*
 
-- [ ] [P3-T2][security] **W2 — Git: enforce the path-scope invariant.** `lib/faber/loop/git.ex:14-23`.
+- [x] [P3-T2][security] **W2 — Git: enforce the path-scope invariant.** `lib/faber/loop/git.ex:14-23`.
   Validate each path with `Path.safe_relative/2`, reject absolute paths and any element starting
   with `-`, add a `"--"` separator before add paths (`["add", "--" | safe]`), and short-circuit on
   an empty path list (`commit(_dir, [], _msg) -> :ok`) so `git add` never stages the whole repo.
   Then the moduledoc's "can never touch unrelated files" claim is actually true.
 
-- [ ] [P3-T3][elixir] **W3 — `faber.propose`: load app config.** `lib/mix/tasks/faber.propose.ex:43`.
+- [x] [P3-T3][elixir] **W3 — `faber.propose`: load app config.** `lib/mix/tasks/faber.propose.ex:43`.
   Add `Mix.Task.run("app.config")` before `Application.ensure_all_started(:req_llm)` so `:faber`
   env keys resolve in all MIX_ENVs. Do NOT use `app.start` (would bind the endpoint port).
 
-- [ ] [P3-T4][elixir] **W4 — `Journal.read/1`: tolerate corrupt lines.** `lib/faber/loop/journal.ex:51`.
+- [x] [P3-T4][elixir] **W4 — `Journal.read/1`: tolerate corrupt lines.** `lib/faber/loop/journal.ex:51`.
   Swap `Enum.map(&Jason.decode!/1)` for `Enum.flat_map` + `Jason.decode/1`, skipping `{:error, _}`
   lines so a truncated append (from a crash) doesn't break the whole read.
 
-- [ ] [P3-T5][otp] **W5 — Loop: don't let an FS blip kill the run.** `lib/faber/loop.ex:193,199`.
+- [x] [P3-T5][otp] **W5 — Loop: don't let an FS blip kill the run.** `lib/faber/loop.ex:193,199`.
   Replace `File.write!` with `File.write/2`, propagate `{:error, reason}` through `handle_candidate`
   → `discard`. (Severity drops once BL1 moves the loop into a Task, but make it explicit.)
 
-- [ ] [P3-T6][elixir] **W6 — Proposer: decide on adapter context in the user prompt.**
+- [x] [P3-T6][elixir] **W6 — Proposer: decide on adapter context in the user prompt.** — `user_prompt/2` now binds `%Adapter{}` and leads with the stack name/version; test asserts it.
   `lib/faber/propose.ex:111`. Either wire `adapter.name`/playbook refs into `user_prompt/2`
   (preferred — matches the moduledoc) OR rename to `_adapter` with a comment that stack context
   lives only in the system prompt. Pick one and make the code honest. *Decision: wire it in.*
 
-- [ ] [P3-T7][security] **W7 — Sidecar temp file perms.** `lib/faber/sidecar/system.ex:45-52`.
+- [x] [P3-T7][security] **W7 — Sidecar temp file perms.** `lib/faber/sidecar/system.ex:45-52`.
   Create with `[:write, :exclusive]` (or `File.chmod(path, 0o600)` immediately after write) so the
   friction JSON isn't world-readable on shared/CI hosts. Negligible on a laptop, cheap to fix.
 
-- [ ] [P3-T8][testing] **W8 — Cover the loop error paths.** `test/faber/loop_test.exs`.
+- [x] [P3-T8][testing] **W8 — Cover the loop error paths.** `test/faber/loop_test.exs`.
   Add a test where `eval_fn` returns `{:error, :timeout}` mid-iteration (asserts `kept: false`,
   reason =~ "eval failed") and one where `propose_fn` returns `{:error, :llm_unavailable}` (asserts
   the discard reason in history). Currently only `{:ok, _}` and scorer-exhaustion paths run.
 
-- [ ] [P3-T9][liveview] **W9 — LiveView polish.** `dashboard_live.ex:47`, `layouts.ex`, `router.ex`.
+- [x] [P3-T9][liveview] **W9 — LiveView polish.** `dashboard_live.ex:47`, `layouts.ex`, `router.ex`.
   Store the shown count as `@shown` instead of `length(@results)` in render; add `<.flash_group>`
   to the root layout and `plug :fetch_live_flash` to the `:browser` pipeline so future `put_flash`
   isn't silently dropped.
 
 ## Phase 4 — SUGGESTIONS (optional polish — defer-able)
 
-- [ ] [P4-T1][liveview] **S1 — `rescan` guard.** `dashboard_live.ex:23`. Add a debounce/`disable`
+- [x] [P4-T1][liveview] **S1 — `rescan` guard.** — `:scanning` assign; rescan ignored while in flight + button `disabled={@scanning}`; moduledoc note re: `on_mount` before network exposure. `dashboard_live.ex:23`. Add a debounce/`disable`
   while a scan is in flight (the async refactor in BL2 already gives the in-flight signal); add a
   code comment that the endpoint must not be network-exposed without an `on_mount` auth guard.
 
-- [ ] [P4-T2][otp] **S2 — OTP polish.** `loop/server.ex:25` bounded `status/1` timeout (not `:infinity`);
+- [x] [P4-T2][otp] **S2 — OTP polish.** — PubSub started before Loop.Supervisor; `status/1` already bounded (5s) since BL1; temp name already random (W7). `loop/server.ex:25` bounded `status/1` timeout (not `:infinity`);
   `application.ex:13-16` start `PubSub` before `Loop.Supervisor`; `sidecar/system.ex:51` use a random
   temp-file name (`:crypto.strong_rand_bytes`) instead of the predictable `unique_integer`.
 
-- [ ] [P4-T3][elixir] **S3 — Elixir style.** `eval.ex:53` `cond` → `if`; merge the identical
+- [x] [P4-T3][elixir] **S3 — Elixir style.** — `Eval.engine/1` `cond`→`if`; `revert/5`+`discard/5` merged into `reject/5`. `eval.ex:53` `cond` → `if`; merge the identical
   `revert/5` and `discard/5` (`loop.ex:175-186`) into one `reject/5` taking a `:revert | :discard`
   reason, or comment the intentional duplication.
 
-- [ ] [P4-T4][testing] **S4 — Test polish.** `dashboard_live_test` → `async: true`; move the inline
+- [x] [P4-T4][testing] **S4 — Test polish.** — dashboard_test `async: true`; propose_test `FailingLLM` → namespaced module; python round-trip temp `unlink` in `finally`; empty-file `score_session` test. `dashboard_live_test` → `async: true`; move the inline
   `defmodule FailingLLM` (`propose_test.exs:106`) to `test/support/`; clean up the Python round-trip
   temp file (`test_roundtrip.py:69`); add an empty-file `score_session/1` case.
 

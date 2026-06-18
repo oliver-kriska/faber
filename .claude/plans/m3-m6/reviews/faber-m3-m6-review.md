@@ -1,5 +1,10 @@
 # Faber M3–M6 — Consolidated Review
 
+> **RESOLVED (2026-06-18).** All 5 blockers, 9 warnings, and 4 suggestion groups were fixed in
+> `.claude/plans/m3-m6-review-fixes/plan.md` (Phases 1–4). Suite: **83 hermetic / 84 full Elixir +
+> 16 Python green**. See that plan for the per-finding implementation notes and commits.
+
+
 **Scope:** M3–M6 diff (`e1db06c..HEAD`) — 54 files, +3,855 lines. Skill proposer (M3),
 eval gate + native/sidecar engines (M4), self-improving loop (M5), LiveView dashboard (M6),
 plus the keyless `claude -p` backend and the development-findings work.
