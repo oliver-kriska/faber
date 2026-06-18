@@ -212,6 +212,109 @@ defmodule Faber.Detect do
     end
   end
 
+  @type opportunity :: %{score: float(), missed: [String.t()], used: [String.t()]}
+
+  @doc """
+  Score missed automation opportunities (0.0–1.0) and list the skills that could have
+  helped but weren't used.
+
+  Port of `compute_plugin_opportunity`: retry loops → `investigate`; >50 tools without
+  `plan` → `plan`; 3+ `mix test`/`compile` without `verify` → `verify`; 2+ `gh pr` without
+  `pr-review` → `pr-review`; >10 edits without `review` → `review`. score = min(n×0.2, 1.0).
+  Skills already used (Skill calls, `attributionSkill`, `/ns:cmd` in text) are excluded.
+  """
+  @spec opportunity(Enumerable.t()) :: opportunity()
+  def opportunity(events) do
+    events = Enum.to_list(events)
+    tool_uses = Enum.flat_map(events, & &1.tool_uses)
+    names = Enum.map(tool_uses, & &1.name)
+    tool_count = length(names)
+    bash_cmds = bash_commands(tool_uses)
+    used = used_skills(events)
+    edit_count = Enum.count(names, &(&1 in ["Edit", "Write"]))
+
+    missed =
+      []
+      |> add_if(investigate_opportunity?(bash_cmds), "investigate")
+      |> add_if(tool_count > 50 and not used?(used, "plan"), "plan")
+      |> add_if(
+        count_cmds(bash_cmds, ["mix test", "mix compile"]) >= 3 and not used?(used, "verify"),
+        "verify"
+      )
+      |> add_if(
+        count_cmds(bash_cmds, ["gh pr"]) >= 2 and not used?(used, "pr-review"),
+        "pr-review"
+      )
+      |> add_if(edit_count > 10 and not used?(used, "review"), "review")
+      |> Enum.reverse()
+
+    %{
+      score: Float.round(min(length(missed) * 0.2, 1.0), 2),
+      missed: missed,
+      used: Enum.sort(MapSet.to_list(used))
+    }
+  end
+
+  defp add_if(list, true, item), do: [item | list]
+  defp add_if(list, false, _item), do: list
+
+  defp used?(used, name), do: MapSet.member?(used, name)
+
+  defp count_cmds(bash_cmds, needles) do
+    Enum.count(bash_cmds, fn cmd -> Enum.any?(needles, &String.contains?(cmd, &1)) end)
+  end
+
+  # 3+ consecutive Bash commands sharing their first two tokens (faithful to the source's
+  # separate opportunity-retry heuristic).
+  defp investigate_opportunity?(bash_cmds) do
+    bash_cmds
+    |> Enum.map(&(&1 |> String.split() |> Enum.take(2)))
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.reduce_while(0, fn [prev, curr], consec ->
+      if curr != [] and curr == prev do
+        if consec + 1 >= 2, do: {:halt, true}, else: {:cont, consec + 1}
+      else
+        {:cont, 0}
+      end
+    end)
+    |> case do
+      true -> true
+      _ -> false
+    end
+  end
+
+  # Skills the session already used: Skill tool calls, attributionSkill, and /ns:cmd in text.
+  defp used_skills(events) do
+    from_text =
+      events
+      |> Enum.filter(&is_binary(&1.text))
+      |> Enum.flat_map(fn e ->
+        Regex.scan(~r/(?:phx|ecto|lv):([a-z][a-z0-9_-]*)/i, e.text, capture: :all_but_first)
+      end)
+      |> List.flatten()
+
+    from_attribution =
+      events |> Enum.map(& &1.raw["attributionSkill"]) |> Enum.map(&skill_short_name/1)
+
+    from_skill_tool =
+      events
+      |> Enum.flat_map(& &1.tool_uses)
+      |> Enum.filter(&(&1.name == "Skill"))
+      |> Enum.map(fn tu -> tu.input["command"] || tu.input["name"] || tu.input["skill"] end)
+      |> Enum.map(&skill_short_name/1)
+
+    (from_text ++ from_attribution ++ from_skill_tool)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.map(&String.downcase/1)
+    |> MapSet.new()
+  end
+
+  defp skill_short_name(s) when is_binary(s) do
+    s |> String.split(":") |> List.last() |> String.replace_prefix("/", "")
+  end
+
+  defp skill_short_name(_), do: ""
+
   defp bonus(scores, type, true, amount), do: Map.update!(scores, type, &(&1 + amount))
   defp bonus(scores, _type, false, _amount), do: scores
 

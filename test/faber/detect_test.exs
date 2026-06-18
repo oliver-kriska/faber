@@ -112,6 +112,60 @@ defmodule Faber.DetectTest do
     end
   end
 
+  describe "opportunity/1" do
+    test "retry loop flags an investigate opportunity" do
+      events = [asst(List.duplicate({"Bash", %{"command" => "git status"}}, 3))]
+      assert %{missed: missed, score: score} = Detect.opportunity(events)
+      assert "investigate" in missed
+      assert score >= 0.2
+    end
+
+    test "repeated test/compile flags verify (without firing investigate)" do
+      events = [
+        asst([
+          {"Bash", %{"command" => "mix test"}},
+          {"Bash", %{"command" => "mix compile"}},
+          {"Bash", %{"command" => "mix test"}}
+        ])
+      ]
+
+      assert %{missed: missed} = Detect.opportunity(events)
+      assert "verify" in missed
+      refute "investigate" in missed
+    end
+
+    test "many edits flag review" do
+      tools = for i <- 1..11, do: {"Edit", %{"file_path" => "/f#{i}.ex"}}
+      assert %{missed: missed} = Detect.opportunity([asst(tools)])
+      assert "review" in missed
+    end
+
+    test "many tools flag plan" do
+      assert %{missed: missed} = Detect.opportunity([asst(List.duplicate({"Read", %{}}, 51))])
+      assert "plan" in missed
+    end
+
+    test "already-used skills are excluded" do
+      events = [
+        user("let me run /phx:verify on this"),
+        asst([
+          {"Bash", %{"command" => "mix test"}},
+          {"Bash", %{"command" => "mix compile"}},
+          {"Bash", %{"command" => "mix test"}}
+        ])
+      ]
+
+      assert %{missed: missed, used: used} = Detect.opportunity(events)
+      assert "verify" in used
+      refute "verify" in missed
+    end
+
+    test "no opportunities yields zero" do
+      assert %{score: score, missed: []} = Detect.opportunity([])
+      assert score == 0.0
+    end
+  end
+
   defp user(text) do
     Faber.Ingest.normalize(%{
       "type" => "user",

@@ -13,8 +13,8 @@ Final gate: full `mix test` + real-data smoke run. Commit per phase.
 - [x] [P1-T2] tool_profile/1 gains :tidewave category; fingerprint + tidewave tests (inline normalized events)
 
 ## Phase 2 — Plugin-opportunity score
-- [ ] [P2-T1] Implement `Faber.Detect.opportunity/1` (retry→investigate, 50+ tools no plan, 3+ test/compile→verify, 2+ gh pr→pr-review, 10+ edits→review; score = min(n×0.2, 1.0)); used-skill detection from Skill calls + attributionSkill + /xxx:cmd text
-- [ ] [P2-T2] Tests for opportunity + used-skill exclusion
+- [x] [P2-T1] Detect.opportunity/1 — score + missed list + used-skill detection (Skill calls, attributionSkill, /ns:cmd text); faithful port incl. separate first-2-token retry heuristic
+- [x] [P2-T2] opportunity tests (investigate/verify/review/plan + used-skill exclusion + empty)
 
 ## Phase 3 — Scan integration + sidechain dedup
 - [ ] [P3-T1] Extend `Faber.Scan.Result` with fingerprint + opportunity; complete tier-2 criteria (friction>0.35 OR opportunity>0.5 OR skills-used OR msgs>50)
