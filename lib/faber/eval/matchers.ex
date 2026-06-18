@@ -1,0 +1,324 @@
+defmodule Faber.Eval.Matchers do
+  @moduledoc """
+  Native Elixir port of the eval matchers (mirrors `python/faber_eval/matchers.py`).
+
+  Each matcher is `(content, params) -> {pass?, evidence}` — pure, no I/O. Having these in Elixir
+  lets the common structural-eval path run in-process (`Faber.Eval.Native`) with no `python3`
+  process spawn; the Python sidecar remains for parity and as the future home for GEPA / trigger
+  accuracy. Thresholds and patterns match the Python defaults so the two engines agree.
+  """
+
+  @vague_default ~w(general various etc sometimes might possibly)
+
+  @dangerous_default [
+    ~r/rm\s+-rf\s+\//,
+    ~r/sudo\s+rm\b/,
+    ~r/curl\s+[^|\n]*\|\s*(?:sudo\s+)?(?:ba)?sh/,
+    ~r/:\(\)\s*\{/
+  ]
+
+  @safe_section_hints ["iron law", "anti-pattern", "red flag", "detection", "checklist", "gotcha"]
+
+  @imperative ~r/^\s*(?:Run|Add|Create|Check|Read|Use|Set|Write|Install|Configure|Verify|Ensure|Avoid|Prefer|Call|Make|Define|Update|Remove|Replace|Apply|Pass|Return|Build|Test|Fix|Trace|Inspect|Confirm|Mark|Stage|Commit|Render|Parse|Score|Propose|Gate|Keep|Revert|Stop|Load|Skip|Move|Spawn|Group|Rank|Detect|Compute|Scan|Mine|Wire|Open|Close|Start|Find|List)\b/
+
+  @concrete [
+    ~r/`[^`]+`/,
+    ~r/^\s*\|/,
+    ~r/\w+\.\w+\.\w+/,
+    ~r/\/\w+[\/\w]*\.\w+/,
+    ~r/--\w+/,
+    ~r/^\s*-\s*\[\s*\]/
+  ]
+
+  # ── frontmatter / sections ─────────────────────────────────────────────────
+
+  @doc "Split a `---` frontmatter block from the body. `{fm_map, body}` (`{%{}, content}` if none)."
+  @spec split_frontmatter(String.t()) :: {map(), String.t()}
+  def split_frontmatter(content) do
+    lines = String.split(content, "\n")
+
+    with ["---" | rest] <- lines,
+         idx when is_integer(idx) <- Enum.find_index(rest, &(String.trim(&1) == "---")) do
+      body = rest |> Enum.drop(idx + 1) |> Enum.join("\n") |> String.replace(~r/\A\n+/, "")
+      {parse_fields(Enum.take(rest, idx)), body}
+    else
+      _ -> {%{}, content}
+    end
+  end
+
+  defp parse_fields(lines) do
+    Enum.reduce(lines, %{}, fn line, acc ->
+      case Regex.run(~r/^([A-Za-z0-9_-]+):\s*(.*)$/, line) do
+        [_, key, val] -> Map.put(acc, key, unquote_val(String.trim(val)))
+        _ -> acc
+      end
+    end)
+  end
+
+  defp unquote_val(<<q, _::binary>> = v) when q in [?", ?'] do
+    if String.length(v) >= 2 and String.last(v) == <<q>>, do: String.slice(v, 1..-2//1), else: v
+  end
+
+  defp unquote_val(v), do: v
+
+  @doc "Return `[{heading, body_lines}, ...]` for `##`/`###` sections of `body`."
+  @spec sections(String.t()) :: [{String.t(), [String.t()]}]
+  def sections(body) do
+    body
+    |> String.split("\n")
+    |> Enum.reduce({nil, [], []}, fn line, {cur, buf, acc} ->
+      case Regex.run(~r/^\#\#+\s+(.*)$/, line) do
+        [_, name] -> {String.trim(name), [], push(acc, cur, buf)}
+        _ -> if cur, do: {cur, [line | buf], acc}, else: {cur, buf, acc}
+      end
+    end)
+    |> close()
+  end
+
+  defp push(acc, nil, _buf), do: acc
+  defp push(acc, cur, buf), do: [{cur, Enum.reverse(buf)} | acc]
+  defp close({cur, buf, acc}), do: Enum.reverse(push(acc, cur, buf))
+
+  # ── structure ──────────────────────────────────────────────────────────────
+
+  def section_exists(content, params) do
+    section = params[:section]
+    {_, body} = split_frontmatter(content)
+    names = Enum.map(sections(body), &elem(&1, 0))
+
+    if Enum.any?(names, &String.contains?(String.downcase(&1), String.downcase(section))) do
+      {true, "Section '#{section}' found"}
+    else
+      {false, "Section '#{section}' missing. Available: #{inspect(names)}"}
+    end
+  end
+
+  def max_section_lines(content, params) do
+    max = params[:max] || 40
+    {_, body} = split_frontmatter(content)
+
+    over =
+      for {name, lines} <- sections(body),
+          n = Enum.count(lines, &(String.trim(&1) != "")),
+          n > max,
+          do: {name, n}
+
+    if over == [],
+      do: {true, "All sections <= #{max} lines"},
+      else: {false, "Over #{max}: #{inspect(over)}"}
+  end
+
+  def line_count(content, params) do
+    target = params[:target] || 100
+    tolerance = params[:tolerance] || 85
+    {_, body} = split_frontmatter(content)
+    n = length(String.split(body, "\n"))
+
+    cond do
+      n <= target -> {true, "#{n} lines (<= target #{target})"}
+      n <= target + tolerance -> {true, "#{n} lines (within tolerance)"}
+      true -> {false, "#{n} lines (over #{target + tolerance})"}
+    end
+  end
+
+  def token_estimate(content, params) do
+    max = params[:max_tokens] || 2000
+    {_, body} = split_frontmatter(content)
+    tokens = round(length(String.split(body, ~r/\s+/, trim: true)) / 0.75)
+
+    if tokens <= max,
+      do: {true, "~#{tokens} tokens"},
+      else: {false, "~#{tokens} tokens (over #{max})"}
+  end
+
+  # ── frontmatter fields ───────────────────────────────────────────────────────
+
+  def frontmatter_field(content, params) do
+    field = to_string(params[:field])
+    {fm, _} = split_frontmatter(content)
+
+    cond do
+      not Map.has_key?(fm, field) ->
+        {false, "frontmatter missing '#{field}'"}
+
+      params[:expected] && to_string(fm[field]) != to_string(params[:expected]) ->
+        {false, "#{field}=#{inspect(fm[field])}"}
+
+      true ->
+        {true, "#{field} present"}
+    end
+  end
+
+  def description_length(content, params) do
+    min = params[:min] || 50
+    max = params[:max] || 250
+    {fm, _} = split_frontmatter(content)
+    n = String.length(Map.get(fm, "description", ""))
+
+    if min <= n and n <= max,
+      do: {true, "description #{n} chars"},
+      else: {false, "description #{n} chars (want #{min}-#{max})"}
+  end
+
+  def description_no_vague(content, params) do
+    forbidden = params[:forbidden] || @vague_default
+    {fm, _} = split_frontmatter(content)
+    desc = fm |> Map.get("description", "") |> String.downcase()
+    found = Enum.filter(forbidden, &Regex.match?(~r/\b#{Regex.escape(&1)}\b/, desc))
+    if found == [], do: {true, "no vague words"}, else: {false, "vague words: #{inspect(found)}"}
+  end
+
+  def description_structure(content, _params) do
+    {fm, _} = split_frontmatter(content)
+    desc = Map.get(fm, "description", "")
+    has_what = Regex.match?(~r/^[A-Z][a-z]+\s/, desc)
+    has_when = Regex.match?(~r/\b[Uu]se\s+(?:when|after|for|to)\b/, desc)
+
+    if has_what and has_when,
+      do: {true, "has what + when"},
+      else: {false, "what=#{has_what} when=#{has_when}"}
+  end
+
+  # ── safety ───────────────────────────────────────────────────────────────────
+
+  def has_iron_laws(content, params) do
+    min = params[:min_count] || 1
+    {_, body} = split_frontmatter(content)
+
+    candidates =
+      Enum.filter(sections(body), fn {n, _} ->
+        String.contains?(String.downcase(n), "iron law")
+      end)
+
+    case candidates do
+      [] ->
+        {false, "no Iron Laws section"}
+
+      _ ->
+        items = candidates |> Enum.map(fn {_, lines} -> count_items(lines) end) |> Enum.max()
+
+        if items >= min,
+          do: {true, "#{items} Iron Laws"},
+          else: {false, "only #{items} Iron Laws (want #{min})"}
+    end
+  end
+
+  defp count_items(lines),
+    do: Enum.count(lines, &Regex.match?(~r/^\s*(?:\d+[\.\)]\s+|[-*]\s+)/, &1))
+
+  def no_dangerous_patterns(content, params) do
+    patterns = params[:patterns] || @dangerous_default
+    {_, body} = split_frontmatter(content)
+
+    haystack =
+      body
+      |> sections()
+      |> Enum.reject(fn {name, _} ->
+        downcased = String.downcase(name)
+        Enum.any?(@safe_section_hints, &String.contains?(downcased, &1))
+      end)
+      |> Enum.flat_map(fn {_, lines} ->
+        Enum.reject(lines, &String.starts_with?(String.trim(&1), "|"))
+      end)
+      |> Enum.join("\n")
+
+    case Enum.find(patterns, &Regex.match?(&1, haystack)) do
+      nil -> {true, "no dangerous patterns"}
+      pat -> {false, "dangerous pattern: #{inspect(Regex.source(pat))}"}
+    end
+  end
+
+  # ── clarity / specificity ─────────────────────────────────────────────────────
+
+  def has_examples(content, params) do
+    min_blocks = params[:min_blocks] || 1
+    min_lines = params[:min_lines] || 2
+    {_, body} = split_frontmatter(content)
+
+    good =
+      Regex.scan(~r/```[\w]*\n(.*?)```/s, body)
+      |> Enum.map(fn [_, inner] ->
+        Enum.count(String.split(inner, "\n"), &(String.trim(&1) != ""))
+      end)
+      |> Enum.count(&(&1 >= min_lines))
+
+    if good >= min_blocks,
+      do: {true, "#{good} example blocks"},
+      else: {false, "only #{good} example blocks"}
+  end
+
+  def action_density(content, params) do
+    min_ratio = params[:min_ratio] || 0.25
+    {_, body} = split_frontmatter(content)
+
+    lines =
+      body
+      |> String.split("\n")
+      |> Enum.filter(fn l ->
+        t = String.trim(l)
+        t != "" and not String.starts_with?(t, "#") and not String.starts_with?(t, "```")
+      end)
+
+    case lines do
+      [] ->
+        {false, "no content lines"}
+
+      _ ->
+        actionable = Enum.count(lines, &actionable?/1)
+        ratio = actionable / length(lines)
+
+        if ratio >= min_ratio,
+          do: {true, "action density #{fmt(ratio)}"},
+          else: {false, "action density #{fmt(ratio)} (want #{min_ratio})"}
+    end
+  end
+
+  defp actionable?(line) do
+    Regex.match?(@imperative, line) or
+      Regex.match?(~r/^\s*\d+[\.\)]\s+/, line) or
+      Regex.match?(~r/^\s*[-*]\s+\*\*/, line) or
+      (String.starts_with?(String.trim(line), "|") and length(String.split(line, "|")) >= 3)
+  end
+
+  def specificity_ratio(content, params) do
+    min_ratio = params[:min_ratio] || 0.15
+    {_, body} = split_frontmatter(content)
+    lines = body |> String.split("\n") |> Enum.filter(&(String.trim(&1) != ""))
+
+    case lines do
+      [] ->
+        {false, "no content"}
+
+      _ ->
+        concrete = Enum.count(lines, fn l -> Enum.any?(@concrete, &Regex.match?(&1, l)) end)
+        ratio = concrete / length(lines)
+
+        if ratio >= min_ratio,
+          do: {true, "specificity #{fmt(ratio)}"},
+          else: {false, "specificity #{fmt(ratio)} (want #{min_ratio})"}
+    end
+  end
+
+  @doc "Dispatch a check by type. Unknown types fail (caught by the scorer)."
+  @spec run_check(atom() | String.t(), String.t(), map()) :: {boolean(), String.t()}
+  def run_check(type, content, params) do
+    case to_string(type) do
+      "section_exists" -> section_exists(content, params)
+      "max_section_lines" -> max_section_lines(content, params)
+      "line_count" -> line_count(content, params)
+      "token_estimate" -> token_estimate(content, params)
+      "frontmatter_field" -> frontmatter_field(content, params)
+      "description_length" -> description_length(content, params)
+      "description_no_vague" -> description_no_vague(content, params)
+      "description_structure" -> description_structure(content, params)
+      "has_iron_laws" -> has_iron_laws(content, params)
+      "no_dangerous_patterns" -> no_dangerous_patterns(content, params)
+      "has_examples" -> has_examples(content, params)
+      "action_density" -> action_density(content, params)
+      "specificity_ratio" -> specificity_ratio(content, params)
+      other -> {false, "unknown check_type: #{other}"}
+    end
+  end
+
+  defp fmt(r), do: :erlang.float_to_binary(r * 1.0, decimals: 2)
+end

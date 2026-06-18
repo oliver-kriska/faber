@@ -38,6 +38,16 @@ defmodule Faber.ScanTest do
       assert is_list(sample.skills_used)
     end
 
+    test "carries a friction rate and can rank by it" do
+      results = Scan.run(base: @fixtures, min_messages: 0)
+      sample = Enum.find(results, &(&1.path =~ "sample_session"))
+      assert sample.rate == sample.raw / sample.message_count
+
+      by_rate = Scan.run(base: @fixtures, min_messages: 0, rank_by: :rate)
+      rates = Enum.map(by_rate, & &1.rate)
+      assert rates == Enum.sort(rates, :desc)
+    end
+
     test "tier2 fires when opportunity is high even if friction is low" do
       smooth = Enum.find(Scan.run(base: @fixtures, min_messages: 0), &(&1.path =~ "smooth"))
       # A smooth session is tier-2 iff one of the non-friction gates trips.

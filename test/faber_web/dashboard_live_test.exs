@@ -10,20 +10,21 @@ defmodule FaberWeb.DashboardLiveTest do
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
 
-  test "mounts and renders the ranked friction table", %{conn: conn} do
-    {:ok, view, html} = live(conn, "/")
-
+  test "the disconnected (first-paint) render shows a loading state, no scan", %{conn: conn} do
+    html = conn |> get("/") |> html_response(200)
     assert html =~ "Faber"
-    assert html =~ "session friction"
-    assert html =~ "Friction"
-    assert html =~ "sessions scanned"
-
-    # The dashboard scans test/fixtures (see config/test.exs), so the project column shows it.
-    assert render(view) =~ "fixtures/"
+    assert html =~ "scanning sessions"
+    refute html =~ "<table"
   end
 
-  test "rescan re-runs the scan and re-renders", %{conn: conn} do
-    {:ok, view, _html} = live(conn, "/")
+  test "the connected render runs the scan and renders the ranked table", %{conn: conn} do
+    {:ok, view, html} = live(conn, "/")
+
+    assert html =~ "Friction"
+    assert html =~ "sessions scanned"
+    # The dashboard scans test/fixtures (see config/test.exs), so the project column shows it.
+    assert html =~ "fixtures/"
+
     assert render_click(view, "rescan") =~ "Faber"
   end
 end

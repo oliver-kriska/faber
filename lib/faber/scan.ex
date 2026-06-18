@@ -18,6 +18,7 @@ defmodule Faber.Scan do
             session_id: String.t() | nil,
             friction: float(),
             raw: float(),
+            rate: float(),
             dominant_signal: atom() | nil,
             signals: Detect.signals(),
             fingerprint: String.t(),
@@ -36,6 +37,7 @@ defmodule Faber.Scan do
       :session_id,
       :friction,
       :raw,
+      :rate,
       :dominant_signal,
       :signals,
       :fingerprint,
@@ -65,6 +67,8 @@ defmodule Faber.Scan do
     * `:max_concurrency` — fan-out width (default `System.schedulers_online/0`)
     * `:timeout` — per-session timeout in ms (default `#{@session_timeout_ms}`)
     * `:dedupe` — collapse rows sharing a `session_id` to the richest one (default `true`)
+    * `:rank_by` — `:raw` (total friction, favors long sessions; default) or `:rate`
+      (`raw / message_count`, surfaces *concentrated* friction)
   """
   @spec run(keyword()) :: [Result.t()]
   def run(opts \\ []) do
@@ -73,6 +77,7 @@ defmodule Faber.Scan do
     max_concurrency = Keyword.get(opts, :max_concurrency, System.schedulers_online())
     timeout = Keyword.get(opts, :timeout, @session_timeout_ms)
     dedupe = Keyword.get(opts, :dedupe, true)
+    rank_by = Keyword.get(opts, :rank_by, :raw)
 
     base
     |> Ingest.discover()
@@ -88,11 +93,14 @@ defmodule Faber.Scan do
     |> Stream.filter(&(&1.message_count >= min_messages))
     |> Enum.to_list()
     |> dedupe(dedupe)
-    # Rank by raw weighted friction, not the sigmoid score: the score saturates to ~1.0 on
-    # any long session, so it can't order high-friction sessions against each other. raw is
-    # monotonic and discriminates. (`score`/`tier2` remain for the per-session y/n gate.)
-    |> Enum.sort_by(&{&1.raw, &1.message_count}, :desc)
+    # Rank by raw weighted friction (not the sigmoid score, which saturates to ~1.0 on any long
+    # session). `:rank_by :rate` instead surfaces concentrated friction (raw/message). Both keep
+    # `score`/`tier2` for the per-session y/n gate.
+    |> Enum.sort_by(&sort_key(&1, rank_by), :desc)
   end
+
+  defp sort_key(%Result{} = r, :rate), do: {r.rate, r.message_count}
+  defp sort_key(%Result{} = r, _raw), do: {r.raw, r.message_count}
 
   # Subagent/sidechain transcripts (`isSidechain: true`) surface as near-duplicate rows that
   # share a `session_id` with their parent. Collapse each `session_id` group to its richest
@@ -126,6 +134,7 @@ defmodule Faber.Scan do
       session_id: session_id(events),
       friction: f.score,
       raw: f.raw,
+      rate: rate(f.raw, f.message_count),
       dominant_signal: f.dominant_signal,
       signals: f.signals,
       fingerprint: fp.type,
@@ -147,6 +156,9 @@ defmodule Faber.Scan do
   defp tier2?(f, op) do
     f.score > 0.35 or op.score > 0.5 or op.used != [] or f.message_count > 50
   end
+
+  defp rate(_raw, 0), do: 0.0
+  defp rate(raw, message_count), do: raw / message_count
 
   defp session_id(events) do
     Enum.find_value(events, fn e -> e.session_id end)

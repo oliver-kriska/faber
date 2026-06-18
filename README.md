@@ -55,10 +55,15 @@ See [`HANDOFF.md`](HANDOFF.md) for the full thesis and architecture rationale,
 [`docs/ADAPTER_CONTRACT.md`](docs/ADAPTER_CONTRACT.md) for the adapter pack spec, and
 [`.claude/research/`](.claude/research/) for the calibration and source-study notes.
 
-**Known external-runtime gaps** (code is wired and tested with stubs; live use needs the
-runtime): a live LLM call needs a provider key (e.g. `ANTHROPIC_API_KEY`); the GEPA
+**Defaults are local-first & keyless:** the LLM backend defaults to the Claude Code CLI
+(`claude -p`, uses your existing auth — no API key); structural eval runs **natively in
+Elixir** (no `python3` on the hot path). Opt into the network path with
+`config :faber, :llm, Faber.LLM.ReqLLM` + a key, and the Python matcher engine with
+`config :faber, :eval_engine, :sidecar`.
+
+**Known runtime gaps** (wired + tested with stubs; live use needs the runtime): the GEPA
 `optimize` command is a documented stub (needs `dspy` + a key — the M5 loop covers v1
-self-improvement instead); the eval sidecar runs on plain `python3` (no `uv` required).
+self-improvement instead); trigger-accuracy eval (the plugin shells to `claude`) is deferred.
 
 ## Development
 

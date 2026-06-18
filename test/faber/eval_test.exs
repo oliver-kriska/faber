@@ -68,18 +68,28 @@ defmodule Faber.EvalTest do
     end
   end
 
-  describe "score/2 (real python sidecar)" do
-    @describetag :sidecar
-
-    test "scores a rendered proposal end to end" do
+  describe "score/2 (native engine, default)" do
+    test "scores a rendered proposal in-process with no sidecar" do
       {:ok, proposal} =
         Faber.Propose.propose(sample_result(), sample_adapter(), llm: Faber.LLM.Stub)
 
       assert {:ok, r} = Eval.score(proposal)
       assert is_float(r.composite)
       assert r.composite > 0.5
-      assert is_map(r.dimensions)
       assert Map.has_key?(r.dimensions, "completeness")
+    end
+  end
+
+  describe "score/2 (real python sidecar)" do
+    @describetag :sidecar
+
+    test "the python engine agrees with native within tolerance" do
+      {:ok, proposal} =
+        Faber.Propose.propose(sample_result(), sample_adapter(), llm: Faber.LLM.Stub)
+
+      assert {:ok, native} = Eval.score(proposal, engine: :native)
+      assert {:ok, sidecar} = Eval.score(proposal, engine: :sidecar)
+      assert_in_delta native.composite, sidecar.composite, 0.05
     end
   end
 

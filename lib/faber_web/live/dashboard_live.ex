@@ -9,7 +9,15 @@ defmodule FaberWeb.DashboardLive do
   alias Faber.Scan
 
   @impl true
-  def mount(_params, _session, socket), do: {:ok, load(socket)}
+  def mount(_params, _session, socket) do
+    # Scan only on the connected mount — the static (first-paint) render would otherwise scan
+    # thousands of transcripts a second time before the websocket even connects.
+    if connected?(socket) do
+      {:ok, load(socket)}
+    else
+      {:ok, assign(socket, scanned: false, total: 0, tier2: 0, results: [])}
+    end
+  end
 
   @impl true
   def handle_event("rescan", _params, socket), do: {:noreply, load(socket)}
@@ -18,6 +26,7 @@ defmodule FaberWeb.DashboardLive do
     results = Scan.run(scan_opts())
 
     socket
+    |> assign(:scanned, true)
     |> assign(:total, length(results))
     |> assign(:tier2, Enum.count(results, & &1.tier2))
     |> assign(:results, Enum.take(results, 25))
@@ -32,11 +41,12 @@ defmodule FaberWeb.DashboardLive do
     ~H"""
     <main class="container">
       <h1><span class="accent">Faber</span> — session friction</h1>
-      <p class="summary">
+      <p :if={!@scanned} class="summary">scanning sessions…</p>
+      <p :if={@scanned} class="summary">
         <strong>{@total}</strong> sessions scanned · <strong>{@tier2}</strong>
         tier-2 eligible · showing top {length(@results)}
       </p>
-      <button phx-click="rescan">Rescan</button>
+      <button :if={@scanned} phx-click="rescan">Rescan</button>
 
       <table :if={@results != []}>
         <thead>
@@ -69,7 +79,7 @@ defmodule FaberWeb.DashboardLive do
         </tbody>
       </table>
 
-      <p :if={@results == []} class="empty">No sessions matched.</p>
+      <p :if={@scanned and @results == []} class="empty">No sessions matched.</p>
     </main>
     """
   end

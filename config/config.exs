@@ -1,9 +1,14 @@
 import Config
 
-# LLM client for the skill proposer (M3). Override the model per provider; a live call needs
-# the provider API key in the environment (e.g. ANTHROPIC_API_KEY).
-config :faber, :llm, Faber.LLM.ReqLLM
+# LLM client for the skill proposer (M3). Default to the keyless Claude Code CLI backend
+# (`claude -p`, uses existing auth, no API key). Opt into the network path with
+# `config :faber, :llm, Faber.LLM.ReqLLM` + a provider key (e.g. ANTHROPIC_API_KEY).
+config :faber, :llm, Faber.LLM.ClaudeCLI
 config :faber, :llm_model, "anthropic:claude-sonnet-4-6"
+
+# Eval engine (M4). Native Elixir structural scoring by default — no python3 needed on the hot
+# path. Switch to `:sidecar` for the Python matcher port (parity / future GEPA + trigger eval).
+config :faber, :eval_engine, :native
 
 # Python eval sidecar (M4): interpreter + package dir. uv is optional; plain python3 works
 # because the sidecar is stdlib + PyYAML only.
