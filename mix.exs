@@ -25,10 +25,15 @@ defmodule Faber.MixProject do
   end
 
   # Run "mix help deps" to learn about dependencies.
+  #
+  # Library choices are recorded in .claude/research/2026-06-18-elixir-dependency-needs.md.
+  # Added per milestone (kept minimal): the two below are the confirmed foundation; later
+  # stages add their deps when implemented — :exile (M4 sidecar), :req_llm (M3 proposer),
+  # :oban + :ecto_sqlite3 (M6), :optimus/:owl (CLI, M5+).
   defp deps do
     [
-      # {:dep_from_hexpm, "~> 0.3.0"},
-      # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"}
+      {:jason, "~> 1.4"},
+      {:yaml_elixir, "~> 2.12"}
     ]
   end
 end
