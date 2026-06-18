@@ -20,19 +20,22 @@ defmodule Faber.DetectTest do
       assert f.error_count == 2
       assert f.message_count == 11
 
+      # approach_changes is 0: only 4 tool calls, below the proven scorer's 10-call floor.
       assert f.signals == %{
                retry_loops: 1,
                user_corrections: 1,
                error_tool_ratio: 0.5,
-               approach_changes: 1,
+               approach_changes: 0,
                context_compactions: 1,
                interrupted_requests: 1
              }
     end
 
     test "combines into the proven sigmoid score", %{f: f} do
-      assert_in_delta f.raw, 11.0, 1.0e-9
+      # raw = 1*3.0 + 1*2.5 + 0.5*2.0 + 0*2.0 + 1*1.5 + 1*1.0
+      assert_in_delta f.raw, 9.0, 1.0e-9
       assert f.score > 0.95
+      assert f.dominant_signal == :retry_loops
     end
   end
 

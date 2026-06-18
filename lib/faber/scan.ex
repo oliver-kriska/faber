@@ -74,7 +74,10 @@ defmodule Faber.Scan do
     |> Stream.filter(&match?({:ok, %Result{}}, &1))
     |> Stream.map(fn {:ok, result} -> result end)
     |> Stream.filter(&(&1.message_count >= min_messages))
-    |> Enum.sort_by(&{&1.friction, &1.message_count}, :desc)
+    # Rank by raw weighted friction, not the sigmoid score: the score saturates to ~1.0 on
+    # any long session, so it can't order high-friction sessions against each other. raw is
+    # monotonic and discriminates. (`score`/`tier2` remain for the per-session y/n gate.)
+    |> Enum.sort_by(&{&1.raw, &1.message_count}, :desc)
   end
 
   @doc """

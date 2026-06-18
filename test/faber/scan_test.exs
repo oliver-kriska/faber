@@ -14,8 +14,9 @@ defmodule Faber.ScanTest do
       assert [top | _] = results
       assert top.path =~ "sample_session"
 
-      frictions = Enum.map(results, & &1.friction)
-      assert frictions == Enum.sort(frictions, :desc)
+      # Ranking is by raw weighted friction (the score saturates on long sessions).
+      raws = Enum.map(results, & &1.raw)
+      assert raws == Enum.sort(raws, :desc)
 
       sample = Enum.find(results, &(&1.path =~ "sample_session"))
       smooth = Enum.find(results, &(&1.path =~ "smooth_session"))

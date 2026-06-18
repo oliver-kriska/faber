@@ -65,7 +65,7 @@ defmodule Mix.Tasks.Faber.Scan do
     |> Enum.each(fn {r, i} ->
       Mix.shell().info(
         pad("#{i}", 4) <>
-          pad(fmt_score(r.friction), 10) <>
+          pad(fmt_raw(r.raw), 10) <>
           pad("#{r.message_count}", 6) <>
           pad("#{r.tool_count}", 6) <>
           pad("#{r.error_count}", 6) <>
@@ -73,9 +73,13 @@ defmodule Mix.Tasks.Faber.Scan do
           pad(if(r.tier2, do: "✓", else: ""), 4) <> session_label(r)
       )
     end)
+
+    Mix.shell().info(
+      "\nFRICTION = raw weighted friction (rank metric); T2 = tier-2 eligible (sigmoid score > 0.35)."
+    )
   end
 
-  defp fmt_score(score), do: :erlang.float_to_binary(score, decimals: 3)
+  defp fmt_raw(raw), do: :erlang.float_to_binary(raw, decimals: 1)
 
   defp signal_label(nil), do: "—"
   defp signal_label(signal), do: to_string(signal)

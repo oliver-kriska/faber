@@ -43,9 +43,10 @@ defmodule Faber.Detect do
 
   @interrupt_marker "[Request interrupted by user]"
 
-  # How many leading whitespace tokens of a Bash command define its "prefix" for retry
-  # detection (so `mix test foo` re-runs collapse, but `mix test` vs `mix compile` don't).
-  @bash_prefix_tokens 3
+  # Leading whitespace tokens of a Bash command that define its "prefix" for retry
+  # detection. The proven scorer (compute-metrics.py) keys on the first token, so e.g. a
+  # run of consecutive `mix …` commands counts as one retry loop.
+  @bash_prefix_tokens 1
 
   @type signals :: %{
           retry_loops: non_neg_integer(),
@@ -170,26 +171,27 @@ defmodule Faber.Detect do
     |> Enum.count(&String.contains?(&1.text, @interrupt_marker))
   end
 
-  # System events (or any event) that mark a context compaction.
+  # Events that mark a context compaction. The proven scorer matches the literal
+  # "context compaction" in message text; we also honor the modern transcript markers.
   defp count_compactions(events) do
     Enum.count(events, fn %Event{} = e ->
       e.raw["isCompactSummary"] == true or
         e.raw["subtype"] in ["compact", "compact_boundary"] or
-        (e.type == :system and is_binary(e.text) and e.text =~ ~r/compact/i)
+        (is_binary(e.text) and String.contains?(String.downcase(e.text), "context compact"))
     end)
   end
 
-  # Split the tool sequence into 4 quarters, take each quarter's dominant tool, count
-  # transitions between different dominant tools.
-  defp count_approach_changes(tool_uses) when length(tool_uses) < 4, do: 0
+  # Split the tool sequence into ~4 chunks, take each chunk's dominant tool, count
+  # transitions between differing dominants. Per the proven scorer, only sessions with at
+  # least 10 tool calls are eligible (smaller ones aren't meaningfully "thrashing").
+  defp count_approach_changes(tool_uses) when length(tool_uses) < 10, do: 0
 
   defp count_approach_changes(tool_uses) do
     names = Enum.map(tool_uses, & &1.name)
-    chunk = max(div(length(names), 4), 1)
+    chunk = max(div(length(names), 4), 5)
 
     names
     |> Enum.chunk_every(chunk)
-    |> Enum.take(4)
     |> Enum.map(&dominant/1)
     |> count_transitions()
   end
