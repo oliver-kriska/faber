@@ -32,8 +32,13 @@ milestones (M0–M6). Everything here assumes it.
   ```sh
   mix format
   mix compile --warnings-as-errors
-  mix test
+  mix test          # hermetic — no python3 needed
   ```
+
+  `mix test` excludes the `:sidecar`-tagged native↔Python parity tests so it needs no
+  interpreter. Run **`mix test.full`** (alias for `mix test --include sidecar`) — which needs
+  `python3` — before committing changes that touch the eval matchers or the sidecar boundary,
+  and in CI, to catch native/sidecar drift.
 
 - **NEVER push to a remote** until explicitly told. The `origin/main` ref shows `[gone]` —
   it is stale; ignore it. Do not create PRs.

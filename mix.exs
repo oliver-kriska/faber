@@ -8,8 +8,19 @@ defmodule Faber.MixProject do
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
       description: description(),
+      aliases: aliases(),
       deps: deps()
     ]
+  end
+
+  # `mix test` skips the `@tag :sidecar` parity tests (they spawn python3); `mix test.full` runs
+  # them so native↔sidecar engine drift is caught. See CLAUDE.md / README.
+  defp aliases do
+    ["test.full": ["test --include sidecar"]]
+  end
+
+  def cli do
+    [preferred_envs: ["test.full": :test]]
   end
 
   defp description do

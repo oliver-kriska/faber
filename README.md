@@ -69,7 +69,8 @@ self-improvement instead); trigger-accuracy eval (the plugin shells to `claude`)
 
 ```sh
 mix deps.get
-mix test                       # 60 tests (incl. LiveView + a real-python sidecar round-trip)
+mix test                       # hermetic — Elixir suite incl. LiveView, no python3 needed
+mix test.full                  # also runs the @tag :sidecar native↔Python parity tests (needs python3)
 mix compile --warnings-as-errors
 mix faber.scan                 # rank your real ~/.claude sessions by friction
 iex -S mix                     # dashboard at http://localhost:4000 (mix phx.server style boot)

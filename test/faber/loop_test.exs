@@ -4,6 +4,33 @@ defmodule Faber.LoopTest do
   alias Faber.Loop
   alias Faber.Loop.{Journal, Server}
 
+  # A sidecar double that sequences composites from an Agent passed via `:seq_agent` in opts.
+  # `refine/3` forwards its opts to `Faber.Eval.score` → `Faber.Sidecar.call`, so this lets the
+  # real Propose+Eval+run wiring be driven through controlled scores (a constant stub can't show
+  # keep/revert — see review BL4). Nested module → `Faber.LoopTest.SeqSidecar`, no global collision.
+  defmodule SeqSidecar do
+    @behaviour Faber.Sidecar
+
+    @impl true
+    def call(_command, _request, opts) do
+      composite =
+        opts
+        |> Keyword.fetch!(:seq_agent)
+        |> Agent.get_and_update(fn
+          [s | rest] -> {s, rest}
+          [] -> {0.0, []}
+        end)
+
+      {:ok, %{"status" => "ok", "result" => %{"composite" => composite, "dimensions" => %{}}}}
+    end
+  end
+
+  defmodule FailingLLM do
+    @behaviour Faber.LLM
+    @impl true
+    def generate_object(_prompt, _schema, _opts), do: {:error, :llm_unavailable}
+  end
+
   # A supervised, per-test mutable cell (auto-cleaned by ExUnit).
   defp cell(initial) do
     start_supervised!({Agent, fn -> initial end}, id: {:cell, System.unique_integer([:positive])})
@@ -182,19 +209,30 @@ defmodule Faber.LoopTest do
     end
   end
 
-  describe "refine/3 (real pipeline, stubbed LLM + sidecar)" do
-    test "terminates deterministically when it cannot beat the seed" do
+  describe "refine/3 (real Propose + Eval wiring)" do
+    test "keeps strict improvements, reverts regressions, and reports the best" do
+      # seed 0.5 → keep 0.6 → revert 0.55 ×3 → stuck (patience 3). Drives the real pipeline
+      # (Propose + Eval + run) with sequenced eval scores, so a broken keep/revert would fail here.
+      scores = cell([0.5, 0.6, 0.55, 0.55, 0.55])
+
       state =
         Loop.refine(sample_result(), sample_adapter(),
           llm: Faber.LLM.Stub,
-          sidecar: Faber.Sidecar.Stub,
+          sidecar: SeqSidecar,
+          seq_agent: scores,
           target: 0.95,
           patience: 3
         )
 
       assert state.status == :stuck
-      assert state.best_composite == 0.9
-      assert length(state.history) >= 3
+      assert state.best_composite == 0.6
+      assert Enum.count(state.history, & &1.kept) == 1
+      assert Enum.count(state.history, &(not &1.kept)) == 3
+    end
+
+    test "returns {:error, reason} when the seed proposal fails, instead of crashing" do
+      assert {:error, :llm_unavailable} =
+               Loop.refine(sample_result(), sample_adapter(), llm: FailingLLM)
     end
   end
 
@@ -216,6 +254,30 @@ defmodule Faber.LoopTest do
       assert {:ok, state} = Server.await(pid)
       assert state.status == :complete
       assert Server.status(pid) == :complete
+    end
+
+    test "runs a multi-iteration loop in the background and await returns the final state" do
+      pid =
+        start_supervised!(
+          {Server,
+           [
+             content: "seed",
+             composite: 0.4,
+             target: 0.95,
+             max_iterations: 3,
+             patience: 100,
+             checks_fn: &ok_checks/1,
+             propose_fn: &always_propose/1,
+             eval_fn: scorer([0.5, 0.6, 0.7])
+           ]}
+        )
+
+      # The loop runs in a Task (not in handle_continue), so await is replied to on completion
+      # rather than blocking the server — and it survives a run longer than one iteration.
+      assert {:ok, state} = Server.await(pid)
+      assert state.status == :complete
+      assert state.iteration == 3
+      assert state.best_composite == 0.7
     end
   end
 

@@ -83,13 +83,20 @@ defmodule Faber.EvalTest do
   describe "score/2 (real python sidecar)" do
     @describetag :sidecar
 
-    test "the python engine agrees with native within tolerance" do
+    test "the python engine agrees with native within tolerance, on good and bad inputs" do
       {:ok, proposal} =
         Faber.Propose.propose(sample_result(), sample_adapter(), llm: Faber.LLM.Stub)
 
-      assert {:ok, native} = Eval.score(proposal, engine: :native)
-      assert {:ok, sidecar} = Eval.score(proposal, engine: :sidecar)
-      assert_in_delta native.composite, sidecar.composite, 0.05
+      good = Faber.Propose.render_skill_md(proposal)
+      bad = "---\nname: stuff\n---\n\n# Stuff\n\nVague prose, no laws, no examples.\n"
+
+      # Parity must hold across the score range, not just on a passing fixture — a single-input
+      # check could mask a systematic native/sidecar bias (review testing W5).
+      for input <- [good, bad] do
+        assert {:ok, native} = Eval.score(input, engine: :native)
+        assert {:ok, sidecar} = Eval.score(input, engine: :sidecar)
+        assert_in_delta native.composite, sidecar.composite, 0.05
+      end
     end
   end
 
