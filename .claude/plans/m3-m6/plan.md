@@ -27,11 +27,11 @@ stdout JSON (no exile/NIF dep; stdin remains canonical); loop = deterministic ke
 - [x] [P2-T4] `Faber.Sidecar` behaviour + `System` (System.cmd + temp `--input`, cd python/, graceful unavailable) + `Stub`; `Faber.Eval.score/2` + `gate/2` (configurable threshold, accepts Proposal or md)
 - [x] [P2-T5] 7 eval tests pass — stubbed sidecar (pass/fail/threshold/error/Proposal) + real-python `@tag :sidecar` end-to-end (composite > 0.5, dimensions present)
 
-## Phase 3 — M5 Autoresearch loop
-- [ ] [P3-T1] `Faber.Loop.run/1` pure driver — propose→eval→keep/revert, prev_best, plateau (patience 50 / per-skill 10), target 0.95, max_iterations; inject propose_fn/eval_fn
-- [ ] [P3-T2] `Faber.Loop.Git` (scoped add/commit on keep, checkout on revert) + `Faber.Loop.Journal` (JSONL append, schema parity)
-- [ ] [P3-T3] `Faber.Loop.Server` GenServer + `Faber.Loop.Supervisor` (DynamicSupervisor) in the app tree (on-demand, not at boot)
-- [ ] [P3-T4] Loop tests — deterministic improve-then-plateau keeps winners & stops; temp git repo asserts commit-on-keep / checkout-on-revert; journal schema
+## Phase 3 — M5 Autoresearch loop ✅
+- [x] [P3-T1] `Faber.Loop.run/1` pure driver — propose→eval→keep/revert, **strict** improvement (ties revert; documented improvement over source's lateral churn), plateau (patience 50), target 0.95, max_iterations 50; inject propose_fn/eval_fn; `refine/3` wires Propose+Eval; `default_checks/1`
+- [x] [P3-T2] `Faber.Loop.Git` (scoped add/commit on keep, `checkout --` on revert, restore-on-no-git) + `Faber.Loop.Journal` (JSONL append/read, ISO8601 timestamp, schema parity)
+- [x] [P3-T3] `Faber.Loop.Server` GenServer (restart :temporary, await/status) + `Faber.Loop.Supervisor` (DynamicSupervisor) wired into the app tree (started empty, on-demand)
+- [x] [P3-T4] 9 loop tests — improve-then-plateau→:stuck, target→:complete, max_iter→:complete, check-fail discard, journal entries, real temp-git commit-on-keep/restore-on-revert, refine/3, supervised Server
 
 ## Phase 4 — M6 LiveView dashboard
 - [ ] [P4-T1] Add phoenix/phoenix_live_view/phoenix_html/bandit/plug deps; `config/` (config.exs, dev.exs, test.exs, runtime.exs); endpoint secret/salt

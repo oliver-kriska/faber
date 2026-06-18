@@ -8,8 +8,9 @@ defmodule Faber.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      # Starts a worker by calling: Faber.Worker.start_link(arg)
-      # {Faber.Worker, arg}
+      # On-demand homes for autoresearch loop runs (M5). Started empty; loops are launched
+      # explicitly via Faber.Loop.Supervisor.start_loop/1, never at boot.
+      Faber.Loop.Supervisor
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
