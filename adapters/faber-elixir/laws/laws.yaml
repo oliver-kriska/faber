@@ -1,0 +1,197 @@
+# Iron Laws — the Elixir/Phoenix stack's non-negotiables.
+#
+# Extracted BY REFERENCE from the "Iron Laws Enforcement" section of the plugin's
+# CLAUDE.md (claude-elixir-phoenix), which also injects them at runtime via its
+# SubagentStart hook. Source of truth: that CLAUDE.md section — zero diffs to the plugin.
+#
+# Bulk form per ADAPTER_CONTRACT.md §5.1. Each entry: id, category, severity, statement,
+# and an optional `check`. Most laws need *semantic* enforcement; in this adapter that is
+# delegated to the eval framework in exec-in-place mode (see ../eval/eval.yaml →
+# lab/eval matchers). Only the few laws reducible to a token pattern carry a regex `check`
+# here, as illustration.
+
+laws:
+  - id: liveview-no-unconditional-db-in-mount
+    category: liveview
+    severity: high
+    statement: >-
+      NO unconditional DB queries in mount. Mount runs twice. Default to assign_async; for
+      SEO routes use connected?/1 with a cache-backed disconnected branch (the dead render
+      is the crawler-indexed HTML).
+
+  - id: liveview-streams-for-large-lists
+    category: liveview
+    severity: high
+    statement: >-
+      ALWAYS use streams for lists over ~100 items. Regular assigns hold O(n) memory per
+      connected user.
+
+  - id: liveview-check-connected-before-subscribe
+    category: liveview
+    severity: high
+    statement: >-
+      CHECK connected?/1 before subscribing to PubSub. Prevents double subscriptions
+      caused by the two-pass mount.
+
+  - id: ecto-no-float-for-money
+    category: ecto
+    severity: high
+    statement: >-
+      NEVER use :float for money. Use :decimal or :integer (cents). Float rounding
+      silently corrupts financial values.
+    check:
+      kind: regex
+      pattern: ":float"
+
+  - id: ecto-pin-values-in-queries
+    category: ecto
+    severity: high
+    statement: >-
+      ALWAYS pin values with ^ in queries. Never interpolate user input into a query.
+
+  - id: ecto-separate-query-vs-join
+    category: ecto
+    severity: medium
+    statement: >-
+      SEPARATE QUERIES for has_many, JOIN for belongs_to. Joining a has_many multiplies
+      rows.
+
+  - id: oban-jobs-idempotent
+    category: oban
+    severity: high
+    statement: "Jobs MUST be idempotent — safe to run again on retry."
+
+  - id: oban-string-keys-in-args
+    category: oban
+    severity: high
+    statement: >-
+      Job args use STRING keys, not atoms. Pattern match %{"user_id" => id}; args are
+      serialized to JSON.
+
+  - id: oban-no-structs-in-args
+    category: oban
+    severity: high
+    statement: "NEVER store structs in job args. Store IDs, not %User{}."
+
+  - id: security-no-to-atom-on-user-input
+    category: security
+    severity: high
+    statement: >-
+      NO String.to_atom (or similar) on user input. Atoms are not garbage-collected —
+      attacker-controlled atom creation is a DoS (atom exhaustion).
+    check:
+      kind: regex
+      pattern: "String.to_atom"
+
+  - id: security-authorize-every-handle-event
+    category: security
+    severity: high
+    statement: >-
+      AUTHORIZE in EVERY LiveView handle_event. Do not trust mount-time authorization;
+      events arrive independently.
+
+  - id: security-no-raw-untrusted
+    category: security
+    severity: high
+    statement: "NEVER use raw/1 with untrusted content — XSS vulnerability."
+
+  - id: otp-no-process-without-runtime-reason
+    category: otp
+    severity: medium
+    statement: >-
+      NO process without a runtime reason. Processes model concurrency, state, and
+      isolation — not code organization.
+
+  - id: otp-supervise-long-lived-processes
+    category: otp
+    severity: high
+    statement: >-
+      SUPERVISE ALL LONG-LIVED PROCESSES. Never bare GenServer.start_link /
+      Agent.start_link in production — use a supervision tree.
+
+  - id: ecto-no-implicit-cross-joins
+    category: ecto
+    severity: high
+    statement: >-
+      NO IMPLICIT CROSS JOINS. from(a in A, b in B) without an on: clause is a Cartesian
+      product.
+
+  - id: elixir-external-resource-for-compile-time-files
+    category: elixir
+    severity: medium
+    statement: >-
+      @external_resource FOR COMPILE-TIME FILES. A module that reads files at compile time
+      MUST declare @external_resource so recompilation tracks them.
+
+  - id: ecto-dedup-before-cast-assoc-shared-data
+    category: ecto
+    severity: medium
+    statement: >-
+      DEDUP BEFORE cast_assoc WITH SHARED DATA. Deduplicate shared child records before
+      building changesets, not inside them.
+
+  - id: liveview-check-changeset-errors-before-ui-debugging
+    category: liveview
+    severity: medium
+    statement: >-
+      CHECK CHANGESET ERRORS BEFORE UI DEBUGGING. A form save with no visible error and no
+      side effect is usually a silent {:error, changeset} — inspect it first.
+
+  - id: ecto-hidden-inputs-for-required-embedded-fields
+    category: ecto
+    severity: medium
+    statement: >-
+      HIDDEN INPUTS FOR ALL REQUIRED EMBEDDED FIELDS. Every required field in an embedded
+      schema needs a hidden_input if it is not directly editable.
+
+  - id: elixir-wrap-third-party-apis
+    category: elixir
+    severity: medium
+    statement: >-
+      WRAP THIRD-PARTY LIBRARY APIs behind a project-owned facade module, so libraries can
+      be swapped without touching callers.
+
+  - id: liveview-no-assign-new-for-per-mount-values
+    category: liveview
+    severity: medium
+    statement: >-
+      NEVER use assign_new for values refreshed every mount. assign_new skips the function
+      when the key exists; use assign/3 for locale, current user, and anything that must be
+      set on every mount.
+
+  - id: verification-verify-before-claiming-done
+    category: verification
+    severity: high
+    statement: >-
+      VERIFY BEFORE CLAIMING DONE. Never say "should work"; run mix compile && mix test and
+      show the result, or state explicitly what remains unverified.
+
+  - id: elixir-mix-tasks-start-only-what-they-need
+    category: elixir
+    severity: medium
+    statement: >-
+      MIX TASKS START ONLY WHAT THEY NEED. Use Mix.Task.run("app.config") +
+      Application.ensure_all_started/1, never Mix.Task.run("app.start") (which boots the full
+      tree — endpoint port, Oban consuming).
+
+  - id: liveview-match-changeset-error-explicitly
+    category: liveview
+    severity: medium
+    statement: >-
+      MATCH {:error, %Ecto.Changeset{}} EXPLICITLY. A bare {:error, _} merges changeset and
+      non-changeset errors so the form never re-renders validation errors — handle others
+      separately.
+
+  - id: elixir-capture-locale-before-spawning
+    category: elixir
+    severity: medium
+    statement: >-
+      CAPTURE LOCALE BEFORE SPAWNING. Gettext/CLDR locale is process-local; read it in the
+      caller and pass it explicitly — a spawned Task/GenServer starts at the default locale.
+
+  - id: code-style-comments-arent-commit-messages
+    category: code-style
+    severity: low
+    statement: >-
+      COMMENTS AREN'T COMMIT MESSAGES. A change's reasoning belongs in the commit/PR, not
+      inline. Keep only durable facts: footguns, invariants, quirks.

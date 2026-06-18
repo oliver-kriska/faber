@@ -1,0 +1,29 @@
+# Eval reference — exec-in-place mode (ADAPTER_CONTRACT.md §7.0).
+#
+# The plugin's lab/eval framework cannot be vendored file-by-file: it uses package-relative
+# imports (from lab.eval.* ...) and __file__-relative paths into plugins/elixir-phoenix and
+# evals/, and must run with cwd = the plugin repo root (see ../EXTRACTION_PROBE.md). So the
+# adapter REFERENCES it in place rather than copying it — keeping the plugin at zero diffs
+# and avoiding a maintenance fork.
+#
+# Faber's eval sidecar runs each entrypoint with cwd + PYTHONPATH = `root`.
+
+mode: exec-in-place
+
+# Resolved from the manifest's metadata.source_repo. May be overridden with an explicit path.
+root: "${source_repo}"
+
+entrypoints:
+  score: "python3 -m lab.eval.scorer"            # 8-dimension structural scorer (~24 matchers)
+  trigger: "python3 -m lab.eval.trigger_scorer"  # behavioral trigger-accuracy eval
+  agent_score: "python3 -m lab.eval.agent_scorer"
+
+# What the referenced package needs installed (from the plugin's requirements.txt).
+requirements:
+  - "PyYAML>=6.0.3,<7.0"
+  - "pytest>=9.0.3,<10.0"
+
+notes: >-
+  The plugin's run_eval.sh does `cd PROJECT_ROOT` then `python3 -m lab.eval.scorer`; this
+  manifest reproduces that contract. When Faber's own vendored matchers exist (M4), an
+  adapter may instead set mode: vendored and ship matcher/fixture files under eval/.

@@ -1,0 +1,45 @@
+---
+name: {{skill_name}}
+description: "{{description}}"
+effort: {{effort}}
+argument-hint: "{{argument_hint}}"
+allowed-tools: {{allowed_tools}}
+---
+
+# {{skill_title}}
+
+{{one_line_purpose}}
+
+## Iron Laws - Never Violate These
+
+{{#iron_laws}}
+{{index}}. **{{law_statement}}**
+{{/iron_laws}}
+
+## Usage
+
+```
+{{usage_examples}}
+```
+
+## Workflow
+
+{{#steps}}
+### Step {{step_index}}: {{step_title}}
+
+{{step_body}}
+{{/steps}}
+
+## Patterns
+
+{{#patterns}}
+### {{pattern_name}}
+
+```elixir
+# BAD
+{{bad_example}}
+
+# GOOD
+{{good_example}}
+```
+{{/patterns}}

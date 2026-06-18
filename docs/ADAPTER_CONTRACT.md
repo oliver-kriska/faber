@@ -108,6 +108,10 @@ session, indicating a missing guardrail the proposed skill should encode.
 The engine reads `id`, `severity`, `weight`, and the prose (used as the matching intent).
 A signature **must** have a unique `id` within the adapter. No host-language code.
 
+**Bulk form.** Instead of one file per signature, a `detect/` may provide a single
+`detect/signatures.yaml` holding a top-level `signatures:` list whose entries carry the
+same fields plus a `body` (the prose). See §5.1 for the general bulk-form rule.
+
 ## 5. `laws/` — the stack's non-negotiables
 
 Each non-README file is one **law**, serving two roles: a generation constraint **and**, where
@@ -134,6 +138,17 @@ Rules:
 - `check` is optional. When present, `kind: regex` runs `pattern` against candidate skill
   content; `kind: matcher` references a callable in `eval/` (`<relpath>::<callable>`) the
   eval gate invokes. A law with no `check` informs generation but is not gated.
+
+### 5.1 Bulk form (applies to `detect/`, `laws/`, `investigate/`)
+
+A knowledge subdirectory may use **either** one entry per file (per §4–§6) **or** a single
+bulk file named `<dir-singular>.yaml` — `detect/signatures.yaml`, `laws/laws.yaml`,
+`investigate/playbooks.yaml` — holding one top-level list (`signatures:` / `laws:` /
+`playbooks:`). Each list entry carries the same fields the per-file frontmatter would, with
+the markdown body moved into a `body:` (or `statement:` for laws) string. Bulk form is the
+natural shape when an adapter is **extracted by reference** from a single upstream source
+(e.g. all 26 Iron Laws lifted from one `CLAUDE.md` section). Mixing forms in one
+subdirectory is allowed; `id` uniqueness still spans the whole subdirectory.
 
 ## 6. `investigate/` — debugging playbooks
 
@@ -180,7 +195,40 @@ run by the Faber eval sidecar (`python -m faber_eval score`) — never by the El
 It contributes the stack's notion of *correct* on top of generic structural/trigger
 scoring.
 
-Two kinds of content:
+### 7.0 Reference modes — `eval/eval.yaml`
+
+An adapter may *vendor* its eval code or *reference* an existing eval package in place. A
+small `eval/eval.yaml` declares which, via `mode:`. If `eval/eval.yaml` is absent, `mode:
+vendored` is assumed.
+
+```yaml
+# eval/eval.yaml
+mode: vendored                 # default — matcher/fixture files live in eval/, run by the sidecar
+```
+
+```yaml
+# eval/eval.yaml — referencing an external, repo-rooted eval framework without forking it
+mode: exec-in-place
+root: "${source_repo}"                          # cwd + PYTHONPATH for the run (manifest var or path)
+entrypoints:
+  score: "python3 -m lab.eval.scorer"
+  trigger: "python3 -m lab.eval.trigger_scorer"
+requirements: ["PyYAML>=6.0.3,<7.0"]            # what the referenced package needs installed
+```
+
+- **`mode: vendored`** — matcher modules + trigger fixtures live under `eval/` and are run
+  by Faber's own sidecar. Right for adapters authored from scratch. Subject to the validation
+  in §8 (every `laws/*.check.ref` matcher must resolve here).
+- **`mode: exec-in-place`** — Faber's sidecar shells out to each `entrypoints` command with
+  cwd / `PYTHONPATH` = `root`, instead of importing vendored files. Right when referencing an
+  existing eval framework that is **rooted at its own repo** (package-relative imports,
+  `__file__`-relative paths). It keeps the upstream at **zero diffs** and avoids maintaining a
+  fork. `root` may be `${source_repo}` (resolved from the manifest) or an explicit path.
+
+The two content kinds below describe **`vendored`** mode. In `exec-in-place` mode the
+referenced package supplies them and `eval/` need contain only `eval.yaml`.
+
+Two kinds of content (vendored mode):
 
 1. **Domain matchers** — Python modules exposing callables referenced by `laws/*.check`
    (`<relpath>::<callable>`) and/or by an `eval/matchers.yaml` index. A matcher is a pure
@@ -207,7 +255,9 @@ An adapter is **valid** when:
 - `faber.adapter.yaml` parses and every REQUIRED field is present and well-typed (§3).
 - `name` equals the directory name.
 - Every `id` (within `detect/`, `laws/`, `investigate/`) is unique within its subdirectory.
-- Every `laws/*.check.ref` of `kind: matcher` resolves to an existing `eval/` callable.
+- In `vendored` eval mode, every `laws/*.check.ref` of `kind: matcher` resolves to an
+  existing `eval/` callable. In `exec-in-place` mode, matcher resolution is the referenced
+  package's responsibility and is not statically validated.
 - No content file requires a diff to the adapter's `source_repo` to produce.
 
 **Entanglement report.** When assembling an adapter by reference, the author records any

@@ -1,0 +1,58 @@
+# Friction signatures — extracted BY REFERENCE from the plugin's session-retrospective
+# scoring (session-scan skill: references/scoring-guide.md + compute-metrics.py). Zero
+# diffs to the plugin.
+#
+# Native algorithm (for fidelity): friction_score = sigmoid(Σ signal_value × native_weight)
+# with k = 3.0, midpoint = 1.5. The `weight` field below is that native weight normalized
+# to the contract's 0.0–1.0 scale (native / 3.0); the native weight is restated in each
+# body so the engine can reproduce the exact score. Bulk form per ADAPTER_CONTRACT.md §5.1.
+#
+# These signatures target claude-code transcripts (the adapter's agent_target). The engine
+# layers them on top of its generic friction signals.
+
+signatures:
+  - id: retry-loops
+    severity: high
+    weight: 1.0            # native 3.0
+    body: >-
+      The same Bash command prefix run 3+ times consecutively — the strongest friction
+      signal (native weight 3.0). Indicates the agent is stuck repeating an action without
+      progress, the prime candidate for an automating skill.
+
+  - id: user-corrections
+    severity: high
+    weight: 0.83           # native 2.5
+    body: >-
+      User messages that correct or redirect the agent (native weight 2.5). Detected on the
+      first 500 chars of each user message with the regex:
+      \b(no[,.]?\s|wrong|instead|actually|that's not|not what I|I meant|I said|please don't|
+      stop|undo|revert)\b
+
+  - id: error-tool-ratio
+    severity: medium
+    weight: 0.67           # native 2.0
+    body: >-
+      Ratio of error results to total tool calls (error_count / tool_count), native weight
+      2.0. A high ratio means the agent's actions are frequently failing.
+
+  - id: approach-changes
+    severity: medium
+    weight: 0.67           # native 2.0
+    body: >-
+      Dominant-tool shifts across the session (native weight 2.0). Split the tool-call
+      sequence into 4 equal chunks, find the dominant tool in each, count transitions
+      between different dominant tools — thrashing between strategies signals friction.
+
+  - id: context-compactions
+    severity: medium
+    weight: 0.5            # native 1.5
+    body: >-
+      System messages indicating context compaction occurred (native weight 1.5). Long,
+      grinding sessions that exhaust the context window.
+
+  - id: interrupted-requests
+    severity: low
+    weight: 0.33           # native 1.0
+    body: >-
+      Occurrences of "[Request interrupted by user]" (native weight 1.0). The user aborted
+      the agent mid-action — a mild friction signal.

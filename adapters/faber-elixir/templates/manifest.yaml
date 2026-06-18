@@ -1,0 +1,13 @@
+# Template manifest — names each scaffold and the artifact type it produces
+# (ADAPTER_CONTRACT.md §6.5). Scaffolds mirror the plugin's own skill/agent/hook shape so
+# generated artifacts match Elixir/Phoenix conventions (frontmatter, Iron Laws section,
+# BAD/GOOD patterns). Extracted by reference; zero diffs to the plugin.
+
+templates:
+  - file: skill.md.tmpl
+    produces: skill
+    description: >-
+      SKILL.md scaffold in the plugin idiom: frontmatter (name, description, effort,
+      argument-hint, allowed-tools), an "Iron Laws — Never Violate These" section, a Usage
+      block, numbered Workflow steps, and BAD/GOOD Patterns. Placeholders use {{tokens}};
+      {{#section}}…{{/section}} marks a repeated block.

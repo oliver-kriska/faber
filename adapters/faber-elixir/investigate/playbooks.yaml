@@ -1,0 +1,64 @@
+# Investigation playbooks — extracted BY REFERENCE from the plugin's investigation skills
+# (plugins/elixir-phoenix/skills/{investigate,n1-check,ecto-constraint-debug,call-tracing,
+# narrow-bare-rescue,perf}). Zero diffs to the plugin. Bulk form per ADAPTER_CONTRACT.md §5.1.
+# Each entry: id, symptoms (for retrieval), source (the upstream skill), body (the playbook).
+
+playbooks:
+  - id: investigate-bug
+    source: "skills/investigate (phx:investigate)"
+    symptoms: ["crash", "exception", "stack trace", "test failure", "FunctionClauseError"]
+    body: >-
+      Ralph-Wiggum approach: check the obvious, read errors literally. Sequential by
+      default; escalate to parallel 4-track (deep-bug-investigator) only when the bug spans
+      3+ modules / multiple contexts, is intermittent, or involves concurrency. Do NOT spawn
+      confirmatory subagents to re-verify a root cause already found with high confidence.
+
+  - id: n1-query
+    source: "skills/n1-check (ecto:n1-check)"
+    symptoms: ["slow endpoint", "many similar queries in logs", "Repo call in a loop", "missing preload"]
+    body: >-
+      Detect N+1: Repo calls inside Enum/for loops, and association access without preload
+      (lazy load per item). Fixes: preload at the context boundary (not controllers/views);
+      batch into one query with Repo.preload; use join + preload when filtering by an
+      association. Never access associations without preloading first.
+
+  - id: ecto-constraint-violation
+    source: "skills/ecto-constraint-debug"
+    symptoms: ["Ecto.ConstraintError", "unique_constraint", "foreign_key_constraint", "check_constraint"]
+    body: >-
+      1) READ THE CONSTRAINT NAME from the error (e.g. links_url_index) — it names the exact
+      index/constraint. 2) CHECK MIGRATION BEFORE CODE: grep priv/repo/migrations/ for the
+      constraint and confirm it matches the schema's unique_constraint/3 etc. 3) TRACE ALL
+      INSERT PATHS into the constrained table — the bug is often a path you didn't consider.
+      4) RACE CONDITION UNTIL PROVEN OTHERWISE: if validation passes but the constraint
+      fails, assume concurrent inserts until a single-request cause is proven. (Ash projects:
+      use the ash-framework skill instead.)
+
+  - id: call-tracing
+    source: "skills/call-tracing (phx:trace)"
+    symptoms: ["unexpected nil/value at runtime", "can't reproduce locally", "changing a function signature", "where does X come from"]
+    body: >-
+      Build a call tree from entry points. Use `mix xref callers MyApp.Mod.fun/arity` first
+      (authoritative; grep is fallback). Stop at entry points (mount/3, handle_event/3,
+      controller actions, perform(%Oban.Job{}), handle_call/3, handle_cast/2). Track visited
+      MFAs to avoid cycles; max depth 10. Capture argument patterns, not just "who calls".
+
+  - id: narrow-bare-rescue
+    source: "skills/narrow-bare-rescue"
+    symptoms: ["silent {:error, ...}", "nil fallback", "swallowed exception", "rescue _ ->"]
+    body: >-
+      Turn `rescue _ ->` / `rescue e ->` (no `in` clause) into
+      `rescue e in [Type1, Type2] ->` so programmer bugs propagate (UndefinedFunctionError,
+      CompileError, BadFunctionError, BadArityError must NOT be caught). Cover every
+      exception the body can actually raise (dropping one is a regression). Use
+      `reraise e, __STACKTRACE__`, never `reraise e, []`. Verify with
+      `mix compile --warnings-as-errors`.
+
+  - id: performance
+    source: "skills/perf (phx:perf)"
+    symptoms: ["slowness", "timeouts", "high memory", "assign bloat", "genserver bottleneck"]
+    body: >-
+      Prioritize by impact/effort across Ecto, LiveView, OTP. MEASURE BEFORE OPTIMIZING (no
+      change without evidence). DATABASE FIRST — ~90% of Elixir perf issues are query
+      related. ONE CHANGE AT A TIME to attribute impact. NEVER benchmark in dev mode — use
+      MIX_ENV=prod (dev has code reloading, debug logging, unoptimized compilation).
