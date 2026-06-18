@@ -60,6 +60,7 @@ defmodule Faber.Detect do
           score: float(),
           raw: float(),
           signals: signals(),
+          dominant_signal: atom() | nil,
           tool_count: non_neg_integer(),
           error_count: non_neg_integer(),
           message_count: non_neg_integer()
@@ -94,10 +95,19 @@ defmodule Faber.Detect do
       score: sigmoid(raw),
       raw: raw,
       signals: signals,
+      dominant_signal: dominant_signal(signals),
       tool_count: tool_count,
       error_count: error_count,
       message_count: Enum.count(events, &(&1.type in [:user, :assistant]))
     }
+  end
+
+  # The signal contributing the most to `raw` (value × weight); nil when there is no friction.
+  defp dominant_signal(signals) do
+    {signal, value} =
+      Enum.max_by(signals, fn {signal, value} -> value * Map.fetch!(@weights, signal) end)
+
+    if value > 0, do: signal, else: nil
   end
 
   @doc """
