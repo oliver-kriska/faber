@@ -10,26 +10,37 @@ defmodule FaberWeb.DashboardLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    # Scan only on the connected mount — the static (first-paint) render would otherwise scan
-    # thousands of transcripts a second time before the websocket even connects.
-    if connected?(socket) do
-      {:ok, load(socket)}
-    else
-      {:ok, assign(socket, scanned: false, total: 0, tier2: 0, results: [])}
-    end
+    socket = assign(socket, scanned: false, total: 0, tier2: 0, results: [], shown: 0)
+
+    # Scan only on the connected mount, and run it asynchronously so the LiveView process stays
+    # responsive — `Scan.run` fans out over hundreds of transcripts and would otherwise block the
+    # mount, hiding the "scanning…" state. The static (first-paint) render shows the loading state.
+    {:ok, if(connected?(socket), do: start_scan(socket), else: socket)}
   end
 
   @impl true
-  def handle_event("rescan", _params, socket), do: {:noreply, load(socket)}
+  def handle_event("rescan", _params, socket) do
+    {:noreply, socket |> assign(:scanned, false) |> start_scan()}
+  end
 
-  defp load(socket) do
-    results = Scan.run(scan_opts())
+  @impl true
+  def handle_async(:scan, {:ok, results}, socket) do
+    {:noreply,
+     socket
+     |> assign(:scanned, true)
+     |> assign(:total, length(results))
+     |> assign(:tier2, Enum.count(results, & &1.tier2))
+     |> assign(:results, Enum.take(results, 25))
+     |> assign(:shown, min(25, length(results)))}
+  end
 
-    socket
-    |> assign(:scanned, true)
-    |> assign(:total, length(results))
-    |> assign(:tier2, Enum.count(results, & &1.tier2))
-    |> assign(:results, Enum.take(results, 25))
+  def handle_async(:scan, {:exit, _reason}, socket) do
+    {:noreply, assign(socket, scanned: true, total: 0, tier2: 0, results: [], shown: 0)}
+  end
+
+  defp start_scan(socket) do
+    opts = scan_opts()
+    start_async(socket, :scan, fn -> Scan.run(opts) end)
   end
 
   defp scan_opts do
@@ -44,7 +55,7 @@ defmodule FaberWeb.DashboardLive do
       <p :if={!@scanned} class="summary">scanning sessions…</p>
       <p :if={@scanned} class="summary">
         <strong>{@total}</strong> sessions scanned · <strong>{@tier2}</strong>
-        tier-2 eligible · showing top {length(@results)}
+        tier-2 eligible · showing top {@shown}
       </p>
       <button :if={@scanned} phx-click="rescan">Rescan</button>
 

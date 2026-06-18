@@ -20,6 +20,10 @@ defmodule FaberWeb.DashboardLiveTest do
   test "the connected render runs the scan and renders the ranked table", %{conn: conn} do
     {:ok, view, html} = live(conn, "/")
 
+    # The connected mount shows the loading state first; the scan runs asynchronously.
+    assert html =~ "scanning sessions"
+
+    html = render_async(view)
     assert html =~ "Friction"
     assert html =~ "sessions scanned"
     # The dashboard scans test/fixtures (see config/test.exs), so the project column shows it.
