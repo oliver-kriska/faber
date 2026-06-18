@@ -14,6 +14,9 @@ defmodule Faber.Loop do
   Side effects (writing the candidate file, git keep/revert, journal append) are opt-in via
   `:path`, `:git`, and `:journal_path`.
 
+  `refine/3` returns `{:error, reason}` (rather than crashing) when the very first proposal fails
+  — e.g. the LLM backend is unavailable or the `claude` CLI exits non-zero.
+
   Stop conditions (ported): `best_composite >= target` (default `0.95`) → `:complete`;
   `iteration >= max_iterations` (default `50`) → `:complete`; `consecutive_discards >= patience`
   (default `50`) → `:stuck`.
@@ -244,9 +247,18 @@ defmodule Faber.Loop do
   `run/1`. Forwards `opts` to both (e.g. `:llm`, `:sidecar`, `:threshold`, `:max_iterations`,
   `:patience`, `:target`).
   """
-  @spec refine(Scan.Result.t(), Adapter.t(), keyword()) :: State.t()
+  @spec refine(Scan.Result.t(), Adapter.t(), keyword()) :: State.t() | {:error, term()}
   def refine(%Scan.Result{} = result, %Adapter{} = adapter, opts \\ []) do
-    {:ok, seed} = Propose.propose(result, adapter, opts)
+    case Propose.propose(result, adapter, opts) do
+      {:ok, seed} ->
+        run_refinement(result, adapter, seed, opts)
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp run_refinement(result, adapter, seed, opts) do
     content = Propose.render_skill_md(seed)
 
     propose_fn = fn _state ->
