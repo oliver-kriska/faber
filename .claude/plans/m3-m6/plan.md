@@ -20,12 +20,12 @@ stdout JSON (no exile/NIF dep; stdin remains canonical); loop = deterministic ke
 - [x] [P1-T3] `render_skill_md/1` → frontmatter + Iron Laws (numbered ≥3) + Usage + Examples (fenced ≥2 lines) + References
 - [x] [P1-T4] 5 proposer tests pass — prompt content, propose via Stub, custom stub_response, LLM-error passthrough, rendered sections
 
-## Phase 2 — M4 Eval gate (Python sidecar + Elixir boundary)
-- [ ] [P2-T1] Port core matchers to `python/faber_eval/matchers.py` (~15: section/frontmatter/desc/iron-laws/dangerous/examples/density/specificity); stdlib + PyYAML only
-- [ ] [P2-T2] `python/faber_eval/scorer.py` — dimensions + default weights + composite; wire `score` command (input {skill_md, eval?} → ScoreResult); `optimize` stays documented stub
-- [ ] [P2-T3] Python tests (`tests/test_score.py`): good skill ≥0.9, bad skill low; run with `python3 -m pytest`/unittest
-- [ ] [P2-T4] `Faber.Sidecar` behaviour + impl (System.cmd + temp file, python3, cd python/) + stub; `Faber.Eval.score/2` + `gate/2` (threshold)
-- [ ] [P2-T5] Elixir eval tests — unit (stubbed sidecar, threshold logic) + one `@tag :sidecar` integration round-trip against real python3
+## Phase 2 — M4 Eval gate (Python sidecar + Elixir boundary) ✅
+- [x] [P2-T1] 16 matchers in `matchers.py` (section/frontmatter/desc/iron-laws/dangerous/examples/density/specificity) — pure stdlib, hand-rolled frontmatter (no PyYAML dep); generic defaults, adapter supplies stack params
+- [x] [P2-T2] `scorer.py` — weighted dimensions + composite; standalone DEFAULT_EVAL (drops accuracy/behavioral that need a tree/cache); `score` wired; `optimize` documented stub (GEPA needs dspy+key)
+- [x] [P2-T3] 16 python tests pass under `python3 -m unittest` (good skill ≥0.9, bad <0.5, custom eval_def, dangerous-pattern section exclusion, --input file, round-trip)
+- [x] [P2-T4] `Faber.Sidecar` behaviour + `System` (System.cmd + temp `--input`, cd python/, graceful unavailable) + `Stub`; `Faber.Eval.score/2` + `gate/2` (configurable threshold, accepts Proposal or md)
+- [x] [P2-T5] 7 eval tests pass — stubbed sidecar (pass/fail/threshold/error/Proposal) + real-python `@tag :sidecar` end-to-end (composite > 0.5, dimensions present)
 
 ## Phase 3 — M5 Autoresearch loop
 - [ ] [P3-T1] `Faber.Loop.run/1` pure driver — propose→eval→keep/revert, prev_best, plateau (patience 50 / per-skill 10), target 0.95, max_iterations; inject propose_fn/eval_fn

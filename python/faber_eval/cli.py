@@ -8,35 +8,55 @@ The boundary contract (v1):
 * Exit code ``0`` on success, ``1`` on a bad request (e.g. invalid JSON), ``2`` on an
   unknown command. Diagnostics go to **stderr** so stdout stays pure JSON.
 
-Two commands are defined; both are stubs in M0 and report ``status: "not_implemented"``:
+Two commands are defined:
 
-* ``score``    — structural / trigger eval. Ports the plugin's ``lab/eval`` matchers (M4).
-* ``optimize`` — wraps GEPA / ``dspy.GEPA`` for the evolve→eval→keep loop (M4/M5).
+* ``score``    — structural eval of a proposed skill. Ports the plugin's ``lab/eval`` matchers
+  (M4). Implemented: stdlib-only, no API key needed.
+* ``optimize`` — wraps GEPA / ``dspy.GEPA`` for the evolve→eval→keep loop. Still a stub: GEPA
+  needs ``dspy`` installed and a provider API key, so it reports ``status: "not_implemented"``.
+
+The request may be supplied on stdin (canonical) or via ``--input PATH`` (used by the Elixir
+spine to avoid feeding stdin from a Port).
 """
 
 import json
 import sys
 
 from faber_eval import __version__
+from faber_eval.scorer import score_skill
 
 
 def score(request):
-    """Structural / trigger eval of a proposed skill. Stub until M4."""
+    """Structural eval of a proposed skill. Ports the plugin's lab/eval matchers."""
+    content = request.get("skill_md") or request.get("content")
+    if not content:
+        return {
+            "command": "score",
+            "status": "error",
+            "version": __version__,
+            "error": "missing 'skill_md' (or 'content') in request",
+        }
+    result = score_skill(content, request.get("eval"))
     return {
         "command": "score",
-        "status": "not_implemented",
+        "status": "ok",
         "version": __version__,
-        "echo": request,
-        "result": None,
+        "result": result,
     }
 
 
 def optimize(request):
-    """Evolve→eval→keep optimization (GEPA / DSPy). Stub until M4/M5."""
+    """Evolve→eval→keep optimization (GEPA / DSPy).
+
+    Still a stub: GEPA requires ``dspy`` + a provider API key, which the v1 boundary does not
+    assume. Faber's M5 loop drives the proven deterministic keep/revert/plateau cycle in Elixir
+    (`Faber.Loop`) instead; this command is reserved for a future GEPA-backed optimizer.
+    """
     return {
         "command": "optimize",
         "status": "not_implemented",
         "version": __version__,
+        "reason": "GEPA optimizer not wired (needs dspy + API key); use Faber.Loop for v1",
         "echo": request,
         "result": None,
     }
@@ -52,8 +72,15 @@ _USAGE = (
 )
 
 
-def _read_request(stream):
-    raw = stream.read()
+def _read_request(argv, stream):
+    """Read the JSON request from ``--input PATH`` if present, else from ``stream`` (stdin)."""
+    if "--input" in argv:
+        idx = argv.index("--input")
+        path = argv[idx + 1]
+        with open(path, encoding="utf-8") as fh:
+            raw = fh.read()
+    else:
+        raw = stream.read()
     if not raw.strip():
         return {}
     return json.loads(raw)
@@ -83,9 +110,12 @@ def main(argv=None):
         return 2
 
     try:
-        request = _read_request(sys.stdin)
+        request = _read_request(argv[1:], sys.stdin)
     except json.JSONDecodeError as exc:
-        _emit({"status": "error", "command": command, "error": f"invalid JSON on stdin: {exc}"})
+        _emit({"status": "error", "command": command, "error": f"invalid JSON: {exc}"})
+        return 1
+    except OSError as exc:
+        _emit({"status": "error", "command": command, "error": f"cannot read --input: {exc}"})
         return 1
 
     _emit(HANDLERS[command](request))
