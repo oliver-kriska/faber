@@ -10,7 +10,10 @@ defmodule Faber.Application do
     children = [
       # On-demand homes for autoresearch loop runs (M5). Started empty; loops are launched
       # explicitly via Faber.Loop.Supervisor.start_loop/1, never at boot.
-      Faber.Loop.Supervisor
+      Faber.Loop.Supervisor,
+      # Web dashboard (M6).
+      {Phoenix.PubSub, name: Faber.PubSub},
+      FaberWeb.Endpoint
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

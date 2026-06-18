@@ -33,11 +33,11 @@ stdout JSON (no exile/NIF dep; stdin remains canonical); loop = deterministic ke
 - [x] [P3-T3] `Faber.Loop.Server` GenServer (restart :temporary, await/status) + `Faber.Loop.Supervisor` (DynamicSupervisor) wired into the app tree (started empty, on-demand)
 - [x] [P3-T4] 9 loop tests — improve-then-plateau→:stuck, target→:complete, max_iter→:complete, check-fail discard, journal entries, real temp-git commit-on-keep/restore-on-revert, refine/3, supervised Server
 
-## Phase 4 — M6 LiveView dashboard
-- [ ] [P4-T1] Add phoenix/phoenix_live_view/phoenix_html/bandit/plug deps; `config/` (config.exs, dev.exs, test.exs, runtime.exs); endpoint secret/salt
-- [ ] [P4-T2] `FaberWeb` (endpoint, router, components/layouts), Plug.Static + vendored UMD JS, supervision tree wiring
-- [ ] [P4-T3] `FaberWeb.DashboardLive` — mount → Faber.Scan.run, ranked table + summary stats, rescan event
-- [ ] [P4-T4] `Phoenix.LiveViewTest` — dashboard mounts and renders the ranked table (no browser)
+## Phase 4 — M6 LiveView dashboard ✅
+- [x] [P4-T1] phoenix 1.8.8 / live_view 1.2.3 / bandit 1.12 / lazy_html (test) deps; config.exs+dev+test+runtime; endpoint secret/salt; .formatter import_deps
+- [x] [P4-T2] `FaberWeb` (endpoint on Bandit, router, root Layouts, ErrorHTML), Plug.Static + vendored UMD JS (phoenix/lv + app.js/app.css), PubSub + Endpoint in app tree; boots clean
+- [x] [P4-T3] `FaberWeb.DashboardLive` — mount/rescan → Faber.Scan.run, ranked table (friction/type/opp/signal/T2) + summary; scan_opts from config (test→fixtures)
+- [x] [P4-T4] 2 LiveViewTest pass — mounts & renders the ranked table over fixtures, rescan re-renders
 
 ## Phase 5 — Final gate
 - [ ] [P5-T1] Full `mix test` + python sidecar tests; boot smoke (`mix run` / endpoint starts); update HANDOFF status note; final commit; summarize blockers (live LLM key, dspy/GEPA, uv) honestly
