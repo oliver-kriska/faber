@@ -39,21 +39,38 @@ ingest sessions → detect friction → propose skill (adapter-informed)
 
 ## Status
 
-**M0 (scaffold) → start of M1 (adapter contract).** The Elixir spine, the Python sidecar
-stub, the `faber-elixir` adapter skeleton, and the adapter contract spec are in place.
-See [`HANDOFF.md`](HANDOFF.md) for the full thesis, architecture rationale, and
-milestones, and [`docs/ADAPTER_CONTRACT.md`](docs/ADAPTER_CONTRACT.md) for the adapter
-pack specification.
+**M0–M6 implemented** — the full pipeline runs end to end:
+
+| Milestone | What | Module(s) |
+|-----------|------|-----------|
+| M0 | Scaffold, sidecar stub, adapter skeleton, contract spec | — |
+| M1 | Adapter contract + `faber-elixir` pack (zero plugin diffs) | `Faber.Adapter` |
+| M2 | Ingest + friction/fingerprint/opportunity scan, ranked, sidechain-deduped | `Faber.Ingest`, `Faber.Detect`, `Faber.Scan`, `mix faber.scan` |
+| M3 | Adapter-informed skill proposer (pluggable LLM, ReqLLM) | `Faber.Propose`, `Faber.LLM`, `Faber.Proposal` |
+| M4 | Eval gate via the Python matcher sidecar (composite + dimensions) | `Faber.Eval`, `Faber.Sidecar`, `python/faber_eval` |
+| M5 | Self-improving loop — propose→eval→keep with git ratchet + plateau | `Faber.Loop` (+ `Git`, `Journal`, `Server`, `Supervisor`) |
+| M6 | LiveView friction dashboard (Bandit, no build step) | `FaberWeb.DashboardLive` |
+
+See [`HANDOFF.md`](HANDOFF.md) for the full thesis and architecture rationale,
+[`docs/ADAPTER_CONTRACT.md`](docs/ADAPTER_CONTRACT.md) for the adapter pack spec, and
+[`.claude/research/`](.claude/research/) for the calibration and source-study notes.
+
+**Known external-runtime gaps** (code is wired and tested with stubs; live use needs the
+runtime): a live LLM call needs a provider key (e.g. `ANTHROPIC_API_KEY`); the GEPA
+`optimize` command is a documented stub (needs `dspy` + a key — the M5 loop covers v1
+self-improvement instead); the eval sidecar runs on plain `python3` (no `uv` required).
 
 ## Development
 
 ```sh
 mix deps.get
-mix test
+mix test                       # 60 tests (incl. LiveView + a real-python sidecar round-trip)
 mix compile --warnings-as-errors
+mix faber.scan                 # rank your real ~/.claude sessions by friction
+iex -S mix                     # dashboard at http://localhost:4000 (mix phx.server style boot)
 ```
 
-The Python sidecar lives in `python/` (uv-managed). See `python/README.md`.
+The Python eval sidecar lives in `python/` (stdlib-only; `python3 -m unittest discover -s python/tests`).
 
 ## License
 

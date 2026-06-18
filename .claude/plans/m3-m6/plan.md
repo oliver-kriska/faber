@@ -39,5 +39,5 @@ stdout JSON (no exile/NIF dep; stdin remains canonical); loop = deterministic ke
 - [x] [P4-T3] `FaberWeb.DashboardLive` — mount/rescan → Faber.Scan.run, ranked table (friction/type/opp/signal/T2) + summary; scan_opts from config (test→fixtures)
 - [x] [P4-T4] 2 LiveViewTest pass — mounts & renders the ranked table over fixtures, rescan re-renders
 
-## Phase 5 — Final gate
-- [ ] [P5-T1] Full `mix test` + python sidecar tests; boot smoke (`mix run` / endpoint starts); update HANDOFF status note; final commit; summarize blockers (live LLM key, dspy/GEPA, uv) honestly
+## Phase 5 — Final gate ✅
+- [x] [P5-T1] Full `mix test` (60) + python (16) green; format/warnings clean; boot smoke (endpoint + loop sup up); README status table + known-gaps; HANDOFF milestones refreshed (local, git-excluded); final commit. Blockers documented: live LLM key, dspy/GEPA `optimize`, trigger-accuracy eval — all wired behind stubs.
