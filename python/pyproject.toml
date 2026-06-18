@@ -1,0 +1,27 @@
+[project]
+name = "faber-eval"
+version = "0.1.0"
+description = "Faber's Python eval sidecar — eval matchers (ported from the plugin's lab/eval) and the GEPA/DSPy optimizer, reached from the Elixir spine over a JSON-in/JSON-out subprocess boundary."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+# No third-party deps yet. The eval matchers (M4) and GEPA wrapper will add
+# `gepa` / `dspy` here. The v1 boundary is pure stdlib so the spine can shell
+# out with nothing installed beyond CPython.
+dependencies = []
+
+[project.scripts]
+faber-eval = "faber_eval.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["faber_eval"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
