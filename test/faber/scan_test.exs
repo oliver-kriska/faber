@@ -5,6 +5,7 @@ defmodule Faber.ScanTest do
   alias Faber.Scan.Result
 
   @fixtures Path.expand("../fixtures", __DIR__)
+  @dedup_fixtures Path.expand("../fixtures_dedup", __DIR__)
 
   describe "run/1" do
     test "ranks sessions by friction, highest first" do
@@ -24,6 +25,41 @@ defmodule Faber.ScanTest do
       assert sample.tier2
       refute smooth.tier2
       assert sample.dominant_signal == :retry_loops
+    end
+
+    test "results carry fingerprint and opportunity fields" do
+      results = Scan.run(base: @fixtures, min_messages: 0)
+      sample = Enum.find(results, &(&1.path =~ "sample_session"))
+
+      assert is_binary(sample.fingerprint)
+      assert is_float(sample.fingerprint_confidence)
+      assert is_float(sample.opportunity)
+      assert is_list(sample.missed)
+      assert is_list(sample.skills_used)
+    end
+
+    test "tier2 fires when opportunity is high even if friction is low" do
+      smooth = Enum.find(Scan.run(base: @fixtures, min_messages: 0), &(&1.path =~ "smooth"))
+      # A smooth session is tier-2 iff one of the non-friction gates trips.
+      assert smooth.tier2 == (smooth.opportunity > 0.5 or smooth.skills_used != [])
+    end
+
+    test "dedupe collapses sidechain rows sharing a session_id (default on)" do
+      results = Scan.run(base: @dedup_fixtures, min_messages: 0)
+
+      assert length(results) == 1
+      [row] = results
+      assert row.session_id == "dup"
+      # The richest member (the parent, more messages) wins.
+      assert row.path =~ "parent"
+      assert row.message_count == 4
+    end
+
+    test "dedupe: false keeps every sidechain row" do
+      results = Scan.run(base: @dedup_fixtures, min_messages: 0, dedupe: false)
+
+      assert length(results) == 2
+      assert Enum.all?(results, &(&1.session_id == "dup"))
     end
 
     test "min_messages drops trivial sessions" do

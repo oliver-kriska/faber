@@ -20,6 +20,11 @@ defmodule Faber.Scan do
             raw: float(),
             dominant_signal: atom() | nil,
             signals: Detect.signals(),
+            fingerprint: String.t(),
+            fingerprint_confidence: float(),
+            opportunity: float(),
+            missed: [String.t()],
+            skills_used: [String.t()],
             tool_count: non_neg_integer(),
             error_count: non_neg_integer(),
             message_count: non_neg_integer(),
@@ -33,6 +38,11 @@ defmodule Faber.Scan do
       :raw,
       :dominant_signal,
       :signals,
+      :fingerprint,
+      :fingerprint_confidence,
+      :opportunity,
+      :missed,
+      :skills_used,
       :tool_count,
       :error_count,
       :message_count,
@@ -54,6 +64,7 @@ defmodule Faber.Scan do
     * `:min_messages` — drop sessions with fewer user+assistant messages (default `4`)
     * `:max_concurrency` — fan-out width (default `System.schedulers_online/0`)
     * `:timeout` — per-session timeout in ms (default `#{@session_timeout_ms}`)
+    * `:dedupe` — collapse rows sharing a `session_id` to the richest one (default `true`)
   """
   @spec run(keyword()) :: [Result.t()]
   def run(opts \\ []) do
@@ -61,6 +72,7 @@ defmodule Faber.Scan do
     min_messages = Keyword.get(opts, :min_messages, 4)
     max_concurrency = Keyword.get(opts, :max_concurrency, System.schedulers_online())
     timeout = Keyword.get(opts, :timeout, @session_timeout_ms)
+    dedupe = Keyword.get(opts, :dedupe, true)
 
     base
     |> Ingest.discover()
@@ -74,10 +86,29 @@ defmodule Faber.Scan do
     |> Stream.filter(&match?({:ok, %Result{}}, &1))
     |> Stream.map(fn {:ok, result} -> result end)
     |> Stream.filter(&(&1.message_count >= min_messages))
+    |> Enum.to_list()
+    |> dedupe(dedupe)
     # Rank by raw weighted friction, not the sigmoid score: the score saturates to ~1.0 on
     # any long session, so it can't order high-friction sessions against each other. raw is
     # monotonic and discriminates. (`score`/`tier2` remain for the per-session y/n gate.)
     |> Enum.sort_by(&{&1.raw, &1.message_count}, :desc)
+  end
+
+  # Subagent/sidechain transcripts (`isSidechain: true`) surface as near-duplicate rows that
+  # share a `session_id` with their parent. Collapse each `session_id` group to its richest
+  # member (most messages, then highest raw friction) so the ranking counts a session once.
+  # Rows without a `session_id` can't be grouped safely, so they pass through untouched.
+  defp dedupe(results, false), do: results
+
+  defp dedupe(results, true) do
+    {with_id, without_id} = Enum.split_with(results, & &1.session_id)
+
+    deduped =
+      with_id
+      |> Enum.group_by(& &1.session_id)
+      |> Enum.map(fn {_id, group} -> Enum.max_by(group, &{&1.message_count, &1.raw}) end)
+
+    deduped ++ without_id
   end
 
   @doc """
@@ -87,6 +118,8 @@ defmodule Faber.Scan do
   def score_session(path) do
     {events, parse_errors} = Ingest.parse_file(path)
     f = Detect.friction(events)
+    fp = Detect.fingerprint(events)
+    op = Detect.opportunity(events)
 
     %Result{
       path: path,
@@ -95,17 +128,25 @@ defmodule Faber.Scan do
       raw: f.raw,
       dominant_signal: f.dominant_signal,
       signals: f.signals,
+      fingerprint: fp.type,
+      fingerprint_confidence: fp.confidence,
+      opportunity: op.score,
+      missed: op.missed,
+      skills_used: op.used,
       tool_count: f.tool_count,
       error_count: f.error_count,
       message_count: f.message_count,
       parse_errors: length(parse_errors),
-      tier2: tier2?(f)
+      tier2: tier2?(f, op)
     }
   end
 
-  # Tier-2 (deep qualitative analysis) eligibility, per the plugin's scoring guide. The
-  # opportunity-score and plugin-commands-used criteria arrive with opportunity scoring.
-  defp tier2?(f), do: f.score > 0.35 or f.message_count > 50
+  # Tier-2 (deep qualitative analysis) eligibility, per the plugin's scoring guide: a session
+  # earns the expensive pass if it's painful (friction), automatable (opportunity score or a
+  # skill the user already reached for), or simply long enough to be worth mining.
+  defp tier2?(f, op) do
+    f.score > 0.35 or op.score > 0.5 or op.used != [] or f.message_count > 50
+  end
 
   defp session_id(events) do
     Enum.find_value(events, fn e -> e.session_id end)

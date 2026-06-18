@@ -14,6 +14,7 @@ defmodule Mix.Tasks.Faber.Scan do
     * `--limit N`          cap sessions scored (default: all)
     * `--min-messages N`   drop trivial sessions (default 4)
     * `--base PATH`        transcript root (default ~/.claude/projects)
+    * `--no-dedupe`        keep sidechain duplicates that share a session_id
 
   Read-only: this task does not start the application (Iron Law #23 — start only what you
   need); it just discovers, parses, and scores.
@@ -21,7 +22,13 @@ defmodule Mix.Tasks.Faber.Scan do
 
   use Mix.Task
 
-  @switches [top: :integer, limit: :integer, min_messages: :integer, base: :string]
+  @switches [
+    top: :integer,
+    limit: :integer,
+    min_messages: :integer,
+    base: :string,
+    dedupe: :boolean
+  ]
 
   @impl Mix.Task
   def run(argv) do
@@ -30,7 +37,7 @@ defmodule Mix.Tasks.Faber.Scan do
 
     scan_opts =
       opts
-      |> Keyword.take([:limit, :min_messages, :base])
+      |> Keyword.take([:limit, :min_messages, :base, :dedupe])
 
     started = System.monotonic_time(:millisecond)
     results = Faber.Scan.run(scan_opts)
@@ -56,7 +63,9 @@ defmodule Mix.Tasks.Faber.Scan do
         pad("FRICTION", 10) <>
         pad("MSGS", 6) <>
         pad("TOOLS", 6) <>
-        pad("ERRS", 6) <> pad("DOMINANT SIGNAL", 22) <> pad("T2", 4) <> "SESSION"
+        pad("ERRS", 6) <>
+        pad("TYPE", 14) <>
+        pad("OPP", 6) <> pad("DOMINANT SIGNAL", 22) <> pad("T2", 4) <> "SESSION"
     )
 
     results
@@ -69,17 +78,28 @@ defmodule Mix.Tasks.Faber.Scan do
           pad("#{r.message_count}", 6) <>
           pad("#{r.tool_count}", 6) <>
           pad("#{r.error_count}", 6) <>
+          pad(type_label(r), 14) <>
+          pad(fmt_opp(r.opportunity), 6) <>
           pad(signal_label(r.dominant_signal), 22) <>
           pad(if(r.tier2, do: "✓", else: ""), 4) <> session_label(r)
       )
     end)
 
     Mix.shell().info(
-      "\nFRICTION = raw weighted friction (rank metric); T2 = tier-2 eligible (sigmoid score > 0.35)."
+      "\nFRICTION = raw weighted friction (rank metric); TYPE = session fingerprint;" <>
+        " OPP = missed-automation score; T2 = tier-2 eligible."
     )
   end
 
   defp fmt_raw(raw), do: :erlang.float_to_binary(raw, decimals: 1)
+
+  defp fmt_opp(score), do: :erlang.float_to_binary(score, decimals: 2)
+
+  # "<type> ~<confidence>" truncated to fit, e.g. "feature ~.8".
+  defp type_label(%{fingerprint: type, fingerprint_confidence: conf}) do
+    c = conf |> Float.round(1) |> :erlang.float_to_binary(decimals: 1) |> String.trim_leading("0")
+    String.slice("#{type} ~#{c}", 0, 13)
+  end
 
   defp signal_label(nil), do: "—"
   defp signal_label(signal), do: to_string(signal)

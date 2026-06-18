@@ -17,10 +17,10 @@ Final gate: full `mix test` + real-data smoke run. Commit per phase.
 - [x] [P2-T2] opportunity tests (investigate/verify/review/plan + used-skill exclusion + empty)
 
 ## Phase 3 — Scan integration + sidechain dedup
-- [ ] [P3-T1] Extend `Faber.Scan.Result` with fingerprint + opportunity; complete tier-2 criteria (friction>0.35 OR opportunity>0.5 OR skills-used OR msgs>50)
-- [ ] [P3-T2] Sidechain dedup in `Faber.Scan.run/1` (collapse same session_id, keep richest; `:dedupe` opt default true)
-- [ ] [P3-T3] Update `mix faber.scan` report (fingerprint + opportunity columns)
-- [ ] [P3-T4] Scan tests (dedup, fingerprint/opportunity present, tier2)
+- [x] [P3-T1] Extend `Faber.Scan.Result` with fingerprint + opportunity; tier-2 = friction>0.35 OR opportunity>0.5 OR skills-used OR msgs>50
+- [x] [P3-T2] Sidechain dedup in `Faber.Scan.run/1` — group by session_id, keep richest (msgs, raw); `:dedupe` opt default true, id-less rows pass through
+- [x] [P3-T3] `mix faber.scan` report gains TYPE + OPP columns; `--no-dedupe` switch
+- [x] [P3-T4] Scan tests — dedup on/off, fingerprint/opportunity fields present, tier2 gate (isolated test/fixtures_dedup/)
 
 ## Phase 4 — Final gate
 - [ ] [P4-T1] Full `mix test`; real-data smoke run; update calibration research note; final commit

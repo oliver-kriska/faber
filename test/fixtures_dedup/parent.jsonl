@@ -1,0 +1,4 @@
+{"type":"user","uuid":"u1","sessionId":"dup","timestamp":"2026-01-03T00:00:00.000Z","message":{"role":"user","content":"explain how this module works and then refactor it"}}
+{"type":"assistant","uuid":"a1","timestamp":"2026-01-03T00:00:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"sure, looking now"}]}}
+{"type":"user","uuid":"u2","sessionId":"dup","timestamp":"2026-01-03T00:00:02.000Z","message":{"role":"user","content":"go ahead"}}
+{"type":"assistant","uuid":"a2","timestamp":"2026-01-03T00:00:03.000Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}

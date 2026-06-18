@@ -1,0 +1,2 @@
+{"type":"user","uuid":"su1","sessionId":"dup","isSidechain":true,"timestamp":"2026-01-03T00:00:04.000Z","message":{"role":"user","content":"subagent task prompt"}}
+{"type":"assistant","uuid":"sa1","isSidechain":true,"timestamp":"2026-01-03T00:00:05.000Z","message":{"role":"assistant","content":[{"type":"text","text":"subagent reply"}]}}
