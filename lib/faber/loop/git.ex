@@ -10,8 +10,11 @@ defmodule Faber.Loop.Git do
 
   @doc "Stage `paths` and commit with `message`. Returns `:ok` or `{:error, output}`."
   @spec commit(Path.t(), [String.t()], String.t()) :: :ok | {:error, term()}
+  def commit(_dir, [], _message), do: :ok
+
   def commit(dir, paths, message) do
-    with {:ok, _} <- git(dir, ["add" | paths]),
+    with {:ok, safe} <- safe_paths(dir, paths),
+         {:ok, _} <- git(dir, ["add", "--" | safe]),
          {:ok, _} <- git(dir, ["commit", "-m", message]) do
       :ok
     end
@@ -19,8 +22,37 @@ defmodule Faber.Loop.Git do
 
   @doc "Discard working-tree changes to `paths` (revert to HEAD)."
   @spec revert(Path.t(), [String.t()]) :: :ok | {:error, term()}
+  def revert(_dir, []), do: :ok
+
   def revert(dir, paths) do
-    with {:ok, _} <- git(dir, ["checkout", "--" | paths]), do: :ok
+    with {:ok, safe} <- safe_paths(dir, paths),
+         {:ok, _} <- git(dir, ["checkout", "--" | safe]),
+         do: :ok
+  end
+
+  # Enforce the moduledoc invariant: every path must be relative and stay within `dir`. Reject
+  # absolute paths, `../` escapes, and leading-dash elements (which git would read as flags, e.g.
+  # `-A` staging the whole tree). Without this an adapter/LLM-supplied path could clobber the repo.
+  defp safe_paths(dir, paths) do
+    paths
+    |> Enum.reduce_while([], fn p, acc ->
+      cond do
+        not is_binary(p) -> {:halt, {:error, {:unsafe_path, p}}}
+        String.starts_with?(p, "-") -> {:halt, {:error, {:unsafe_path, p}}}
+        true -> safe_relative(p, dir, acc)
+      end
+    end)
+    |> case do
+      {:error, _} = err -> err
+      list -> {:ok, Enum.reverse(list)}
+    end
+  end
+
+  defp safe_relative(p, dir, acc) do
+    case Path.safe_relative(p, dir) do
+      {:ok, rel} -> {:cont, [rel | acc]}
+      :error -> {:halt, {:error, {:unsafe_path, p}}}
+    end
   end
 
   @doc "Run a raw git subcommand in `dir`. Exposed for setup (init, baseline commit) and tests."

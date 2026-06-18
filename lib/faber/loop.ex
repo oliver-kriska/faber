@@ -118,8 +118,16 @@ defmodule Faber.Loop do
   end
 
   defp handle_candidate(state, iteration, content, desc) do
-    write_candidate(state, content)
+    case write_candidate(state, content) do
+      {:error, reason} ->
+        discard(state, iteration, state.best_composite, desc, "write failed: #{inspect(reason)}")
 
+      :ok ->
+        run_checks_and_eval(state, iteration, content, desc)
+    end
+  end
+
+  defp run_checks_and_eval(state, iteration, content, desc) do
     case state.checks_fn.(content) do
       {:error, reason} ->
         discard(state, iteration, state.best_composite, desc, "checks failed: #{inspect(reason)}")
@@ -193,13 +201,16 @@ defmodule Faber.Loop do
   # ── filesystem / git side effects (opt-in) ─────────────────────────────────
 
   defp write_candidate(%State{path: nil}, _content), do: :ok
-  defp write_candidate(%State{path: path}, content), do: File.write!(path, content)
+  defp write_candidate(%State{path: path}, content), do: File.write(path, content)
 
-  # Restore the working tree to the current best after a rejected candidate.
+  # Restore the working tree to the current best after a rejected candidate. Best-effort: a
+  # restore failure shouldn't itself raise out of the run.
   defp restore(%State{git: true, dir: dir, git_paths: paths}), do: Git.revert(dir, paths)
 
-  defp restore(%State{path: path, best_content: best}) when is_binary(path),
-    do: File.write!(path, best)
+  defp restore(%State{path: path, best_content: best}) when is_binary(path) do
+    _ = File.write(path, best)
+    :ok
+  end
 
   defp restore(_state), do: :ok
 

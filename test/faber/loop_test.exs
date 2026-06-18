@@ -123,6 +123,40 @@ defmodule Faber.LoopTest do
       assert [%{kept: false, reason: reason}] = state.history
       assert reason =~ "checks failed"
     end
+
+    test "an eval_fn error mid-iteration discards without keeping" do
+      state =
+        Loop.run(
+          content: "seed",
+          composite: 0.4,
+          patience: 1,
+          checks_fn: &ok_checks/1,
+          propose_fn: &always_propose/1,
+          eval_fn: fn _ -> {:error, :timeout} end
+        )
+
+      assert state.status == :stuck
+      assert state.best_composite == 0.4
+      assert [%{kept: false, reason: reason}] = state.history
+      assert reason =~ "eval failed"
+    end
+
+    test "a propose_fn error mid-iteration discards without keeping" do
+      state =
+        Loop.run(
+          content: "seed",
+          composite: 0.4,
+          patience: 1,
+          checks_fn: &ok_checks/1,
+          propose_fn: fn _ -> {:error, :llm_unavailable} end,
+          eval_fn: scorer([0.9])
+        )
+
+      assert state.status == :stuck
+      assert state.best_composite == 0.4
+      assert [%{kept: false, description: desc}] = state.history
+      assert desc =~ "proposal failed"
+    end
   end
 
   describe "default_checks/1" do

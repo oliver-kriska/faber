@@ -28,28 +28,44 @@ defmodule Faber.Sidecar.System do
   end
 
   defp run(python, command, tmp, dir) do
-    {out, _code} =
-      System.cmd(python, ["-m", "faber_eval", command, "--input", tmp],
-        cd: dir,
-        stderr_to_stdout: false
-      )
+    case System.cmd(python, ["-m", "faber_eval", command, "--input", tmp],
+           cd: dir,
+           stderr_to_stdout: false
+         ) do
+      {out, 0} ->
+        case Jason.decode(out) do
+          {:ok, map} -> {:ok, map}
+          {:error, _} -> {:error, {:sidecar_bad_output, out}}
+        end
 
-    case Jason.decode(out) do
-      {:ok, map} -> {:ok, map}
-      {:error, _} -> {:error, {:sidecar_bad_output, out}}
+      # A non-zero exit means the run failed (import error, traceback, bad command); never trust
+      # partial stdout that happens to parse — surface the code so triage is possible.
+      {out, code} ->
+        {:error, {:sidecar_exit, code, out}}
     end
   rescue
     e in [ErlangError, File.Error] -> {:error, {:sidecar_unavailable, e}}
   end
 
+  # Write the request JSON with an unguessable name and O_EXCL + 0600 perms — the body is the
+  # friction finding, and on a shared/CI host a predictable world-readable temp file is an
+  # info-leak / symlink-TOCTOU vector.
   defp write_temp(json) do
-    path = Path.join(System.tmp_dir!(), "faber-#{System.unique_integer([:positive])}.json")
+    path = Path.join(System.tmp_dir!(), "faber-#{rand_token()}.json")
 
-    case File.write(path, json) do
-      :ok -> {:ok, path}
-      {:error, reason} -> {:error, {:tmp_write_failed, reason}}
+    case File.open(path, [:write, :exclusive, :binary]) do
+      {:ok, io} ->
+        IO.binwrite(io, json)
+        File.close(io)
+        _ = File.chmod(path, 0o600)
+        {:ok, path}
+
+      {:error, reason} ->
+        {:error, {:tmp_write_failed, reason}}
     end
   end
+
+  defp rand_token, do: :crypto.strong_rand_bytes(12) |> Base.url_encode64(padding: false)
 
   defp default_dir, do: Path.join(File.cwd!(), "python")
 end

@@ -40,6 +40,9 @@ defmodule Mix.Tasks.Faber.Propose do
   @impl Mix.Task
   def run(argv) do
     {opts, _argv, _invalid} = OptionParser.parse(argv, strict: @switches)
+    # Load :faber application env (config :faber, :llm / :eval_threshold / …) so config-driven
+    # dispatch resolves in every MIX_ENV. Not `app.start` — that would bind the endpoint port.
+    Mix.Task.run("app.config")
     Application.ensure_all_started(:req_llm)
 
     adapter_dir = Keyword.get(opts, :adapter, "adapters/faber-elixir")

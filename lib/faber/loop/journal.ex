@@ -47,9 +47,16 @@ defmodule Faber.Loop.Journal do
   def read(path) do
     case File.read(path) do
       {:ok, content} ->
+        # Skip corrupt/partial lines (e.g. a truncated append from a crash) rather than letting
+        # one bad line raise and break the whole read.
         content
         |> String.split("\n", trim: true)
-        |> Enum.map(&Jason.decode!/1)
+        |> Enum.flat_map(fn line ->
+          case Jason.decode(line) do
+            {:ok, entry} -> [entry]
+            {:error, _} -> []
+          end
+        end)
 
       {:error, _} ->
         []
