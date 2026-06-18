@@ -27,13 +27,20 @@ defmodule Faber.MixProject do
   # Run "mix help deps" to learn about dependencies.
   #
   # Library choices are recorded in .claude/research/2026-06-18-elixir-dependency-needs.md.
-  # Added per milestone (kept minimal): the two below are the confirmed foundation; later
-  # stages add their deps when implemented — :exile (M4 sidecar), :req_llm (M3 proposer),
-  # :oban + :ecto_sqlite3 (M6), :optimus/:owl (CLI, M5+).
+  # Added per milestone (kept minimal):
+  #   * jason / yaml_elixir   — foundation (ingest, adapter packs)
+  #   * req_llm               — M3 proposer LLM client (generate_object/4)
+  #   * phoenix / live_view / bandit — M6 dashboard (no Ecto: scan is read-only over the FS)
+  # The Python eval sidecar (M4) is reached via System.cmd, so no :exile/NIF dep is needed.
   defp deps do
     [
       {:jason, "~> 1.4"},
-      {:yaml_elixir, "~> 2.12"}
+      {:yaml_elixir, "~> 2.12"},
+      {:req_llm, "~> 1.0"},
+      {:phoenix, "~> 1.7"},
+      {:phoenix_live_view, "~> 1.0"},
+      {:phoenix_html, "~> 4.1"},
+      {:bandit, "~> 1.5"}
     ]
   end
 end
