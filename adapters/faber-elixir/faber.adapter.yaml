@@ -1,0 +1,30 @@
+# Faber adapter manifest — see docs/ADAPTER_CONTRACT.md for the full schema.
+# This is the reference adapter, extracted by *referencing* the Elixir/Phoenix plugin
+# (claude-elixir-phoenix). M0: skeleton only. M1 fills the subdirectories.
+
+name: faber-elixir
+version: 0.1.0
+
+# Which coding agents this adapter's knowledge targets.
+agent_targets:
+  - claude-code
+
+# Globs (relative to a target project root) that mark a project as "this stack".
+# Presence of these is how Faber decides this adapter applies.
+file_globs:
+  - "mix.exs"
+  - "lib/**/*.ex"
+  - "**/*.{ex,exs}"
+  - "config/*.exs"
+
+metadata:
+  display_name: "Elixir / Phoenix"
+  description: >-
+    Reference adapter for Elixir/Phoenix projects. Supplies the stack's Iron Laws,
+    investigation playbooks, friction signatures, and stack-specific eval criteria.
+  homepage: "https://github.com/your-org/elixir-live-claude-engineer"
+  # Provenance: the upstream this adapter is extracted from by reference (read-only).
+  source_repo: "/Users/oliverkriska/Projects/elixir-live-claude-engineer"
+  maintainers:
+    - "Oliver Kriška <oliver@ideax.sk>"
+  license: "MIT"
