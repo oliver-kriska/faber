@@ -16,8 +16,15 @@ defmodule Faber.Detect do
 
   | signal | weight | value |
   |---|---|---|
-  | `retry_loops` | 3.0 | runs of the same Bash command prefix repeated 3+ consecutively |
+  | `retry_loops` | 3.0 | runs of the same Bash command (3+ consecutive) **with a failed result among them** |
   | `user_corrections` | 2.5 | human messages matching the correction regex |
+
+  > **Deliberate improvement over the source.** `compute-metrics.py` *documents*
+  > `retry_loops` as "same command 3+ times with failures between" but its implementation
+  > never checks for failures — it counts any consecutive same-first-token Bash calls, which
+  > over-fires on normal sequential workflows (`git …`, `cd …`). Faber implements the
+  > *intended* semantic: a run only counts when it contains an errored result, keyed on a
+  > 2-token command prefix. See `.claude/research/2026-06-18-friction-scoring-calibration.md`.
   | `error_tool_ratio` | 2.0 | error_count / tool_count |
   | `approach_changes` | 2.0 | dominant-tool transitions across the 4 session quarters |
   | `context_compactions` | 1.5 | context-compaction system events |
@@ -44,9 +51,9 @@ defmodule Faber.Detect do
   @interrupt_marker "[Request interrupted by user]"
 
   # Leading whitespace tokens of a Bash command that define its "prefix" for retry
-  # detection. The proven scorer (compute-metrics.py) keys on the first token, so e.g. a
-  # run of consecutive `mix …` commands counts as one retry loop.
-  @bash_prefix_tokens 1
+  # detection (e.g. `mix test`, `git commit`). 2 groups re-runs of the same command while
+  # still separating `mix test` from `mix deps.get`.
+  @bash_prefix_tokens 2
 
   @type signals :: %{
           retry_loops: non_neg_integer(),
@@ -79,7 +86,7 @@ defmodule Faber.Detect do
     error_count = count_errors(events)
 
     signals = %{
-      retry_loops: count_retry_loops(tool_uses),
+      retry_loops: count_retry_loops(tool_uses, error_index(events)),
       user_corrections: count_corrections(events),
       error_tool_ratio: ratio(error_count, tool_count),
       approach_changes: count_approach_changes(tool_uses),
@@ -142,13 +149,23 @@ defmodule Faber.Detect do
     |> Enum.count(& &1.is_error)
   end
 
-  # Consecutive runs (length >= 3) of the same Bash command prefix.
-  defp count_retry_loops(tool_uses) do
+  # Map of tool_use_id => errored?, so a Bash call can be linked to its result.
+  defp error_index(events) do
+    events
+    |> Enum.flat_map(& &1.tool_results)
+    |> Map.new(fn r -> {r.tool_use_id, r.is_error} end)
+  end
+
+  # Runs of the same Bash command prefix (length >= 3) that contain at least one failed
+  # result — i.e. the repeats were driven by failures, not normal sequential work.
+  defp count_retry_loops(tool_uses, error_index) do
     tool_uses
     |> Enum.filter(&(&1.name == "Bash"))
-    |> Enum.map(&bash_prefix/1)
-    |> Enum.chunk_by(& &1)
-    |> Enum.count(&(length(&1) >= 3))
+    |> Enum.map(fn tu -> {bash_prefix(tu), Map.get(error_index, tu.id, false)} end)
+    |> Enum.chunk_by(fn {prefix, _errored?} -> prefix end)
+    |> Enum.count(fn run ->
+      length(run) >= 3 and Enum.any?(run, fn {_prefix, errored?} -> errored? end)
+    end)
   end
 
   defp bash_prefix(%{input: %{"command" => cmd}}) when is_binary(cmd) do

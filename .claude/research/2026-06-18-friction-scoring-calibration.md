@@ -46,10 +46,19 @@ commands — **it never checks for an error result between them.** The *intended
 genuine friction. Faber has the data to implement the intended version (events carry
 `tool_results[].is_error`).
 
-**Proposed refinement (not yet applied):** count a retry loop only when ≥3 consecutive
-same-command Bash calls have ≥1 error result between them; consider a 2–3 token prefix for
-precision. This is a deliberate *improvement over* the source, so it should be a flagged,
-tested change — keep the faithful port available for comparison.
+**Refinement (APPLIED, commit after `4d5996d`):** a retry loop now counts only when a run of
+≥3 consecutive same-prefix Bash calls contains ≥1 errored result (linked via
+`tool_use_id` → `is_error`), keyed on a **2-token** prefix (`mix test`, `git commit`). This
+is a deliberate, documented improvement over the source.
+
+**Outcome on full history:** the dominant signal shifted away from `retry_loops`-everywhere
+to **`context_compactions`** (long grinding sessions) and **`user_corrections`** (user
+pushback) — far truer friction. Top raw dropped `323 → 121` as retries stopped over-firing.
+Net: a more meaningful ranking.
+
+**New minor finding:** subagent/sidechain transcripts (`isSidechain: true`) appear as
+near-duplicate sessions sharing a `session_id` (e.g. several `subagents/ff4b234b` rows).
+A dedup / sidechain-filter pass is a future scan refinement.
 
 ## Real-history snapshot (2026-06-18)
 
