@@ -108,13 +108,14 @@ defmodule Faber.Propose do
     |> Enum.join("\n\n")
   end
 
-  defp user_prompt(%Scan.Result{} = r, %Adapter{}) do
+  defp user_prompt(%Scan.Result{} = r, %Adapter{name: name, version: version}) do
     signals =
       r.signals
       |> Enum.map_join("\n", fn {k, v} -> "  - #{k}: #{v}" end)
 
     """
-    Friction finding from one session:
+    Friction finding from one #{name} (v#{version}) session — the skill must fit this stack's
+    conventions and Iron Laws (above):
 
     - session fingerprint: #{r.fingerprint} (confidence #{fmt(r.fingerprint_confidence)})
     - dominant friction signal: #{r.dominant_signal || "none"}

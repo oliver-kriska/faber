@@ -73,6 +73,8 @@ defmodule Faber.ProposeTest do
       assert user =~ "retry_loops"
       assert user =~ "bug-fix"
       assert user =~ "investigate"
+      # The adapter/stack context is woven into the user half too, not only the system prompt.
+      assert user =~ "faber-elixir"
     end
   end
 

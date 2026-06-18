@@ -20,9 +20,21 @@ defmodule FaberWeb.Layouts do
         </script>
       </head>
       <body>
+        <.flash_group flash={@flash} />
         {@inner_content}
       </body>
     </html>
+    """
+  end
+
+  @doc "Minimal flash renderer so `put_flash/3` messages aren't silently dropped."
+  attr :flash, :map, default: %{}
+
+  def flash_group(assigns) do
+    ~H"""
+    <div :for={{kind, msg} <- @flash} class={"flash flash-#{kind}"} role="alert">
+      {msg}
+    </div>
     """
   end
 end
