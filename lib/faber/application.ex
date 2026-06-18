@@ -8,11 +8,12 @@ defmodule Faber.Application do
   @impl true
   def start(_type, _args) do
     children = [
+      # PubSub first — anything below may broadcast on it.
+      {Phoenix.PubSub, name: Faber.PubSub},
       # On-demand homes for autoresearch loop runs (M5). Started empty; loops are launched
       # explicitly via Faber.Loop.Supervisor.start_loop/1, never at boot.
       Faber.Loop.Supervisor,
       # Web dashboard (M6).
-      {Phoenix.PubSub, name: Faber.PubSub},
       FaberWeb.Endpoint
     ]
 

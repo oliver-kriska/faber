@@ -3,6 +3,14 @@ defmodule Faber.ProposeTest do
 
   alias Faber.{Adapter, Propose, Proposal, Scan}
 
+  # Namespaced module-level double (not defined inside a test body — that pollutes the global atom
+  # table and can collide across async runs).
+  defmodule FailingLLM do
+    @behaviour Faber.LLM
+    @impl true
+    def generate_object(_prompt, _schema, _opts), do: {:error, :no_api_key}
+  end
+
   defp adapter do
     %Adapter{
       name: "faber-elixir",
@@ -105,12 +113,6 @@ defmodule Faber.ProposeTest do
     end
 
     test "surfaces an LLM error" do
-      defmodule FailingLLM do
-        @behaviour Faber.LLM
-        @impl true
-        def generate_object(_p, _s, _o), do: {:error, :no_api_key}
-      end
-
       assert {:error, :no_api_key} = Propose.propose(result(), adapter(), llm: FailingLLM)
     end
   end

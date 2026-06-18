@@ -91,5 +91,16 @@ defmodule Faber.ScanTest do
       assert %Result{} = result
       assert result.parse_errors == 1
     end
+
+    @tag :tmp_dir
+    test "handles an empty (0-byte) transcript", %{tmp_dir: dir} do
+      path = Path.join(dir, "empty.jsonl")
+      File.write!(path, "")
+
+      result = Scan.score_session(path)
+      assert %Result{} = result
+      assert result.message_count == 0
+      assert result.parse_errors == 0
+    end
   end
 end

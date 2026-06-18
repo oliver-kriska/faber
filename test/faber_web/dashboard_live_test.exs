@@ -1,5 +1,6 @@
 defmodule FaberWeb.DashboardLiveTest do
-  use ExUnit.Case, async: false
+  # Safe to run async: no shared global state (server: false endpoint, no DB, no put_env).
+  use ExUnit.Case, async: true
 
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest

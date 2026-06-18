@@ -69,14 +69,17 @@ class RoundTripTest(unittest.TestCase):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
             json.dump({"skill_md": MINIMAL_SKILL}, fh)
             path = fh.name
-        proc = subprocess.run(
-            [sys.executable, "-m", "faber_eval", "score", "--input", path],
-            capture_output=True,
-            text=True,
-            cwd=PKG_DIR,
-        )
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(json.loads(proc.stdout)["status"], "ok")
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-m", "faber_eval", "score", "--input", path],
+                capture_output=True,
+                text=True,
+                cwd=PKG_DIR,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(json.loads(proc.stdout)["status"], "ok")
+        finally:
+            Path(path).unlink(missing_ok=True)
 
     def test_optimize_is_a_documented_stub(self):
         payload = {"program": "x", "rollouts": 3}

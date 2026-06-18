@@ -3,6 +3,10 @@ defmodule FaberWeb.DashboardLive do
   The friction dashboard — runs `Faber.Scan` and renders the ranked sessions, with a rescan
   button. Read-only over the filesystem, so no database is involved. The scan options come from
   `config :faber, :dashboard_scan_opts` (tests point it at fixtures for a hermetic render).
+
+  Local-first by design: there is no auth on the rescan event (it only triggers a read-only
+  scan, debounced while one is in flight). Add an `on_mount` guard before exposing this endpoint
+  over any network interface.
   """
   use FaberWeb, :live_view
 
@@ -10,7 +14,8 @@ defmodule FaberWeb.DashboardLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    socket = assign(socket, scanned: false, total: 0, tier2: 0, results: [], shown: 0)
+    socket =
+      assign(socket, scanned: false, scanning: false, total: 0, tier2: 0, results: [], shown: 0)
 
     # Scan only on the connected mount, and run it asynchronously so the LiveView process stays
     # responsive — `Scan.run` fans out over hundreds of transcripts and would otherwise block the
@@ -18,7 +23,11 @@ defmodule FaberWeb.DashboardLive do
     {:ok, if(connected?(socket), do: start_scan(socket), else: socket)}
   end
 
+  # Debounce: ignore rescans while one is already in flight (the button is also disabled).
   @impl true
+  def handle_event("rescan", _params, %{assigns: %{scanning: true}} = socket),
+    do: {:noreply, socket}
+
   def handle_event("rescan", _params, socket) do
     {:noreply, socket |> assign(:scanned, false) |> start_scan()}
   end
@@ -28,6 +37,7 @@ defmodule FaberWeb.DashboardLive do
     {:noreply,
      socket
      |> assign(:scanned, true)
+     |> assign(:scanning, false)
      |> assign(:total, length(results))
      |> assign(:tier2, Enum.count(results, & &1.tier2))
      |> assign(:results, Enum.take(results, 25))
@@ -35,12 +45,16 @@ defmodule FaberWeb.DashboardLive do
   end
 
   def handle_async(:scan, {:exit, _reason}, socket) do
-    {:noreply, assign(socket, scanned: true, total: 0, tier2: 0, results: [], shown: 0)}
+    {:noreply,
+     assign(socket, scanned: true, scanning: false, total: 0, tier2: 0, results: [], shown: 0)}
   end
 
   defp start_scan(socket) do
     opts = scan_opts()
-    start_async(socket, :scan, fn -> Scan.run(opts) end)
+
+    socket
+    |> assign(:scanning, true)
+    |> start_async(:scan, fn -> Scan.run(opts) end)
   end
 
   defp scan_opts do
@@ -57,7 +71,7 @@ defmodule FaberWeb.DashboardLive do
         <strong>{@total}</strong> sessions scanned · <strong>{@tier2}</strong>
         tier-2 eligible · showing top {@shown}
       </p>
-      <button :if={@scanned} phx-click="rescan">Rescan</button>
+      <button :if={@scanned} phx-click="rescan" disabled={@scanning}>Rescan</button>
 
       <table :if={@results != []}>
         <thead>

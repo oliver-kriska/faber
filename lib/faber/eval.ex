@@ -51,9 +51,10 @@ defmodule Faber.Eval do
 
   # An injected :sidecar module forces the Python path; otherwise honor :engine / config default.
   defp engine(opts) do
-    cond do
-      opts[:sidecar] -> :sidecar
-      true -> opts[:engine] || Application.get_env(:faber, :eval_engine, :native)
+    if opts[:sidecar] do
+      :sidecar
+    else
+      opts[:engine] || Application.get_env(:faber, :eval_engine, :native)
     end
   end
 

@@ -113,14 +113,14 @@ defmodule Faber.Loop do
         handle_candidate(state, iteration, content, desc)
 
       {:error, reason} ->
-        discard(state, iteration, state.best_composite, "proposal failed", inspect(reason))
+        reject(state, iteration, state.best_composite, "proposal failed", inspect(reason))
     end
   end
 
   defp handle_candidate(state, iteration, content, desc) do
     case write_candidate(state, content) do
       {:error, reason} ->
-        discard(state, iteration, state.best_composite, desc, "write failed: #{inspect(reason)}")
+        reject(state, iteration, state.best_composite, desc, "write failed: #{inspect(reason)}")
 
       :ok ->
         run_checks_and_eval(state, iteration, content, desc)
@@ -130,7 +130,7 @@ defmodule Faber.Loop do
   defp run_checks_and_eval(state, iteration, content, desc) do
     case state.checks_fn.(content) do
       {:error, reason} ->
-        discard(state, iteration, state.best_composite, desc, "checks failed: #{inspect(reason)}")
+        reject(state, iteration, state.best_composite, desc, "checks failed: #{inspect(reason)}")
 
       :ok ->
         case state.eval_fn.(content) do
@@ -138,10 +138,10 @@ defmodule Faber.Loop do
             keep(state, iteration, content, composite, desc)
 
           {:ok, composite} ->
-            revert(state, iteration, composite, desc, "no improvement")
+            reject(state, iteration, composite, desc, "no improvement")
 
           {:error, reason} ->
-            discard(
+            reject(
               state,
               iteration,
               state.best_composite,
@@ -170,20 +170,10 @@ defmodule Faber.Loop do
     }
   end
 
-  defp revert(state, iteration, composite, desc, reason) do
-    restore(state)
-    entry = entry(state, iteration, composite, false, desc, reason)
-    log(state, entry)
-
-    %{
-      state
-      | iteration: iteration,
-        consecutive_discards: state.consecutive_discards + 1,
-        history: [entry | state.history]
-    }
-  end
-
-  defp discard(state, iteration, composite, desc, reason) do
+  # A rejected candidate (no improvement, failed checks, or eval error): restore the working tree
+  # to the current best, journal it, and bump the plateau counter. The entry's desc/reason record
+  # which kind of rejection it was.
+  defp reject(state, iteration, composite, desc, reason) do
     restore(state)
     entry = entry(state, iteration, composite, false, desc, reason)
     log(state, entry)
