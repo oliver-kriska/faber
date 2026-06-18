@@ -50,6 +50,17 @@ defmodule Faber.Detect do
 
   @interrupt_marker "[Request interrupted by user]"
 
+  # Session fingerprint keyword patterns (applied to the first 10 human messages), ported
+  # from compute-metrics.py FINGERPRINT_KEYWORDS. Each match contributes 2.0 to its type.
+  @fingerprint_keywords %{
+    "bug-fix" => ~r/\b(fix|bug|broken|error|issue|crash|fail|debug|wrong)\b/i,
+    "feature" => ~r/\b(add|implement|build|create|new feature|scaffold)\b/i,
+    "exploration" => ~r/\b(explore|understand|how does|what is|explain|look at)\b/i,
+    "maintenance" => ~r/\b(deps?|update|upgrade|bump|version|migrate)\b/i,
+    "review" => ~r/\b(review|PR|pull request|code review|feedback)\b/i,
+    "refactoring" => ~r/\b(refactor|extract|rename|move|reorganize|clean ?up)\b/i
+  }
+
   # Leading whitespace tokens of a Bash command that define its "prefix" for retry
   # detection (e.g. `mix test`, `git commit`). 2 groups re-runs of the same command while
   # still separating `mix test` from `mix deps.get`.
@@ -126,11 +137,13 @@ defmodule Faber.Detect do
     names = events |> Enum.flat_map(& &1.tool_uses) |> Enum.map(& &1.name)
     total = length(names)
 
+    empty = %{read: 0, edit: 0, bash: 0, grep: 0, tidewave: 0, other: 0}
+
     if total == 0 do
-      %{read: 0.0, edit: 0.0, bash: 0.0, grep: 0.0, other: 0.0}
+      Map.new(empty, fn {cat, _} -> {cat, 0.0} end)
     else
       names
-      |> Enum.reduce(%{read: 0, edit: 0, bash: 0, grep: 0, other: 0}, fn name, acc ->
+      |> Enum.reduce(empty, fn name, acc ->
         Map.update!(acc, categorize_tool(name), &(&1 + 1))
       end)
       |> Map.new(fn {cat, n} -> {cat, n / total} end)
@@ -141,7 +154,86 @@ defmodule Faber.Detect do
   defp categorize_tool(name) when name in ["Edit", "Write", "NotebookEdit"], do: :edit
   defp categorize_tool("Bash"), do: :bash
   defp categorize_tool("Grep"), do: :grep
+  defp categorize_tool("mcp__tidewave" <> _), do: :tidewave
   defp categorize_tool(_), do: :other
+
+  @type fingerprint :: %{type: String.t(), confidence: float()}
+
+  @doc """
+  Classify the session type — `bug-fix` / `feature` / `exploration` / `maintenance` /
+  `review` / `refactoring` (or `unknown`) — with a confidence in 0.0–1.0.
+
+  Port of `compute_fingerprint`: keyword matches over the first 10 human messages (×2.0
+  each) plus tool-profile, files-edited, Tidewave, `mix deps`/`hex`, and `gh pr`/`issue`
+  bonuses. Confidence = winning score / total score.
+  """
+  @spec fingerprint(Enumerable.t()) :: fingerprint()
+  def fingerprint(events) do
+    events = Enum.to_list(events)
+
+    user_text =
+      events
+      |> Enum.filter(&Event.human_turn?/1)
+      |> Enum.take(10)
+      |> Enum.map_join(" ", & &1.text)
+
+    tool_uses = Enum.flat_map(events, & &1.tool_uses)
+    names = Enum.map(tool_uses, & &1.name)
+    total = max(length(names), 1)
+    counts = Enum.frequencies(names)
+
+    read_pct = (count(counts, "Read") + count(counts, "Grep") + count(counts, "Glob")) / total
+    edit_pct = (count(counts, "Edit") + count(counts, "Write")) / total
+    bash_pct = count(counts, "Bash") / total
+
+    bash_cmds = bash_commands(tool_uses)
+    files = files_edited(tool_uses)
+    tidewave? = Enum.any?(names, &String.starts_with?(&1, "mcp__tidewave"))
+
+    scores =
+      @fingerprint_keywords
+      |> Map.new(fn {type, re} -> {type, length(Regex.scan(re, user_text)) * 2.0} end)
+      |> bonus("exploration", read_pct > 0.5 and edit_pct < 0.1, 3.0)
+      |> bonus("feature", edit_pct > 0.3, 2.0)
+      |> bonus("bug-fix", bash_pct > 0.3, 2.0)
+      |> bonus("refactoring", length(files) > 10, 2.0)
+      |> bonus("feature", length(files) > 5, 1.0)
+      |> bonus("bug-fix", tidewave?, 1.5)
+      |> bonus("maintenance", any_cmd?(bash_cmds, ["mix deps", "mix hex"]), 3.0)
+      |> bonus("review", any_cmd?(bash_cmds, ["gh pr", "gh issue"]), 3.0)
+
+    total_score = scores |> Map.values() |> Enum.sum()
+
+    if total_score <= 0.0 do
+      %{type: "unknown", confidence: 0.0}
+    else
+      {best, best_score} = Enum.max_by(scores, fn {_type, score} -> score end)
+      %{type: best, confidence: Float.round(best_score / total_score, 2)}
+    end
+  end
+
+  defp bonus(scores, type, true, amount), do: Map.update!(scores, type, &(&1 + amount))
+  defp bonus(scores, _type, false, _amount), do: scores
+
+  defp count(counts, key), do: Map.get(counts, key, 0)
+
+  defp any_cmd?(bash_cmds, needles) do
+    Enum.any?(bash_cmds, fn cmd -> Enum.any?(needles, &String.contains?(cmd, &1)) end)
+  end
+
+  defp bash_commands(tool_uses) do
+    tool_uses
+    |> Enum.filter(&(&1.name == "Bash"))
+    |> Enum.map(fn tu -> to_string(tu.input["command"] || "") end)
+  end
+
+  defp files_edited(tool_uses) do
+    tool_uses
+    |> Enum.filter(&(&1.name in ["Edit", "Write", "NotebookEdit"]))
+    |> Enum.map(fn tu -> tu.input["file_path"] end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
 
   defp count_errors(events) do
     events

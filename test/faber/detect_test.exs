@@ -68,5 +68,66 @@ defmodule Faber.DetectTest do
       assert_in_delta profile.read, 0.25, 1.0e-9
       assert profile.edit == 0.0
     end
+
+    test "tool_profile/1 counts tidewave tools" do
+      events = [asst([{"Bash", %{}}, {"mcp__tidewave__project_eval", %{}}])]
+      profile = Detect.tool_profile(events)
+      assert_in_delta profile.bash, 0.5, 1.0e-9
+      assert_in_delta profile.tidewave, 0.5, 1.0e-9
+    end
+  end
+
+  describe "fingerprint/1" do
+    test "classifies a feature session" do
+      events = [
+        user("please add and implement a new feature and build it"),
+        asst([{"Edit", %{"file_path" => "/a.ex"}}, {"Write", %{"file_path" => "/b.ex"}}])
+      ]
+
+      assert %{type: "feature", confidence: c} = Detect.fingerprint(events)
+      assert c > 0.0
+    end
+
+    test "classifies a bug-fix session (keywords + bash-heavy)" do
+      events = [
+        user("fix the bug, it has an error and will fail"),
+        asst([{"Bash", %{"command" => "mix test"}}, {"Bash", %{"command" => "mix test"}}])
+      ]
+
+      assert %{type: "bug-fix"} = Detect.fingerprint(events)
+    end
+
+    test "classifies an exploration session (read-heavy, no edits)" do
+      events = [
+        user("explain how does this work, I want to understand the code"),
+        asst([{"Read", %{}}, {"Grep", %{}}, {"Read", %{}}])
+      ]
+
+      assert %{type: "exploration"} = Detect.fingerprint(events)
+    end
+
+    test "unknown when there are no signals" do
+      assert %{type: "unknown", confidence: confidence} = Detect.fingerprint([])
+      assert confidence == 0.0
+    end
+  end
+
+  defp user(text) do
+    Faber.Ingest.normalize(%{
+      "type" => "user",
+      "message" => %{"role" => "user", "content" => text}
+    })
+  end
+
+  defp asst(tools) do
+    content =
+      Enum.map(tools, fn {name, input} ->
+        %{"type" => "tool_use", "name" => name, "input" => input, "id" => name}
+      end)
+
+    Faber.Ingest.normalize(%{
+      "type" => "assistant",
+      "message" => %{"role" => "assistant", "content" => content}
+    })
   end
 end
