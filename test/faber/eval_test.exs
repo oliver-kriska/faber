@@ -61,6 +61,52 @@ defmodule Faber.EvalTest do
     end
   end
 
+  describe "score/2 (adapter-aware — the stack-specific eval bar)" do
+    test "a vendored adapter's eval dimensions drive scoring" do
+      adapter = %Faber.Adapter{
+        name: "x",
+        version: "0.1.0",
+        eval: %{
+          "mode" => "vendored",
+          "dimensions" => [
+            %{
+              "name" => "completeness",
+              "weight" => 1.0,
+              "checks" => [%{"type" => "frontmatter_field", "params" => %{"field" => "name"}}]
+            }
+          ]
+        }
+      }
+
+      {:ok, r} = Eval.score(@skill, adapter: adapter)
+      assert Map.keys(r.dimensions) == ["completeness"]
+      assert r.composite == 1.0
+      # Only the adapter's dimensions — NOT the generic default set.
+      refute Map.has_key?(r.dimensions, "safety")
+    end
+
+    test "an exec-in-place adapter falls back to the default native eval (never blocks the gate)" do
+      adapter = %Faber.Adapter{
+        name: "x",
+        version: "0.1.0",
+        eval: %{"mode" => "exec-in-place", "root" => "/nonexistent"}
+      }
+
+      {:ok, r} = Eval.score(@skill, adapter: adapter)
+      # The full default dimension set is used as the fallback.
+      assert Map.has_key?(r.dimensions, "completeness")
+      assert Map.has_key?(r.dimensions, "safety")
+    end
+
+    test "an explicit :eval definition overrides the adapter" do
+      adapter = %Faber.Adapter{name: "x", version: "0.1.0", eval: %{"mode" => "vendored"}}
+      custom = [{"only", 1.0, [{"frontmatter_field", %{field: "description"}}]}]
+
+      {:ok, r} = Eval.score(@skill, adapter: adapter, eval: custom)
+      assert Map.keys(r.dimensions) == ["only"]
+    end
+  end
+
   describe "gate/2 (stubbed sidecar)" do
     test "returns :pass / :fail" do
       assert {:pass, _} = Eval.gate(@skill, sidecar: PassSidecar)

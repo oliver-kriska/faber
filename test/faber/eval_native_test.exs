@@ -95,5 +95,19 @@ defmodule Faber.Eval.NativeTest do
     test "a malformed skill scores low" do
       assert Native.score(@bad)["composite"] < 0.5
     end
+
+    test "honors a custom eval definition instead of the default" do
+      custom = [{"only-name", 1.0, [{"frontmatter_field", %{field: "name"}}]}]
+      result = Native.score(@good, custom)
+
+      assert Map.keys(result["dimensions"]) == ["only-name"]
+      assert result["dimensions"]["only-name"]["score"] == 1.0
+      refute Map.has_key?(result["dimensions"], "safety")
+    end
+
+    test "nil/empty definition falls back to the default eval" do
+      assert Native.score(@good, nil)["dimensions"] == Native.score(@good)["dimensions"]
+      assert Map.has_key?(Native.score(@good, [])["dimensions"], "completeness")
+    end
   end
 end

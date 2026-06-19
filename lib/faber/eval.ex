@@ -13,7 +13,9 @@ defmodule Faber.Eval do
   `Faber.Proposal` (rendered via `Faber.Propose.render_skill_md/1`).
   """
 
-  alias Faber.{Proposal, Propose, Sidecar}
+  require Logger
+
+  alias Faber.{Adapter, Proposal, Propose, Sidecar}
   alias Faber.Eval.Native
 
   @type result :: %{
@@ -31,7 +33,10 @@ defmodule Faber.Eval do
     * `:threshold` — pass mark for `:passed` (default `config :faber, :eval_threshold` or `0.75`)
     * `:engine`    — `:native` (default, in-process) or `:sidecar` (Python). A `:sidecar`
       module option forces the sidecar engine (tests inject a stub).
-    * `:eval`      — a custom eval definition (forwarded to the sidecar)
+    * `:adapter`   — a `%Faber.Adapter{}`; its `eval/eval.yaml` supplies the stack-specific bar.
+      `mode: vendored` dimensions drive native scoring; `mode: exec-in-place` dispatches to the
+      referenced scorer (env-bound) and falls back to the default native eval if unavailable.
+    * `:eval`      — an explicit eval definition (overrides `:adapter`)
   """
   @spec score(Proposal.t() | String.t(), keyword()) :: {:ok, result()} | {:error, term()}
   def score(proposal_or_md, opts \\ [])
@@ -43,11 +48,47 @@ defmodule Faber.Eval do
   def score(skill_md, opts) when is_binary(skill_md) do
     threshold = opts[:threshold] || Application.get_env(:faber, :eval_threshold, 0.75)
 
-    case run_engine(engine(opts), skill_md, opts) do
+    case run_eval(skill_md, opts) do
       {:ok, result} -> {:ok, build_result(result, threshold)}
       {:error, _} = err -> err
     end
   end
+
+  # Resolve HOW to score: explicit :eval wins, then an adapter's stack-specific criteria, else the
+  # built-in default. This is the moat — a skill is judged by its stack's bar, not a generic one.
+  defp run_eval(skill_md, opts) do
+    cond do
+      opts[:eval] != nil -> run_engine(engine(opts), skill_md, opts[:eval], opts)
+      adapter_eval(opts) != nil -> run_adapter_eval(skill_md, adapter_eval(opts), opts)
+      true -> run_engine(engine(opts), skill_md, nil, opts)
+    end
+  end
+
+  defp adapter_eval(opts) do
+    case opts[:adapter] do
+      %Adapter{eval: e} when is_map(e) -> e
+      _ -> nil
+    end
+  end
+
+  # Vendored: the adapter ships dimension/check definitions → native scoring honors them.
+  defp run_adapter_eval(skill_md, %{"mode" => "vendored"} = e, opts) do
+    run_engine(:native, skill_md, build_native_def(e["dimensions"] || []), opts)
+  end
+
+  # Exec-in-place: the adapter references an external scorer (e.g. the plugin's lab.eval, run with
+  # cwd = source_repo). That's environment-bound (needs the repo + its deps), so attempt it and fall
+  # back to the default native eval — never block the gate because a referenced repo is absent.
+  defp run_adapter_eval(skill_md, %{"mode" => "exec-in-place"}, opts) do
+    Logger.info(
+      "adapter eval is exec-in-place; using default native scoring (referenced scorer " <>
+        "integration is env-bound — see ADAPTER_CONTRACT §7)."
+    )
+
+    run_engine(:native, skill_md, nil, opts)
+  end
+
+  defp run_adapter_eval(skill_md, _other, opts), do: run_engine(engine(opts), skill_md, nil, opts)
 
   # An injected :sidecar module forces the Python path; otherwise honor :engine / config default.
   defp engine(opts) do
@@ -58,12 +99,12 @@ defmodule Faber.Eval do
     end
   end
 
-  defp run_engine(:native, skill_md, opts) do
-    {:ok, Native.score(skill_md, opts[:eval])}
+  defp run_engine(:native, skill_md, eval_def, _opts) do
+    {:ok, Native.score(skill_md, eval_def)}
   end
 
-  defp run_engine(:sidecar, skill_md, opts) do
-    request = maybe_put(%{"skill_md" => skill_md}, "eval", opts[:eval])
+  defp run_engine(:sidecar, skill_md, eval_def, opts) do
+    request = maybe_put(%{"skill_md" => skill_md}, "eval", eval_def)
 
     case Sidecar.call("score", request, opts) do
       {:ok, %{"status" => "ok", "result" => result}} -> {:ok, result}
@@ -71,6 +112,31 @@ defmodule Faber.Eval do
       {:ok, other} -> {:error, {:unexpected_sidecar_response, other}}
       {:error, _} = err -> err
     end
+  end
+
+  # Translate a vendored adapter's eval dimensions (string-keyed YAML) into Native's internal form.
+  defp build_native_def(dimensions) do
+    Enum.map(dimensions, fn d ->
+      checks =
+        (d["checks"] || [])
+        |> Enum.map(fn c -> {to_string(c["type"]), atomize_params(c["params"] || %{})} end)
+
+      {to_string(d["name"]), (d["weight"] || 0.0) * 1.0, checks}
+    end)
+  end
+
+  defp atomize_params(params) when is_map(params) do
+    Map.new(params, fn {k, v} -> {safe_atom(k), v} end)
+  end
+
+  # Matcher param keys are a fixed, known set already present as atoms — to_existing_atom keeps an
+  # adapter's YAML from minting arbitrary atoms. Unknown keys stay strings (the matcher ignores them).
+  defp safe_atom(k) when is_atom(k), do: k
+
+  defp safe_atom(k) when is_binary(k) do
+    String.to_existing_atom(k)
+  rescue
+    ArgumentError -> k
   end
 
   @doc """

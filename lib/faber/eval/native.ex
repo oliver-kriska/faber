@@ -49,11 +49,23 @@ defmodule Faber.Eval.Native do
      ]}
   ]
 
-  @doc "Score `content` (a SKILL.md string). Returns `%{\"composite\" => f, \"dimensions\" => %{}}`."
+  @doc "The built-in eval definition (used when no adapter/custom definition is supplied)."
+  @spec default_eval() :: [{String.t(), float(), [{String.t(), map()}]}]
+  def default_eval, do: @default_eval
+
+  @doc """
+  Score `content` (a SKILL.md string) against an eval definition.
+
+  `eval_def` is the internal `[{dimension, weight, [{check_type, params}]}]` form (e.g. from
+  `Faber.Eval` after translating a vendored adapter's `eval.yaml`). `nil` → `default_eval/0`.
+  Returns `%{"composite" => f, "dimensions" => %{}}`.
+  """
   @spec score(String.t(), term()) :: map()
-  def score(content, _eval_def \\ nil) do
+  def score(content, eval_def \\ nil) do
     {dimensions, num, den} =
-      Enum.reduce(@default_eval, {%{}, 0.0, 0.0}, fn {name, weight, checks}, {acc, num, den} ->
+      eval_def
+      |> normalize_def()
+      |> Enum.reduce({%{}, 0.0, 0.0}, fn {name, weight, checks}, {acc, num, den} ->
         dim = score_dimension(name, checks, content)
         {Map.put(acc, name, dim), num + weight * dim["score"], den + weight}
       end)
@@ -61,6 +73,10 @@ defmodule Faber.Eval.Native do
     composite = if den > 0, do: num / den, else: 0.0
     %{"composite" => Float.round(composite, 4), "dimensions" => dimensions}
   end
+
+  defp normalize_def(nil), do: @default_eval
+  defp normalize_def([]), do: @default_eval
+  defp normalize_def(def) when is_list(def), do: def
 
   defp score_dimension(name, checks, content) do
     {assertions, passed_w, total_w, passed, failed} =

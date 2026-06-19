@@ -272,8 +272,11 @@ defmodule Faber.Loop do
       end
     end
 
+    # Judge each candidate by THIS adapter's stack-specific eval bar (the moat), not a generic one.
+    eval_opts = Keyword.put(opts, :adapter, adapter)
+
     eval_fn = fn c ->
-      case Eval.score(c, opts) do
+      case Eval.score(c, eval_opts) do
         {:ok, %{composite: comp}} -> {:ok, comp}
         {:error, _} = err -> err
       end

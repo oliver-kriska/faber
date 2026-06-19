@@ -52,7 +52,7 @@ defmodule Mix.Tasks.Faber.Propose do
          {:ok, result} <- pick_session(opts, rank),
          {:ok, proposal} <- propose(result, adapter) do
       md = Propose.render_skill_md(proposal)
-      report(result, proposal, md, opts)
+      report(result, proposal, md, adapter, opts)
     else
       {:error, reason} -> Mix.shell().error("faber.propose failed: #{inspect(reason)}")
     end
@@ -79,19 +79,19 @@ defmodule Mix.Tasks.Faber.Propose do
     Propose.propose(result, adapter)
   end
 
-  defp report(result, proposal, md, opts) do
+  defp report(result, proposal, md, adapter, opts) do
     Mix.shell().info(String.duplicate("─", 72))
     Mix.shell().info(md)
     Mix.shell().info(String.duplicate("─", 72))
 
-    if Keyword.get(opts, :eval, true), do: run_eval(proposal)
+    if Keyword.get(opts, :eval, true), do: run_eval(proposal, adapter)
     if dir = opts[:write], do: write(dir, proposal, md)
 
     Mix.shell().info("\nProvenance: #{result.session_id} — #{result.path}")
   end
 
-  defp run_eval(proposal) do
-    case Eval.score(proposal) do
+  defp run_eval(proposal, adapter) do
+    case Eval.score(proposal, adapter: adapter) do
       {:ok, r} ->
         verdict = if r.passed, do: "PASS", else: "below threshold"
         Mix.shell().info("Eval: composite #{fmt(r.composite)} (#{verdict} @ #{r.threshold})")
