@@ -98,7 +98,7 @@ defmodule FaberWeb.DashboardLive do
          {:ok, eval} <- Eval.score(proposal, adapter: adapter) do
       %{
         name: proposal.name,
-        md: Propose.render_skill_md(proposal),
+        md: Propose.render_skill_md(proposal, adapter),
         composite: eval.composite,
         passed: eval.passed,
         threshold: eval.threshold

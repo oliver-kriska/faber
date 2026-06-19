@@ -52,7 +52,7 @@ defmodule Mix.Tasks.Faber.Propose do
     with {:ok, adapter} <- Adapter.load(adapter_dir),
          {:ok, result} <- pick_session(opts, rank),
          {:ok, proposal} <- propose(result, adapter) do
-      md = Propose.render_skill_md(proposal)
+      md = Propose.render_skill_md(proposal, adapter)
       report(result, proposal, md, adapter, opts)
     else
       {:error, reason} -> Mix.shell().error("faber.propose failed: #{inspect(reason)}")

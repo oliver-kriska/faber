@@ -260,12 +260,13 @@ defmodule Faber.Loop do
   end
 
   defp run_refinement(result, adapter, seed, opts) do
-    content = Propose.render_skill_md(seed)
+    content = Propose.render_skill_md(seed, adapter)
 
     propose_fn = fn _state ->
       case Propose.propose(result, adapter, opts) do
         {:ok, p} ->
-          {:ok, %{content: Propose.render_skill_md(p), description: "regenerated #{p.name}"}}
+          {:ok,
+           %{content: Propose.render_skill_md(p, adapter), description: "regenerated #{p.name}"}}
 
         {:error, _} = err ->
           err

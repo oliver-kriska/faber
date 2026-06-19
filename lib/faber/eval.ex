@@ -42,7 +42,7 @@ defmodule Faber.Eval do
   def score(proposal_or_md, opts \\ [])
 
   def score(%Proposal{} = proposal, opts) do
-    with {:ok, result} <- proposal |> Propose.render_skill_md() |> score(opts) do
+    with {:ok, result} <- proposal |> render(opts) |> score(opts) do
       {:ok, maybe_add_trigger(result, proposal, opts)}
     end
   end
@@ -53,6 +53,15 @@ defmodule Faber.Eval do
     case run_eval(skill_md, opts) do
       {:ok, result} -> {:ok, build_result(result, threshold)}
       {:error, _} = err -> err
+    end
+  end
+
+  # Render via the adapter's `templates/` scaffold when one is supplied, so the eval scores the
+  # same artifact the proposer/installer will emit; otherwise use the built-in renderer.
+  defp render(proposal, opts) do
+    case opts[:adapter] do
+      %Adapter{} = adapter -> Propose.render_skill_md(proposal, adapter)
+      _ -> Propose.render_skill_md(proposal)
     end
   end
 

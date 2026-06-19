@@ -34,6 +34,7 @@ defmodule Faber.Adapter do
           signatures: [map()],
           playbooks: [map()],
           eval: map() | nil,
+          templates: %{optional(String.t()) => String.t()},
           dir: Path.t()
         }
 
@@ -47,6 +48,7 @@ defmodule Faber.Adapter do
             signatures: [],
             playbooks: [],
             eval: nil,
+            templates: %{},
             dir: nil
 
   @doc """
@@ -62,7 +64,8 @@ defmodule Faber.Adapter do
          signatures <- read_list(Path.join(dir, "detect/signatures.yaml"), "signatures"),
          playbooks <- read_list(Path.join(dir, "investigate/playbooks.yaml"), "playbooks"),
          eval <- read_optional_yaml(Path.join(dir, "eval/eval.yaml")),
-         adapter <- build(dir, manifest, laws, signatures, playbooks, eval),
+         templates <- read_templates(Path.join(dir, "templates")),
+         adapter <- build(dir, manifest, laws, signatures, playbooks, eval, templates),
          [] <- validate(adapter) do
       {:ok, adapter}
     else
@@ -108,7 +111,7 @@ defmodule Faber.Adapter do
 
   # ── building ──────────────────────────────────────────────────────────────
 
-  defp build(dir, manifest, laws, signatures, playbooks, eval) do
+  defp build(dir, manifest, laws, signatures, playbooks, eval, templates) do
     %Adapter{
       name: manifest["name"],
       version: manifest["version"],
@@ -120,8 +123,25 @@ defmodule Faber.Adapter do
       signatures: Enum.map(signatures, &signature/1),
       playbooks: Enum.map(playbooks, &playbook/1),
       eval: eval,
+      templates: templates,
       dir: dir
     }
+  end
+
+  # Load the `templates/` scaffolds keyed by the artifact type they `produces` (e.g. "skill").
+  # Reads `templates/manifest.yaml`, then the body of each named file. Absent dir/manifest → %{}.
+  # A manifest entry whose file is missing is skipped (not fatal — validation can flag it later).
+  defp read_templates(dir) do
+    case read_list(Path.join(dir, "manifest.yaml"), "templates") do
+      [] ->
+        %{}
+
+      entries ->
+        for %{"file" => file, "produces" => produces} <- entries,
+            {:ok, body} <- [File.read(Path.join(dir, file))],
+            into: %{},
+            do: {produces, body}
+    end
   end
 
   defp law(m) when is_map(m) do

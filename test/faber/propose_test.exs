@@ -136,4 +136,41 @@ defmodule Faber.ProposeTest do
       assert length(law_numbers) >= 3
     end
   end
+
+  describe "render_skill_md/2 (adapter template)" do
+    test "renders via the adapter's skill scaffold when one is shipped" do
+      {:ok, p} = Propose.propose(result(), adapter())
+
+      adapter_with_tmpl = %{
+        adapter()
+        | templates: %{
+            "skill" =>
+              "name: {{skill_name}}\n{{#iron_laws}}{{index}}. {{law_statement}}\n{{/iron_laws}}"
+          }
+      }
+
+      md = Propose.render_skill_md(p, adapter_with_tmpl)
+
+      assert md =~ "name: #{p.name}"
+      # The {{#iron_laws}} section expanded once per law.
+      assert md =~ "1. #{Enum.at(p.iron_laws, 0)}"
+      # Built-in-only markers do NOT appear — proof the template path was taken.
+      refute md =~ "## References"
+    end
+
+    test "falls back to the built-in renderer when the adapter ships no skill template" do
+      {:ok, p} = Propose.propose(result(), adapter())
+      assert Propose.render_skill_md(p, adapter()) == Propose.render_skill_md(p)
+    end
+
+    test "the real faber-elixir template produces a complete, eval-passing skill" do
+      {:ok, adapter} = Adapter.load("adapters/faber-elixir")
+      {:ok, p} = Propose.propose(result(), adapter)
+      md = Propose.render_skill_md(p, adapter)
+
+      assert md =~ "name: #{p.name}"
+      assert md =~ "## Iron Laws"
+      assert md =~ "## References"
+    end
+  end
 end

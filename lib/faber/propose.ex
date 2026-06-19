@@ -19,7 +19,7 @@ defmodule Faber.Propose do
   `## References` pointer). Those conventions are what `Faber.Eval`'s structural matchers check.
   """
 
-  alias Faber.{Adapter, LLM, Proposal, Scan}
+  alias Faber.{Adapter, LLM, Proposal, Scan, Template}
 
   # ReqLLM/NimbleOptions-style schema for the structured proposal the LLM must return.
   @schema [
@@ -128,6 +128,36 @@ defmodule Faber.Propose do
     Propose ONE skill that would most reduce this session's dominant friction. Do not duplicate a
     skill the session already used.
     """
+  end
+
+  @doc """
+  Render a proposal into a `SKILL.md` string using `adapter`'s `templates/` scaffold when it
+  ships a `skill` template, so the output matches the stack's idiom (section order, frontmatter,
+  idiomatic examples). Falls back to the built-in renderer when the adapter has no skill template.
+  """
+  @spec render_skill_md(Proposal.t(), Adapter.t()) :: String.t()
+  def render_skill_md(%Proposal{} = p, %Adapter{templates: templates}) do
+    case Map.get(templates, "skill") do
+      tmpl when is_binary(tmpl) -> Template.render(tmpl, template_context(p))
+      _ -> render_skill_md(p)
+    end
+  end
+
+  # String-keyed context for the Mustache-subset skill scaffold. Tokens the proposal can't fill
+  # (steps, patterns, argument_hint, allowed_tools) resolve to empty — the renderer drops them.
+  defp template_context(%Proposal{} = p) do
+    %{
+      "skill_name" => p.name,
+      "skill_title" => titleize(p.name),
+      "description" => escape(p.description),
+      "effort" => p.effort,
+      "one_line_purpose" => p.rationale,
+      "usage_examples" => p.usage || p.example || "# (no example provided)",
+      "iron_laws" =>
+        p.iron_laws
+        |> Enum.with_index(1)
+        |> Enum.map(fn {law, i} -> %{"index" => i, "law_statement" => law} end)
+    }
   end
 
   @doc """
