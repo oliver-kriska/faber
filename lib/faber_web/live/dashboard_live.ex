@@ -46,15 +46,16 @@ defmodule FaberWeb.DashboardLive do
     do: {:noreply, socket}
 
   def handle_event("propose", %{"i" => i}, socket) do
-    case Enum.at(socket.assigns.results, String.to_integer(i) - 1) do
-      nil ->
-        {:noreply, socket}
-
-      result ->
-        {:noreply,
-         socket
-         |> assign(proposing: true, proposal: nil)
-         |> start_async(:propose, fn -> do_propose(result) end)}
+    # `i` is a client-supplied string — parse defensively so a malformed value can't crash the
+    # LiveView process (it would just be ignored).
+    with {idx, ""} <- Integer.parse(i),
+         result when not is_nil(result) <- Enum.at(socket.assigns.results, idx - 1) do
+      {:noreply,
+       socket
+       |> assign(proposing: true, proposal: nil)
+       |> start_async(:propose, fn -> do_propose(result) end)}
+    else
+      _ -> {:noreply, socket}
     end
   end
 

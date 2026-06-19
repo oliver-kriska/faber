@@ -83,19 +83,24 @@ defmodule Faber.Schedule do
         name: proposal.name,
         composite: eval.composite,
         passed: eval.passed,
-        installed: maybe_install(proposal, eval, opts)
+        installed: maybe_install(proposal, eval, adapter, opts)
       }
     else
       {:error, reason} -> %{error: inspect(reason)}
     end
   end
 
-  # Only install when explicitly opted in AND the skill cleared its stack's eval bar.
-  defp maybe_install(proposal, %{passed: true}, opts) do
-    if opts[:install], do: match?({:ok, _}, Install.install(proposal, opts)), else: false
+  # Only install when explicitly opted in AND the skill cleared its stack's eval bar. Install with
+  # the adapter so the file written to disk is the same artifact the eval gated.
+  defp maybe_install(proposal, %{passed: true}, adapter, opts) do
+    if opts[:install] do
+      match?({:ok, _}, Install.install(proposal, Keyword.put(opts, :adapter, adapter)))
+    else
+      false
+    end
   end
 
-  defp maybe_install(_proposal, _eval, _opts), do: false
+  defp maybe_install(_proposal, _eval, _adapter, _opts), do: false
 
   # ── server ───────────────────────────────────────────────────────────────-
 
@@ -106,7 +111,8 @@ defmodule Faber.Schedule do
     state = %{
       enabled: Keyword.get(cfg, :enabled, false),
       every_ms: Keyword.get(cfg, :every_ms, @hours8),
-      job_opts: Keyword.drop(cfg, [:enabled, :every_ms, :initial_delay_ms]),
+      notify: Keyword.get(cfg, :notify),
+      job_opts: Keyword.drop(cfg, [:enabled, :every_ms, :initial_delay_ms, :notify]),
       timer: nil,
       running: false,
       task: nil,
@@ -142,13 +148,17 @@ defmodule Faber.Schedule do
   def handle_info({ref, summary}, %{task: %Task{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
     Logger.info("faber schedule: run ##{state.runs + 1} complete — #{summarize(summary)}")
-
-    state = %{state | running: false, task: nil, runs: state.runs + 1, last_summary: summary}
-    {:noreply, schedule_next(state, state.every_ms)}
+    {:noreply, finish_run(state, summary)}
   end
 
-  # The job Task is trapped to never crash the scheduler (it rescues internally), so a normal DOWN
-  # is the only one we expect; flush any stray message.
+  # async_nolink: a job that crashes (an exit/throw the job body didn't catch) arrives as a DOWN
+  # instead of killing the scheduler. Record it as a failed run and keep ticking.
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{task: %Task{ref: ref}} = state) do
+    summary = %{scanned: 0, proposals: [], error: {:job_crashed, reason}}
+    Logger.error("faber schedule: run ##{state.runs + 1} crashed — #{inspect(reason)}")
+    {:noreply, finish_run(state, summary)}
+  end
+
   def handle_info(_msg, state), do: {:noreply, state}
 
   # ── internals ──────────────────────────────────────────────────────────────
@@ -157,16 +167,28 @@ defmodule Faber.Schedule do
     Logger.info("faber schedule: starting pipeline run ##{state.runs + 1}")
     job_opts = state.job_opts
 
+    # async_nolink under a Task.Supervisor: the job runs crash-isolated so a throw/exit becomes a
+    # DOWN message here rather than killing the long-lived scheduler. rescue/catch still convert
+    # the common failure into a clean summary so a single bad session doesn't even count as a crash.
     task =
-      Task.async(fn ->
+      Task.Supervisor.async_nolink(__MODULE__.TaskSupervisor, fn ->
         try do
           run_once(job_opts)
         rescue
           e -> %{scanned: 0, proposals: [], error: Exception.message(e)}
+        catch
+          kind, reason -> %{scanned: 0, proposals: [], error: {kind, reason}}
         end
       end)
 
     %{state | running: true, task: task}
+  end
+
+  # Record a completed run, notify any test/observer, and reschedule.
+  defp finish_run(state, summary) do
+    if state.notify, do: send(state.notify, {:faber_schedule, :run_complete, summary})
+    state = %{state | running: false, task: nil, runs: state.runs + 1, last_summary: summary}
+    schedule_next(state, state.every_ms)
   end
 
   # Single timer at all times: cancel any pending tick before arming a new one. Inert when disabled.

@@ -13,6 +13,9 @@ defmodule Faber.Application do
       # On-demand homes for autoresearch loop runs (M5). Started empty; loops are launched
       # explicitly via Faber.Loop.Supervisor.start_loop/1, never at boot.
       Faber.Loop.Supervisor,
+      # Crash-isolated home for the scheduler's pipeline jobs (async_nolink): a job that throws or
+      # exits must NOT take down the long-lived scheduler. Must start before Faber.Schedule.
+      {Task.Supervisor, name: Faber.Schedule.TaskSupervisor},
       # Scheduled/overnight pipeline runs (M5). Started INERT — does nothing unless
       # `config :faber, :schedule` sets `enabled: true`. Faber takes no autonomous action by default.
       Faber.Schedule,

@@ -60,34 +60,36 @@ defmodule Faber.ScheduleTest do
            enabled: true,
            initial_delay_ms: 10,
            every_ms: 3_600_000,
+           notify: self(),
            top: 1,
            scan: @fixtures,
            adapter_dir: "adapters/faber-elixir"}
         )
 
-      assert eventually(fn -> Schedule.status(pid).runs >= 1 end)
-      status = Schedule.status(pid)
-      assert status.last_summary.scanned == 1
+      # Deterministic: the scheduler messages us when a run completes (no polling/sleep).
+      assert_receive {:faber_schedule, :run_complete, summary}, 2_000
+      assert summary.scanned == 1
+      assert Schedule.status(pid).runs == 1
     end
 
     test "run_now triggers an immediate run even when disabled" do
-      pid = start_supervised!({Schedule, name: nil, enabled: false, top: 1, scan: @fixtures})
+      pid =
+        start_supervised!(
+          {Schedule,
+           name: nil,
+           enabled: false,
+           notify: self(),
+           top: 1,
+           scan: @fixtures,
+           adapter_dir: "adapters/faber-elixir"}
+        )
+
       Schedule.run_now(pid)
 
-      assert eventually(fn -> Schedule.status(pid).runs >= 1 end)
-    end
-  end
-
-  # Poll a predicate until true or timeout — the job runs in a linked Task, so completion is async.
-  defp eventually(fun, attempts \\ 100)
-  defp eventually(_fun, 0), do: false
-
-  defp eventually(fun, attempts) do
-    if fun.() do
-      true
-    else
-      Process.sleep(20)
-      eventually(fun, attempts - 1)
+      assert_receive {:faber_schedule, :run_complete, summary}, 2_000
+      assert summary.scanned == 1
+      # Disabled: a run_now fires once but does NOT arm a recurring timer.
+      assert Schedule.status(pid).runs == 1
     end
   end
 end

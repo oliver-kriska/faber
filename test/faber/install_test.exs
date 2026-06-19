@@ -23,6 +23,17 @@ defmodule Faber.InstallTest do
     end
 
     @tag :tmp_dir
+    test "rejects a name that isn't a safe path segment (no traversal/absolute escape)", %{
+      tmp_dir: dir
+    } do
+      assert {:error, {:invalid_name, _}} = Install.install({"../../etc/evil", "x"}, dir: dir)
+      assert {:error, {:invalid_name, _}} = Install.install({"/etc/evil", "x"}, dir: dir)
+      assert {:error, {:invalid_name, _}} = Install.install({"has spaces", "x"}, dir: dir)
+      assert {:error, {:invalid_name, _}} = Install.install({"Upper", "x"}, dir: dir)
+      refute File.exists?(Path.join(dir, "etc"))
+    end
+
+    @tag :tmp_dir
     test "renders and installs a %Proposal{}", %{tmp_dir: dir} do
       p = %Proposal{
         name: "tidy-thing",

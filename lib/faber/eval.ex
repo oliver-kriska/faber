@@ -147,7 +147,12 @@ defmodule Faber.Eval do
   defp safe_atom(k) when is_binary(k) do
     String.to_existing_atom(k)
   rescue
-    ArgumentError -> k
+    ArgumentError ->
+      Logger.warning(
+        "adapter eval references unknown matcher param #{inspect(k)} — ignored (no such matcher key)"
+      )
+
+      k
   end
 
   @doc """

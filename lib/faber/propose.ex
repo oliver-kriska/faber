@@ -252,7 +252,15 @@ defmodule Faber.Propose do
   defp fmt_list([]), do: "(none)"
   defp fmt_list(list), do: Enum.join(list, ", ")
 
-  defp escape(str), do: String.replace(str || "", "\"", "'")
+  # The description lands inside a quoted YAML frontmatter scalar. It comes from LLM output mined
+  # from untrusted transcripts, so collapse newlines/whitespace to single spaces (a raw newline or
+  # a `---` line could otherwise forge frontmatter) and swap the quote char.
+  defp escape(str) do
+    (str || "")
+    |> String.replace("\"", "'")
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+  end
 
   defp titleize(name) do
     name
