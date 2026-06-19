@@ -53,7 +53,6 @@ defmodule Faber.Scan do
     ]
   end
 
-  @default_base "~/.claude/projects"
   @session_timeout_ms 60_000
 
   @doc """
@@ -61,7 +60,8 @@ defmodule Faber.Scan do
 
   Options:
 
-    * `:base` — transcript root (default `#{@default_base}`)
+    * `:base` — transcript root (default: the ingest format's `default_base/0`)
+    * `:format` — ingest format / agent (default `:claude`; see `Faber.Ingest.Format`)
     * `:limit` — cap the number of sessions scored (default: all)
     * `:min_messages` — drop sessions with fewer user+assistant messages (default `4`)
     * `:max_concurrency` — fan-out width (default `System.schedulers_online/0`)
@@ -72,17 +72,17 @@ defmodule Faber.Scan do
   """
   @spec run(keyword()) :: [Result.t()]
   def run(opts \\ []) do
-    base = Keyword.get(opts, :base, @default_base)
     min_messages = Keyword.get(opts, :min_messages, 4)
     max_concurrency = Keyword.get(opts, :max_concurrency, System.schedulers_online())
     timeout = Keyword.get(opts, :timeout, @session_timeout_ms)
     dedupe = Keyword.get(opts, :dedupe, true)
     rank_by = Keyword.get(opts, :rank_by, :raw)
+    ingest_opts = Keyword.take(opts, [:base, :format])
 
-    base
+    ingest_opts
     |> Ingest.discover()
     |> maybe_take(opts[:limit])
-    |> Task.async_stream(&score_session/1,
+    |> Task.async_stream(&score_session(&1, ingest_opts),
       max_concurrency: max_concurrency,
       timeout: timeout,
       on_timeout: :kill_task,
@@ -122,9 +122,9 @@ defmodule Faber.Scan do
   @doc """
   Score a single session file into a `Result`.
   """
-  @spec score_session(Path.t()) :: Result.t()
-  def score_session(path) do
-    {events, parse_errors} = Ingest.parse_file(path)
+  @spec score_session(Path.t(), keyword()) :: Result.t()
+  def score_session(path, ingest_opts \\ []) do
+    {events, parse_errors} = Ingest.parse_file(path, ingest_opts)
     f = Detect.friction(events)
     fp = Detect.fingerprint(events)
     op = Detect.opportunity(events)

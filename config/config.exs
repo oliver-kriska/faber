@@ -10,6 +10,11 @@ config :faber, :llm_model, "anthropic:claude-sonnet-4-6"
 # path. Switch to `:sidecar` for the Python matcher port (parity / future GEPA + trigger eval).
 config :faber, :eval_engine, :native
 
+# Ingest format / source agent (M2). Claude Code transcripts by default. Cross-agent formats
+# (Codex/OpenCode/Pi) plug in behind `Faber.Ingest.Format` once their transcript specs are pinned.
+# Override per call with `Scan.run(format: :claude)` or globally here.
+config :faber, :ingest_format, :claude
+
 # Python eval sidecar (M4): interpreter + package dir. uv is optional; plain python3 works
 # because the sidecar is stdlib + PyYAML only.
 config :faber, :python, System.get_env("FABER_PYTHON", "python3")
