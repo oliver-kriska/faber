@@ -34,7 +34,8 @@ defmodule Mix.Tasks.Faber.Propose do
     limit: :integer,
     base: :string,
     write: :string,
-    eval: :boolean
+    eval: :boolean,
+    trigger: :boolean
   ]
 
   @impl Mix.Task
@@ -84,23 +85,31 @@ defmodule Mix.Tasks.Faber.Propose do
     Mix.shell().info(md)
     Mix.shell().info(String.duplicate("─", 72))
 
-    if Keyword.get(opts, :eval, true), do: run_eval(proposal, adapter)
+    if Keyword.get(opts, :eval, true), do: run_eval(proposal, adapter, opts)
     if dir = opts[:write], do: write(dir, proposal, md)
 
     Mix.shell().info("\nProvenance: #{result.session_id} — #{result.path}")
   end
 
-  defp run_eval(proposal, adapter) do
-    case Eval.score(proposal, adapter: adapter) do
+  defp run_eval(proposal, adapter, opts) do
+    # `--trigger` adds behavioral routing accuracy (one keyless `claude -p` call per fixture).
+    case Eval.score(proposal, adapter: adapter, trigger: opts[:trigger]) do
       {:ok, r} ->
         verdict = if r.passed, do: "PASS", else: "below threshold"
         Mix.shell().info("Eval: composite #{fmt(r.composite)} (#{verdict} @ #{r.threshold})")
         for {dim, d} <- r.dimensions, do: Mix.shell().info("  #{dim}: #{fmt(d["score"])}")
+        report_trigger(Map.get(r, :trigger))
 
       {:error, reason} ->
         Mix.shell().error("Eval skipped: #{inspect(reason)}")
     end
   end
+
+  defp report_trigger(nil), do: :ok
+  defp report_trigger({:skipped, reason}), do: Mix.shell().info("Trigger: skipped (#{reason})")
+
+  defp report_trigger(%{accuracy: acc, correct: c, total: t}),
+    do: Mix.shell().info("Trigger accuracy: #{fmt(acc)} (#{c}/#{t})")
 
   defp write(dir, proposal, md) do
     path = Path.join([dir, proposal.name, "SKILL.md"])

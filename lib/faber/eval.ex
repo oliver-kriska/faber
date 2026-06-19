@@ -42,7 +42,9 @@ defmodule Faber.Eval do
   def score(proposal_or_md, opts \\ [])
 
   def score(%Proposal{} = proposal, opts) do
-    proposal |> Propose.render_skill_md() |> score(opts)
+    with {:ok, result} <- proposal |> Propose.render_skill_md() |> score(opts) do
+      {:ok, maybe_add_trigger(result, proposal, opts)}
+    end
   end
 
   def score(skill_md, opts) when is_binary(skill_md) do
@@ -150,6 +152,16 @@ defmodule Faber.Eval do
       {:ok, %{passed: true} = r} -> {:pass, r}
       {:ok, %{passed: false} = r} -> {:fail, r}
       {:error, _} = err -> err
+    end
+  end
+
+  # Behavioral trigger-accuracy is opt-in (`trigger: true`) — it costs one LLM call per fixture, so
+  # it stays off the structural hot path. Only a %Proposal{} carries the trigger fixtures.
+  defp maybe_add_trigger(result, proposal, opts) do
+    if opts[:trigger] do
+      Map.put(result, :trigger, Faber.Eval.Trigger.score(proposal, opts))
+    else
+      result
     end
   end
 
