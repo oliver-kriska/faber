@@ -77,11 +77,20 @@ defmodule Faber.CLI do
 
   def maybe_apply_port(_), do: :ok
 
-  @doc "Run the parsed command. One-shot commands `System.halt/1`; `serve` returns and stays up."
+  @doc """
+  Run the parsed command. `serve` returns (the listening endpoint keeps the VM up); one-shot
+  commands run in their OWN process so `Faber.Application.start/2` returns cleanly rather than
+  halting inside the boot path. The command prints synchronously, then `System.halt/1` stops the
+  VM — which flushes pending stdio before exit (so the last line is never dropped).
+  """
   @spec dispatch(command() | nil) :: :ok
   def dispatch(nil), do: :ok
   def dispatch({:serve, opts}), do: serve(opts)
-  def dispatch({command, opts}), do: System.halt(run(command, opts))
+
+  def dispatch({command, opts}) do
+    spawn(fn -> System.halt(run(command, opts)) end)
+    :ok
+  end
 
   @doc "Run a one-shot command, returning a process exit status (0 ok / 1 error). No `halt`."
   @spec run(atom(), keyword()) :: non_neg_integer()
@@ -169,7 +178,8 @@ defmodule Faber.CLI do
       _ -> {"", 0}
     end
   rescue
-    _ -> :ok
+    e ->
+      IO.puts(:stderr, "could not open browser (open #{url} manually): #{Exception.message(e)}")
   end
 
   # ── rendering ──────────────────────────────────────────────────────────────
