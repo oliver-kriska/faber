@@ -13,6 +13,9 @@ defmodule Faber.LoopTest do
 
     @impl true
     def call(_command, _request, opts) do
+      # Contract: refine/3 forwards its opts verbatim through Eval.score → Sidecar.call, so
+      # :seq_agent arrives here. fetch! is deliberate — if that pass-through ever changes, this
+      # test should fail loudly rather than silently scoring 0.0.
       composite =
         opts
         |> Keyword.fetch!(:seq_agent)
@@ -285,7 +288,7 @@ defmodule Faber.LoopTest do
            ]}
         )
 
-      assert {:ok, state} = Server.await(pid)
+      assert {:ok, state} = Server.await(pid, 5_000)
       assert state.status == :complete
       assert Server.status(pid) == :complete
     end
@@ -307,8 +310,9 @@ defmodule Faber.LoopTest do
         )
 
       # The loop runs in a Task (not in handle_continue), so await is replied to on completion
-      # rather than blocking the server — and it survives a run longer than one iteration.
-      assert {:ok, state} = Server.await(pid)
+      # rather than blocking the server — and it survives a run longer than one iteration. A
+      # bounded timeout means a broken loop fails fast instead of hanging the test.
+      assert {:ok, state} = Server.await(pid, 5_000)
       assert state.status == :complete
       assert state.iteration == 3
       assert state.best_composite == 0.7

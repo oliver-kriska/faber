@@ -34,19 +34,23 @@ defmodule FaberWeb.DashboardLive do
 
   @impl true
   def handle_async(:scan, {:ok, results}, socket) do
+    top = Enum.take(results, 25)
+
     {:noreply,
      socket
      |> assign(:scanned, true)
      |> assign(:scanning, false)
      |> assign(:total, length(results))
      |> assign(:tier2, Enum.count(results, & &1.tier2))
-     |> assign(:results, Enum.take(results, 25))
-     |> assign(:shown, min(25, length(results)))}
+     |> assign(:results, top)
+     |> assign(:shown, length(top))}
   end
 
   def handle_async(:scan, {:exit, _reason}, socket) do
     {:noreply,
-     assign(socket, scanned: true, scanning: false, total: 0, tier2: 0, results: [], shown: 0)}
+     socket
+     |> put_flash(:error, "Scan failed — see server logs.")
+     |> assign(scanned: true, scanning: false, total: 0, tier2: 0, results: [], shown: 0)}
   end
 
   defp start_scan(socket) do
@@ -65,6 +69,7 @@ defmodule FaberWeb.DashboardLive do
   def render(assigns) do
     ~H"""
     <main class="container">
+      <FaberWeb.Layouts.flash_group flash={@flash} />
       <h1><span class="accent">Faber</span> — session friction</h1>
       <p :if={!@scanned} class="summary">scanning sessions…</p>
       <p :if={@scanned} class="summary">
