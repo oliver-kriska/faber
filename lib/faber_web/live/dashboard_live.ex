@@ -10,12 +10,21 @@ defmodule FaberWeb.DashboardLive do
   """
   use FaberWeb, :live_view
 
-  alias Faber.Scan
+  alias Faber.{Adapter, Eval, Propose, Scan}
 
   @impl true
   def mount(_params, _session, socket) do
     socket =
-      assign(socket, scanned: false, scanning: false, total: 0, tier2: 0, results: [], shown: 0)
+      assign(socket,
+        scanned: false,
+        scanning: false,
+        total: 0,
+        tier2: 0,
+        results: [],
+        shown: 0,
+        proposing: false,
+        proposal: nil
+      )
 
     # Scan only on the connected mount, and run it asynchronously so the LiveView process stays
     # responsive — `Scan.run` fans out over hundreds of transcripts and would otherwise block the
@@ -30,6 +39,23 @@ defmodule FaberWeb.DashboardLive do
 
   def handle_event("rescan", _params, socket) do
     {:noreply, socket |> assign(:scanned, false) |> start_scan()}
+  end
+
+  # Present (not install): propose + eval a skill for one session, async, shown in a panel.
+  def handle_event("propose", _params, %{assigns: %{proposing: true}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("propose", %{"i" => i}, socket) do
+    case Enum.at(socket.assigns.results, String.to_integer(i) - 1) do
+      nil ->
+        {:noreply, socket}
+
+      result ->
+        {:noreply,
+         socket
+         |> assign(proposing: true, proposal: nil)
+         |> start_async(:propose, fn -> do_propose(result) end)}
+    end
   end
 
   @impl true
@@ -51,6 +77,35 @@ defmodule FaberWeb.DashboardLive do
      socket
      |> put_flash(:error, "Scan failed — see server logs.")
      |> assign(scanned: true, scanning: false, total: 0, tier2: 0, results: [], shown: 0)}
+  end
+
+  def handle_async(:propose, {:ok, data}, socket) do
+    {:noreply, assign(socket, proposing: false, proposal: data)}
+  end
+
+  def handle_async(:propose, {:exit, _reason}, socket) do
+    {:noreply,
+     socket
+     |> put_flash(:error, "Proposal failed — see server logs.")
+     |> assign(proposing: false)}
+  end
+
+  defp do_propose(result) do
+    dir = Application.get_env(:faber, :adapter_dir, "adapters/faber-elixir")
+
+    with {:ok, adapter} <- Adapter.load(dir),
+         {:ok, proposal} <- Propose.propose(result, adapter),
+         {:ok, eval} <- Eval.score(proposal, adapter: adapter) do
+      %{
+        name: proposal.name,
+        md: Propose.render_skill_md(proposal),
+        composite: eval.composite,
+        passed: eval.passed,
+        threshold: eval.threshold
+      }
+    else
+      {:error, reason} -> %{error: inspect(reason)}
+    end
   end
 
   defp start_scan(socket) do
@@ -91,6 +146,7 @@ defmodule FaberWeb.DashboardLive do
             <th>Errs</th>
             <th>T2</th>
             <th>Session</th>
+            <th>Skill</th>
           </tr>
         </thead>
         <tbody>
@@ -105,14 +161,33 @@ defmodule FaberWeb.DashboardLive do
             <td class="num">{r.error_count}</td>
             <td class="tier2">{if(r.tier2, do: "✓", else: "")}</td>
             <td class="muted">{session(r)}</td>
+            <td>
+              <button phx-click="propose" phx-value-i={i} disabled={@proposing}>Propose</button>
+            </td>
           </tr>
         </tbody>
       </table>
 
       <p :if={@scanned and @results == []} class="empty">No sessions matched.</p>
+
+      <section :if={@proposing} class="panel">Proposing a skill…</section>
+
+      <section :if={@proposal} class="panel">
+        <p :if={@proposal[:error]} class="empty">Proposal failed: {@proposal.error}</p>
+        <div :if={!@proposal[:error]}>
+          <h2>
+            {@proposal.name} — composite {fmt(@proposal.composite)}
+            <span class="tier2">{verdict(@proposal)}</span>
+          </h2>
+          <pre class="skill">{@proposal.md}</pre>
+        </div>
+      </section>
     </main>
     """
   end
+
+  defp verdict(%{passed: true}), do: "PASS"
+  defp verdict(%{threshold: t}), do: "below threshold (#{t})"
 
   defp fmt(n) when is_float(n), do: :erlang.float_to_binary(n, decimals: 1)
   defp fmt(n), do: to_string(n)

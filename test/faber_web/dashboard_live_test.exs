@@ -32,4 +32,16 @@ defmodule FaberWeb.DashboardLiveTest do
 
     assert render_click(view, "rescan") =~ "Faber"
   end
+
+  test "the Propose action presents a generated skill and its eval verdict", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+    render_async(view)
+
+    # Propose for the top-ranked session (stub LLM + native eval — hermetic).
+    render_click(view, "propose", %{"i" => "1"})
+    html = render_async(view)
+
+    assert html =~ "composite"
+    assert html =~ "Iron Laws"
+  end
 end
