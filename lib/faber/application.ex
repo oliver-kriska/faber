@@ -13,6 +13,9 @@ defmodule Faber.Application do
       # On-demand homes for autoresearch loop runs (M5). Started empty; loops are launched
       # explicitly via Faber.Loop.Supervisor.start_loop/1, never at boot.
       Faber.Loop.Supervisor,
+      # Scheduled/overnight pipeline runs (M5). Started INERT — does nothing unless
+      # `config :faber, :schedule` sets `enabled: true`. Faber takes no autonomous action by default.
+      Faber.Schedule,
       # Web dashboard (M6).
       FaberWeb.Endpoint
     ]

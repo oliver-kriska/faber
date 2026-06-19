@@ -14,6 +14,18 @@ config :faber, :eval_engine, :native
 # because the sidecar is stdlib + PyYAML only.
 config :faber, :python, System.get_env("FABER_PYTHON", "python3")
 
+# Scheduled/overnight pipeline runs (M5). DISABLED by default — Faber takes no autonomous action
+# unless you opt in. Enable to periodically scan → propose → eval (and optionally install passing
+# skills) with no human in the loop:
+#
+#   config :faber, :schedule,
+#     enabled: true,
+#     every_ms: :timer.hours(8),
+#     adapter_dir: "adapters/faber-elixir",
+#     top: 3,
+#     install: false
+config :faber, :schedule, enabled: false
+
 # Web dashboard (M6). No Ecto — the dashboard scans the filesystem read-only. Assets are
 # vendored UMD builds (no esbuild/tailwind build step).
 config :faber, FaberWeb.Endpoint,
