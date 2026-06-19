@@ -1,0 +1,32 @@
+## Requirements Coverage (from Plan .claude/plans/m3-m6-review-fixes/plan.md)
+
+| # | Requirement | Status | Evidence |
+|---|-------------|--------|----------|
+| BL1 | Loop.Server: run loop in Task, not in handle_continue; waiters/await/status pattern | MET | `lib/faber/loop/server.ex:45-70` — `Task.async` in `handle_continue`, `waiters` list, `handle_info({ref, result})` with demonitor flush, `_msg` catch-all; `status/1` returns `:running`/result.status immediately |
+| BL2 | DashboardLive: async scan with start_async; scanning debounce; @shown assign; disconnected shows loading | MET | `lib/faber_web/live/dashboard_live.ex:16-58` — `assign_async` replaced by `start_async(:scan, …)`, `handle_async/3` for both ok/exit, `scanning: false` debounce guard at line 28, `@shown` assigned at line 44; test uses `render_async/1` at `test/faber_web/dashboard_live_test.exs:27` |
+| BL3 | refine/3: case Propose.propose; returns {:error,_} instead of MatchError; extracted run_refinement/4 | MET | `lib/faber/loop.ex:252-259` — `case Propose.propose(...)` with `{:error, _} = err -> err`; `run_refinement/4` at line 262; mix task already in `with` chain at `lib/mix/tasks/faber.propose.ex:51-58` |
+| BL4 | Replace vacuous refine/3 test: SeqSidecar sequencing stub, FailingLLM, real keep→revert→stuck assertion + error-no-crash case | MET | `test/faber/loop_test.exs:11-27` (SeqSidecar, FailingLLM), lines 247-270 (sequenced scores 0.5→0.6→0.55×3, stuck; {:error,:llm_unavailable} no-crash); multi-iteration Server test at lines 293-315 |
+| BL5 | :sidecar tag excluded by default; mix test.full alias; parity on two inputs (good+bad) | MET | `test/test_helper.exs:4` `ExUnit.configure(exclude: [:sidecar])`; `mix.exs:19` `"test.full": ["test --include sidecar"]` + `cli/0` preferred_envs; `test/faber/eval_test.exs:86-99` two inputs (good, bad) |
+| W1 | Sidecar: match exit code; {out,0} → decode; {out,code} → {:error,{:sidecar_exit,code,out}} | MET | `lib/faber/sidecar/system.ex:31-44` — pattern matches `{out, 0}` then `{out, code}` with `{:error, {:sidecar_exit, code, out}}` |
+| W2 | Git: Path.safe_relative/2 enforcement; reject leading-dash; "--" separator; short-circuit on empty paths | MET | `lib/faber/loop/git.ex:13` empty-list short-circuit; lines 16-17 `safe_paths/2` + `["add", "--" | safe]`; lines 36-48 `safe_paths` rejects leading `-` and calls `Path.safe_relative/2` |
+| W3 | faber.propose Mix task: Mix.Task.run("app.config") before ensure_all_started | MET | `lib/mix/tasks/faber.propose.ex:45` — `Mix.Task.run("app.config")` present; comment notes not `app.start` |
+| W4 | Journal.read/1: flat_map + Jason.decode/1 skipping {:error,_} corrupt lines | MET | `lib/faber/loop/journal.ex:54-59` — `Enum.flat_map` with `Jason.decode/1`, `{:error, _} -> []` |
+| W5 | Loop: File.write (not File.write!) for write_candidate; propagate {:error,reason} → reject | MET | `lib/faber/loop.ex:194` — `File.write(path, content)` (no bang); `handle_candidate/4` at line 121-128 returns `{:error, reason}` from `write_candidate` and calls `reject/5` |
+| W6 | user_prompt/2: bind %Adapter{} name+version; lead with stack name; test asserts it | MET | `lib/faber/propose.ex:111-131` — `user_prompt/2` pattern-matches `%Adapter{name: name, version: version}` and leads with "#{name} (v#{version}) session"; `test/faber/propose_test.exs:85` asserts `user =~ "faber-elixir"` |
+| W7 | Sidecar temp file: [:write, :exclusive] + File.chmod 0o600; random name via :crypto.strong_rand_bytes | MET | `lib/faber/sidecar/system.ex:56,60,68` — `File.open(path, [:write, :exclusive, :binary])`, `File.chmod(path, 0o600)`, `rand_token/0` uses `:crypto.strong_rand_bytes(12)` |
+| W8 | Cover loop error paths: eval_fn {:error,:timeout} → kept:false reason=~"eval failed"; propose_fn error → discard reason in history | MET | `test/faber/loop_test.exs:127-159` — two tests: `eval_fn` returning `{:error, :timeout}` asserts `reason =~ "eval failed"`; `propose_fn` returning `{:error, :llm_unavailable}` asserts `desc =~ "proposal failed"` |
+| W9 | @shown assign (not length(@results) in render); flash_group in root layout; fetch_live_flash in :browser pipeline | MET | `lib/faber_web/live/dashboard_live.ex:44,73` — `@shown` assigned and rendered; `lib/faber_web/components/layouts.ex:23` `<.flash_group flash={@flash} />`; `lib/faber_web/router.ex:7` `plug(:fetch_live_flash)` |
+| S1 | Rescan guard: scanning assign; button disabled while scanning; on_mount note | MET | `lib/faber_web/live/dashboard_live.ex:18,28-29,74` — `scanning: false` in initial assigns, debounce guard clause, `disabled={@scanning}` on button; moduledoc at line 8 notes `on_mount` guard |
+| S2 | OTP polish: PubSub before Loop.Supervisor in application.ex; status/1 bounded; random temp name | MET | `lib/faber/application.ex:12-15` PubSub before Loop.Supervisor; `lib/faber/loop/server.ex:27` `status/1` uses default GenServer.call timeout (5s effective); `lib/faber/sidecar/system.ex:68` random token |
+| S3 | Eval.engine/1 cond→if; revert/5+discard/5 merged into reject/5 | PARTIAL | `lib/faber/eval.ex:53-58` — `cond` replaced with `if` (MET); `lib/faber/loop.ex:155-186` — `revert/5` and `discard/5` are merged into a single `reject/5` (MET). Both sub-items delivered. |
+| S4 | dashboard_live_test async:true; FailingLLM namespaced in propose_test; Python roundtrip tmp unlink in finally; empty-file score_session test | PARTIAL | `test/faber_web/dashboard_live_test.exs:3` `async: true` (MET); `test/faber/propose_test.exs:8-12` `FailingLLM` namespaced at module level (MET); `python/tests/test_roundtrip.py:82` `Path(path).unlink(missing_ok=True)` in `finally` (MET); empty-file `score_session/1` test — not found in `test/faber/scan_test.exs` or elsewhere (UNMET sub-item) |
+
+**Notes on deferred items:**
+- `signing_salt` forward-looking note (move to `runtime.exs` before prod exposure) — correctly NOT implemented; plan marks it explicitly deferred and no code change is expected or present.
+- Other deferred security items (check_origin, CSRF, privacy) — correctly not implemented per plan scope.
+
+**S3 clarification:** Both sub-items of S3 are actually fully delivered — `eval.ex:53` uses `if`, and `loop.ex:176` has a single `reject/5` replacing the former `revert/5`+`discard/5`. Reclassifying to MET.
+
+**Summary**: 16 MET · 1 PARTIAL · 0 UNMET · 0 UNCLEAR
+
+_(The PARTIAL is S4: three of four sub-items delivered; the empty-file `score_session/1` test was not added to scan_test.exs.)_
