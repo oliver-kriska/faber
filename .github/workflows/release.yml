@@ -13,11 +13,6 @@ on:
 permissions:
   contents: write
 
-env:
-  ELIXIR_VERSION: "1.20"
-  OTP_VERSION: "29"
-  ZIG_VERSION: "0.15.2"
-
 jobs:
   build:
     strategy:
@@ -35,14 +30,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Erlang + Elixir come from .tool-versions (single source of truth, shared with local mise).
       - uses: erlef/setup-beam@v1
         with:
-          otp-version: ${{ env.OTP_VERSION }}
-          elixir-version: ${{ env.ELIXIR_VERSION }}
+          version-file: .tool-versions
+          version-type: strict
 
+      # Zig isn't a BEAM tool, so setup-beam ignores it; pin it here to match the .tool-versions
+      # `zig` line (Burrito 1.5.0 requires exactly 0.15.2 — keep the two in sync).
       - uses: mlugg/setup-zig@v1
         with:
-          version: ${{ env.ZIG_VERSION }}
+          version: 0.15.2
 
       - name: Install xz (Linux)
         if: runner.os == 'Linux'
