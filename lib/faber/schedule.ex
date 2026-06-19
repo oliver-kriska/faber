@@ -57,7 +57,7 @@ defmodule Faber.Schedule do
   """
   @spec run_once(keyword()) :: map()
   def run_once(opts \\ []) do
-    adapter_dir = opts[:adapter_dir] || "adapters/faber-elixir"
+    adapter_dir = opts[:adapter_dir] || Faber.adapter_dir()
     top = opts[:top] || 3
     scan_opts = opts[:scan] || [limit: 400, min_messages: 4]
     llm_opts = Keyword.take(opts, [:llm, :model, :stub_response])

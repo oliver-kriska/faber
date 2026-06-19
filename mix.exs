@@ -9,8 +9,37 @@ defmodule Faber.MixProject do
       start_permanent: Mix.env() == :prod,
       description: description(),
       aliases: aliases(),
+      releases: releases(),
       deps: deps()
     ]
+  end
+
+  # Single-binary distribution via Burrito (see .claude/research/2026-06-19-single-binary-*).
+  # Scoped to macOS + Linux only — no Windows target (which also drops the `7z` build dependency).
+  # `MIX_ENV=prod mix release faber` cross-builds with Zig; output lands in `burrito_out/`.
+  defp releases do
+    [
+      faber: [
+        # Copy the declarative adapter pack into the release root so the packaged binary can load
+        # it (resolved at runtime via Faber.adapter_dir/0 → RELEASE_ROOT). Runs after assemble,
+        # before Burrito wraps the release dir into the self-extracting binary.
+        steps: [:assemble, &copy_adapters/1, &Burrito.wrap/1],
+        burrito: [
+          targets: [
+            macos: [os: :darwin, cpu: :x86_64],
+            macos_silicon: [os: :darwin, cpu: :aarch64],
+            linux: [os: :linux, cpu: :x86_64]
+          ]
+        ]
+      ]
+    ]
+  end
+
+  # Release step: bundle the declarative adapter pack into the release root (resolved at runtime by
+  # Faber.adapter_dir/0 via RELEASE_ROOT). The engine itself is domain-free; the adapter ships beside it.
+  defp copy_adapters(release) do
+    File.cp_r!("adapters", Path.join(release.path, "adapters"))
+    release
   end
 
   # `mix test` skips the `@tag :sidecar` parity tests (they spawn python3); `mix test.full` runs
@@ -52,6 +81,9 @@ defmodule Faber.MixProject do
       {:phoenix_live_view, "~> 1.0"},
       {:phoenix_html, "~> 4.1"},
       {:bandit, "~> 1.5"},
+      # Single-binary packaging (mix release → self-extracting binary with ERTS bundled). Only the
+      # release path uses it; runtime code guards on it so dev/test never call into Burrito.
+      {:burrito, "~> 1.0"},
       {:lazy_html, ">= 0.1.0", only: :test}
     ]
   end

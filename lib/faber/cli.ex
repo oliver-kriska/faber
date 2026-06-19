@@ -1,0 +1,255 @@
+defmodule Faber.CLI do
+  @moduledoc """
+  Command-line entry point for the single-binary distribution.
+
+  When Faber runs as a Burrito release the binary's argv selects a subcommand; `command/0` parses
+  it (and returns `nil` in dev/test/iex so `mix phx.server` and the LiveView tests behave exactly
+  as before — the web endpoint still starts). `Faber.Application` calls `command/0` at boot, starts
+  the web endpoint only for `serve` (so `faber scan` never binds a port), then `dispatch/1` runs the
+  command: one-shot commands print and `System.halt/1`; `serve` prints the URL, opens the browser,
+  and leaves the BEAM running.
+
+  Subcommands: `scan`, `propose [--rank N] [--install]`, `serve [--port P] [--no-open]`,
+  `help`, `--version`.
+  """
+
+  alias Faber.{Adapter, Eval, Install, Propose, Scan}
+
+  @default_port 4710
+
+  @typedoc "A parsed command: `{name, opts}`."
+  @type command :: {atom(), keyword()}
+
+  @doc "Parsed command when running as a Burrito release, else `nil` (dev/test/iex)."
+  @spec command() :: command() | nil
+  def command do
+    case release_argv() do
+      nil -> nil
+      argv -> parse(argv)
+    end
+  end
+
+  # Only treat argv as a CLI invocation inside an actual release wrapped by Burrito. `RELEASE_NAME`
+  # is set by every release at runtime; the Burrito argv shim is only present in the wrapped binary.
+  defp release_argv do
+    if System.get_env("RELEASE_NAME") && function_exported?(Burrito.Util.Args, :argv, 0) do
+      Burrito.Util.Args.argv()
+    end
+  end
+
+  @doc "Pure argv → `{command, opts}` parser (no I/O), so it's unit-testable."
+  @spec parse([String.t()]) :: command()
+  def parse([]), do: {:help, []}
+  def parse([h | _]) when h in ["help", "--help", "-h"], do: {:help, []}
+  def parse([v | _]) when v in ["--version", "-V"], do: {:version, []}
+
+  def parse(["scan" | rest]) do
+    {opts, _, _} = OptionParser.parse(rest, strict: [limit: :integer, rank_by: :string])
+    {:scan, opts}
+  end
+
+  def parse(["propose" | rest]) do
+    {opts, _, _} = OptionParser.parse(rest, strict: [rank: :integer, install: :boolean])
+    {:propose, opts}
+  end
+
+  def parse(["serve" | rest]) do
+    {opts, _, _} = OptionParser.parse(rest, strict: [port: :integer, open: :boolean])
+    {:serve, opts}
+  end
+
+  def parse([other | _]), do: {:unknown, arg: other}
+
+  @doc """
+  Apply a `serve --port` override to the endpoint config BEFORE the endpoint child starts. Called
+  by `Faber.Application` between parsing the command and building the supervision tree.
+  """
+  @spec maybe_apply_port(command() | nil) :: :ok
+  def maybe_apply_port({:serve, opts}) do
+    if port = opts[:port] do
+      cfg = Application.get_env(:faber, FaberWeb.Endpoint, [])
+      http = Keyword.get(cfg, :http, []) |> Keyword.put(:port, port)
+      Application.put_env(:faber, FaberWeb.Endpoint, Keyword.put(cfg, :http, http))
+    end
+
+    :ok
+  end
+
+  def maybe_apply_port(_), do: :ok
+
+  @doc "Run the parsed command. One-shot commands `System.halt/1`; `serve` returns and stays up."
+  @spec dispatch(command() | nil) :: :ok
+  def dispatch(nil), do: :ok
+  def dispatch({:serve, opts}), do: serve(opts)
+  def dispatch({command, opts}), do: System.halt(run(command, opts))
+
+  @doc "Run a one-shot command, returning a process exit status (0 ok / 1 error). No `halt`."
+  @spec run(atom(), keyword()) :: non_neg_integer()
+  def run(:help, _opts) do
+    IO.puts(usage())
+    0
+  end
+
+  def run(:version, _opts) do
+    IO.puts("faber #{version()}")
+    0
+  end
+
+  def run(:unknown, opts) do
+    IO.puts(:stderr, "faber: unknown command '#{opts[:arg]}'\n")
+    IO.puts(usage())
+    1
+  end
+
+  def run(:scan, opts) do
+    scan_opts =
+      opts
+      |> Keyword.take([:limit, :base, :min_messages, :format])
+      |> Keyword.put_new(:limit, 50)
+      |> put_if(:rank_by, normalize_rank_by(opts[:rank_by]))
+
+    results = Scan.run(scan_opts)
+    IO.puts(render_table(results))
+    0
+  end
+
+  def run(:propose, opts) do
+    rank = opts[:rank] || 1
+
+    scan_opts =
+      opts
+      |> Keyword.take([:base, :min_messages, :format])
+      |> Keyword.put(:limit, max(rank, 50))
+
+    with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
+         %Scan.Result{} = result <- Enum.at(Scan.run(scan_opts), rank - 1),
+         {:ok, proposal} <- Propose.propose(result, adapter),
+         {:ok, eval} <- Eval.score(proposal, adapter: adapter) do
+      IO.puts(render_proposal(proposal, eval, adapter))
+      maybe_install(proposal, adapter, opts[:install])
+      0
+    else
+      nil ->
+        IO.puts(:stderr, "faber: no session at rank #{rank}")
+        1
+
+      {:error, reason} ->
+        IO.puts(:stderr, "faber propose failed: #{inspect(reason)}")
+        1
+    end
+  end
+
+  # ── serve ────────────────────────────────────────────────────────────────-
+
+  # The endpoint is already a started child (Faber.Application added it for :serve). Print the URL
+  # and open the browser; the listening endpoint keeps the BEAM alive. `:opener` is injectable for
+  # tests; `--no-open` (open: false) skips it.
+  defp serve(opts) do
+    url = "http://localhost:#{serve_port()}"
+    IO.puts("Faber UI → #{url}  (Ctrl-C to stop)")
+
+    if Keyword.get(opts, :open, true) do
+      opener = Keyword.get(opts, :opener, &open_browser/1)
+      opener.(url)
+    end
+
+    :ok
+  end
+
+  defp serve_port do
+    Application.get_env(:faber, FaberWeb.Endpoint, [])
+    |> Keyword.get(:http, [])
+    |> Keyword.get(:port, @default_port)
+  end
+
+  defp open_browser(url) do
+    case :os.type() do
+      {:unix, :darwin} -> System.cmd("open", [url])
+      {:unix, _} -> System.cmd("xdg-open", [url])
+      _ -> {"", 0}
+    end
+  rescue
+    _ -> :ok
+  end
+
+  # ── rendering ──────────────────────────────────────────────────────────────
+
+  defp render_table([]), do: "No sessions matched."
+
+  defp render_table(results) do
+    header = "  #  friction  fingerprint            signal           msgs  t2  session"
+
+    rows =
+      results
+      |> Enum.with_index(1)
+      |> Enum.map_join("\n", fn {r, i} ->
+        [
+          String.pad_leading(to_string(i), 3),
+          String.pad_leading(fmt(r.raw), 9),
+          String.pad_trailing(to_string(r.fingerprint), 22),
+          String.pad_trailing(to_string(r.dominant_signal || "—"), 16),
+          String.pad_leading(to_string(r.message_count), 5),
+          String.pad_leading(if(r.tier2, do: "✓", else: ""), 3),
+          "  " <> session(r)
+        ]
+        |> Enum.join(" ")
+      end)
+
+    "#{header}\n#{rows}\n\n#{length(results)} sessions shown."
+  end
+
+  defp render_proposal(proposal, eval, adapter) do
+    verdict = if eval.passed, do: "PASS", else: "below threshold #{eval.threshold}"
+
+    """
+    #{proposal.name} — composite #{fmt(eval.composite)} (#{verdict})
+
+    #{Propose.render_skill_md(proposal, adapter)}
+    """
+  end
+
+  defp maybe_install(_proposal, _adapter, install) when install in [nil, false], do: :ok
+
+  defp maybe_install(proposal, adapter, true) do
+    case Install.install(proposal, adapter: adapter) do
+      {:ok, path} -> IO.puts("installed → #{path}")
+      {:error, reason} -> IO.puts(:stderr, "install failed: #{inspect(reason)}")
+    end
+  end
+
+  defp session(%{path: path, session_id: sid}) do
+    project = path |> Path.dirname() |> Path.basename()
+    short = if is_binary(sid), do: String.slice(sid, 0, 8), else: Path.basename(path, ".jsonl")
+    "#{project}/#{short}"
+  end
+
+  defp normalize_rank_by(rb) when rb in [:raw, :rate], do: rb
+  defp normalize_rank_by("rate"), do: :rate
+  defp normalize_rank_by("raw"), do: :raw
+  defp normalize_rank_by(_), do: nil
+
+  defp put_if(opts, _key, nil), do: opts
+  defp put_if(opts, key, value), do: Keyword.put(opts, key, value)
+
+  defp fmt(n) when is_float(n), do: :erlang.float_to_binary(n, decimals: 1)
+  defp fmt(n), do: to_string(n)
+
+  defp version do
+    case Application.spec(:faber, :vsn) do
+      vsn when is_list(vsn) -> List.to_string(vsn)
+      _ -> "dev"
+    end
+  end
+
+  defp usage do
+    """
+    faber #{version()} — local-first improvement engine for AI coding agents
+
+    Usage:
+      faber scan [--limit N] [--rank-by raw|rate]   Rank session friction
+      faber propose [--rank N] [--install]          Draft + eval a skill for one session
+      faber serve [--port P] [--no-open]            Start the dashboard UI in your browser
+      faber help | --version
+    """
+  end
+end

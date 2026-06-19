@@ -20,4 +20,21 @@ defmodule Faber do
 
   See `HANDOFF.md` for the full product thesis, architecture decision, and milestones.
   """
+
+  @default_adapter "faber-elixir"
+
+  @doc """
+  Resolve the reference adapter directory, working both from the repo and from a packaged release.
+
+  Order: explicit `config :faber, :adapter_dir` → the release root (`RELEASE_ROOT`, where the
+  single binary unpacks the bundled `adapters/`) → the repo-relative `adapters/<name>` for dev/test.
+  """
+  @spec adapter_dir(String.t()) :: Path.t()
+  def adapter_dir(name \\ @default_adapter) do
+    cond do
+      dir = Application.get_env(:faber, :adapter_dir) -> dir
+      root = System.get_env("RELEASE_ROOT") -> Path.join([root, "adapters", name])
+      true -> Path.join("adapters", name)
+    end
+  end
 end

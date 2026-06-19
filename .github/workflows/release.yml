@@ -1,0 +1,72 @@
+name: release
+
+# Build the single-binary distribution (mac + linux only) on tag push and attach to the GitHub
+# Release. Builds run on standard runners whose macOS/Linux SDKs Zig 0.15.2 supports — notably
+# macos-14, because newer macOS SDKs (≥ 26) outrun Zig 0.15.2's bundled libSystem stubs and break
+# Burrito's wrapper link. See .claude/research/2026-06-19-single-binary-distribution.md.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  ELIXIR_VERSION: "1.20"
+  OTP_VERSION: "29"
+  ZIG_VERSION: "0.15.2"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            burrito_target: linux
+          # Apple Silicon runner with an SDK Zig 0.15.2 supports; builds both darwin targets.
+          - runner: macos-14
+            burrito_target: macos_silicon
+          - runner: macos-14
+            burrito_target: macos
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ env.OTP_VERSION }}
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Install xz (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xz-utils
+
+      - name: Install xz (macOS)
+        if: runner.os == 'macOS'
+        run: brew install xz
+
+      - run: mix deps.get
+
+      - name: Build single binary
+        env:
+          MIX_ENV: prod
+          BURRITO_TARGET: ${{ matrix.burrito_target }}
+        run: mix release faber --overwrite
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: faber-${{ matrix.burrito_target }}
+          path: burrito_out/*
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: burrito_out/*

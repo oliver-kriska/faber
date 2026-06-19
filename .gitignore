@@ -35,3 +35,6 @@ __pycache__/
 .DS_Store
 .elixir_ls/
 
+
+# Burrito single-binary build output
+/burrito_out/

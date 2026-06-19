@@ -92,9 +92,7 @@ defmodule FaberWeb.DashboardLive do
   end
 
   defp do_propose(result) do
-    dir = Application.get_env(:faber, :adapter_dir, "adapters/faber-elixir")
-
-    with {:ok, adapter} <- Adapter.load(dir),
+    with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
          {:ok, proposal} <- Propose.propose(result, adapter),
          {:ok, eval} <- Eval.score(proposal, adapter: adapter) do
       %{
