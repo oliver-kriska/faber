@@ -30,6 +30,7 @@ defmodule Faber.Scan do
             error_count: non_neg_integer(),
             message_count: non_neg_integer(),
             parse_errors: non_neg_integer(),
+            max_ctx_pct: float() | nil,
             tier2: boolean()
           }
     defstruct [
@@ -49,6 +50,7 @@ defmodule Faber.Scan do
       :error_count,
       :message_count,
       :parse_errors,
+      :max_ctx_pct,
       :tier2
     ]
   end
@@ -62,7 +64,8 @@ defmodule Faber.Scan do
 
     * `:base` — transcript root (default: the ingest format's `default_base/0`)
     * `:format` — ingest format / agent (default `:claude`; see `Faber.Ingest.Format`)
-    * `:limit` — cap the number of sessions scored (default: all)
+    * `:limit` — cap the number of sessions scored, sampled as an even spread across the
+      corpus (default: all). NOT an alphabetical prefix — that would hide high-friction sessions.
     * `:min_messages` — drop sessions with fewer user+assistant messages (default `4`)
     * `:max_concurrency` — fan-out width (default `System.schedulers_online/0`)
     * `:timeout` — per-session timeout in ms (default `#{@session_timeout_ms}`)
@@ -128,6 +131,7 @@ defmodule Faber.Scan do
     f = Detect.friction(events)
     fp = Detect.fingerprint(events)
     op = Detect.opportunity(events)
+    ctx = Detect.context(events)
 
     %Result{
       path: path,
@@ -146,15 +150,18 @@ defmodule Faber.Scan do
       error_count: f.error_count,
       message_count: f.message_count,
       parse_errors: length(parse_errors),
-      tier2: tier2?(f, op)
+      max_ctx_pct: ctx.max_ctx_pct,
+      tier2: tier2?(f, op, ctx)
     }
   end
 
   # Tier-2 (deep qualitative analysis) eligibility, per the plugin's scoring guide: a session
   # earns the expensive pass if it's painful (friction), automatable (opportunity score or a
-  # skill the user already reached for), or simply long enough to be worth mining.
-  defp tier2?(f, op) do
-    f.score > 0.35 or op.score > 0.5 or op.used != [] or f.message_count > 50
+  # skill the user already reached for), long enough to be worth mining, or context-pressured
+  # (peak prompt fill ≥ 90% of the model's window — the 5th reference trigger).
+  defp tier2?(f, op, ctx) do
+    f.score > 0.35 or op.score > 0.5 or op.used != [] or f.message_count > 50 or
+      (is_number(ctx.max_ctx_pct) and ctx.max_ctx_pct >= 90)
   end
 
   defp rate(_raw, 0), do: 0.0
@@ -164,6 +171,16 @@ defmodule Faber.Scan do
     Enum.find_value(events, fn e -> e.session_id end)
   end
 
+  # A `:limit` caps how many sessions are scored (a speed knob). Sample an EVEN SPREAD across the
+  # discovered paths, not the alphabetical prefix: `Path.wildcard/1` returns sorted paths, so a
+  # prefix skews toward whatever sorts first (often tiny stub sessions) and hides the
+  # highest-friction sessions entirely. `take_every` gives a deterministic cross-section.
   defp maybe_take(paths, nil), do: paths
-  defp maybe_take(paths, limit) when is_integer(limit), do: Enum.take(paths, limit)
+
+  defp maybe_take(paths, limit) when is_integer(limit) and limit > 0 do
+    step = max(div(length(paths), limit), 1)
+    paths |> Enum.take_every(step) |> Enum.take(limit)
+  end
+
+  defp maybe_take(paths, _limit), do: paths
 end

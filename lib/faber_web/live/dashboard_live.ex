@@ -115,8 +115,11 @@ defmodule FaberWeb.DashboardLive do
     |> start_async(:scan, fn -> Scan.run(opts) end)
   end
 
+  # Score ALL sessions (no :limit) so the ranking reflects your true highest-friction sessions —
+  # capping here would sample a subset and could hide the worst ones. The scan is async, so the
+  # full fan-out doesn't block the LiveView. Tests point this at fixtures via :dashboard_scan_opts.
   defp scan_opts do
-    Application.get_env(:faber, :dashboard_scan_opts, limit: 400, min_messages: 4)
+    Application.get_env(:faber, :dashboard_scan_opts, min_messages: 4)
   end
 
   @impl true

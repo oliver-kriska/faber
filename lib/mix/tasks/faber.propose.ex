@@ -18,7 +18,7 @@ defmodule Mix.Tasks.Faber.Propose do
 
     * `--rank N`       which ranked session to use (1 = highest friction; default 1)
     * `--adapter DIR`  adapter pack dir (default `adapters/faber-elixir`)
-    * `--limit N`      cap sessions scored (default 300, for speed)
+    * `--limit N`      cap sessions scored — an even sample across the corpus (default: all)
     * `--base PATH`    transcript root (default ~/.claude/projects)
     * `--write DIR`    write the rendered skill to `DIR/<name>/SKILL.md`
     * `--no-eval`      skip the eval step
@@ -60,10 +60,9 @@ defmodule Mix.Tasks.Faber.Propose do
   end
 
   defp pick_session(opts, rank) do
-    scan_opts =
-      opts
-      |> Keyword.take([:limit, :base])
-      |> Keyword.put_new(:limit, 300)
+    # No default :limit — score all sessions so `--rank N` selects from the true friction ranking.
+    # (A `:limit`, if passed, now samples an even spread; see Faber.Scan.) `--limit` still works.
+    scan_opts = Keyword.take(opts, [:limit, :base])
 
     case Faber.Scan.run(scan_opts) |> Enum.at(rank - 1) do
       nil -> {:error, :no_session_at_rank}

@@ -110,6 +110,19 @@ defmodule Faber.DetectTest do
       assert %{type: "unknown", confidence: confidence} = Detect.fingerprint([])
       assert confidence == 0.0
     end
+
+    test "breaks fingerprint ties deterministically by reference type order" do
+      # edit_pct and bash_pct both > 0.3 → feature(+2) and bug-fix(+2) tie, with no keywords in
+      # the user text. The tie resolves to the earliest type in @fingerprint_order (bug-fix before
+      # feature) — deterministic and matching compute-metrics.py, not (unstable) map order.
+      events = [
+        user("please proceed with the task at hand"),
+        asst([{"Edit", %{"file_path" => "/a.ex"}}, {"Bash", %{"command" => "ls"}}]),
+        asst([{"Edit", %{"file_path" => "/b.ex"}}, {"Bash", %{"command" => "pwd"}}])
+      ]
+
+      assert %{type: "bug-fix", confidence: 0.5} = Detect.fingerprint(events)
+    end
   end
 
   describe "opportunity/1" do
@@ -164,6 +177,52 @@ defmodule Faber.DetectTest do
       assert %{score: score, missed: []} = Detect.opportunity([])
       assert score == 0.0
     end
+  end
+
+  describe "context/1" do
+    test "computes peak context fill from message.usage" do
+      events = [
+        asst_usage(10_000, 0),
+        # prompt = 50_000 + 140_000 = 190_000 → 95% of opus-4-8's 200k window
+        asst_usage(50_000, 140_000)
+      ]
+
+      assert %{max_ctx_pct: 95.0, primary_model: "claude-opus-4-8"} = Detect.context(events)
+    end
+
+    test "nil when there is no usage data" do
+      assert %{max_ctx_pct: nil} = Detect.context([user("hello there")])
+    end
+
+    test "nil for an unknown model window" do
+      event =
+        Faber.Ingest.normalize(%{
+          "type" => "assistant",
+          "message" => %{
+            "role" => "assistant",
+            "model" => "some-future-model-v9",
+            "usage" => %{"input_tokens" => 190_000}
+          }
+        })
+
+      assert %{max_ctx_pct: nil} = Detect.context([event])
+    end
+  end
+
+  defp asst_usage(input, cache_read) do
+    Faber.Ingest.normalize(%{
+      "type" => "assistant",
+      "message" => %{
+        "role" => "assistant",
+        "model" => "claude-opus-4-8",
+        "usage" => %{
+          "input_tokens" => input,
+          "cache_creation_input_tokens" => 0,
+          "cache_read_input_tokens" => cache_read
+        },
+        "content" => []
+      }
+    })
   end
 
   defp user(text) do

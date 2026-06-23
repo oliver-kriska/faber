@@ -83,6 +83,43 @@ defmodule Faber.ScanTest do
     test "limit caps how many sessions are scored" do
       assert length(Scan.run(base: @fixtures, min_messages: 0, limit: 1)) == 1
     end
+
+    test "tier2 fires on high context pressure alone" do
+      dir = Path.join(System.tmp_dir!(), "faber_ctx_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      # One low-friction assistant turn whose prompt fills 95% of the opus-4-8 window.
+      File.write!(
+        Path.join(dir, "ctx.jsonl"),
+        ~s({"type":"assistant","sessionId":"ctx","message":{"role":"assistant","model":"claude-opus-4-8","usage":{"input_tokens":190000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"content":[]}}\n)
+      )
+
+      assert [%Result{max_ctx_pct: 95.0, tier2: true}] = Scan.run(base: dir, min_messages: 0)
+    end
+
+    test "limit samples an even spread, not the alphabetical prefix" do
+      dir = Path.join(System.tmp_dir!(), "faber_spread_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      # Six sorted sessions aa..ff, each a single valid user turn so it scores.
+      for name <- ~w(aa bb cc dd ee ff) do
+        File.write!(
+          Path.join(dir, "#{name}.jsonl"),
+          ~s({"type":"user","sessionId":"#{name}","message":{"role":"user","content":"hi #{name}"}}\n)
+        )
+      end
+
+      basenames =
+        [base: dir, min_messages: 0, limit: 3]
+        |> Scan.run()
+        |> Enum.map(&Path.basename(&1.path))
+
+      assert length(basenames) == 3
+      # A prefix-take would yield aa,bb,cc — assert a later-sorted session made the cut instead.
+      assert Enum.any?(basenames, &(&1 in ["dd.jsonl", "ee.jsonl", "ff.jsonl"]))
+    end
   end
 
   describe "score_session/1" do

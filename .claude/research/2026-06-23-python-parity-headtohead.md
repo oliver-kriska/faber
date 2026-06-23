@@ -89,3 +89,35 @@ plugin's `lab/eval/` — 6 of 8 dimensions (drops `accuracy` = needs a real plug
 `behavioral` = needs a cached trigger run), reweighted to sum to 1.0. The native↔Faber-sidecar
 parity test (`@describetag :sidecar`) guards that the Elixir and Python *implementations of
 Faber's eval* agree within 0.05; it does not claim parity with `lab/eval`'s composite, by design.
+
+## Follow-up (2026-06-23): detection improvements (D1–D3)
+
+After the head-to-head, three fixes landed; parity re-measured on a fresh 120-session spread:
+
+| field | before | after | change |
+|---|---|---|---|
+| `approach_changes` | 95.8% | **100%** | tie-break now matches the reference exactly |
+| `friction_score` ±0.05 | 74.2% | **79.2%** | downstream of the tie-break fix |
+| `tier2` | 90.8% | **91.7%** | up *despite* adding the context-pressure trigger |
+| `fingerprint` | 79.2% | 76.7% | tie-break helped; residual is the message-set difference |
+| `error_tool_ratio`, `interrupted_requests` | 100% | 100% | unchanged (bit-identical) |
+
+1. **`:limit` no longer takes the alphabetical prefix** (`Scan.run`) — it samples an even spread.
+   This was a real bug: the dashboard's `limit:400` and the CLI's defaults scored only the
+   first-sorted (tiny stub) sessions, so the dashboard showed the wrong top session. The dashboard
+   now scores **all** sessions (async) and ranks the true worst; CLI/propose defaults dropped.
+
+2. **Deterministic tie-breaks** (`Detect`) — `fingerprint` best-type and `approach_changes`
+   dominant-tool resolved ties by (unstable) map order. Now they break ties by the reference's
+   fixed order (`@fingerprint_order`) / first-appearance (`Counter.most_common` semantics), which
+   is both reproducible run-to-run AND parity-matching → `approach_changes` is now an exact match.
+
+3. **Context-pressure signal** (`Detect.context/1`) — mines `message.usage` for peak prompt fill
+   (`max_ctx_pct`); feeds the `≥90%` tier-2 trigger (the 5th reference trigger Faber lacked). The
+   model→window map is ported from the reference and **extended to current models** (it predated
+   opus-4-8), so context pressure is computed for modern sessions where the stale reference returns
+   `None` — a documented improvement.
+
+Residual `fingerprint` divergence (~77%) is the **message-set definitional difference** (Faber's
+`human_turn?` excludes `is_meta`/skill-injection/image turns the reference counts), not tie-breaks.
+That is a defensible choice ("what the human actually typed"), left as-is.

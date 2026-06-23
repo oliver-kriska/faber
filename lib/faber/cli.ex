@@ -114,7 +114,6 @@ defmodule Faber.CLI do
     scan_opts =
       opts
       |> Keyword.take([:limit, :base, :min_messages, :format])
-      |> Keyword.put_new(:limit, 50)
       |> put_if(:rank_by, normalize_rank_by(opts[:rank_by]))
 
     results = Scan.run(scan_opts)
@@ -125,10 +124,9 @@ defmodule Faber.CLI do
   def run(:propose, opts) do
     rank = opts[:rank] || 1
 
-    scan_opts =
-      opts
-      |> Keyword.take([:base, :min_messages, :format])
-      |> Keyword.put(:limit, max(rank, 50))
+    # Score all sessions so `--rank N` selects from the TRUE friction ranking (a `:limit` here
+    # would sample a subset and could miss the worst sessions). `--limit` still passes through.
+    scan_opts = Keyword.take(opts, [:limit, :base, :min_messages, :format])
 
     with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
          %Scan.Result{} = result <- Enum.at(Scan.run(scan_opts), rank - 1),

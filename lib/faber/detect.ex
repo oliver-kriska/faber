@@ -66,6 +66,30 @@ defmodule Faber.Detect do
   # still separating `mix test` from `mix deps.get`.
   @bash_prefix_tokens 2
 
+  # Fixed fingerprint-type order = compute-metrics.py's FINGERPRINT_KEYWORDS insertion order.
+  # On a score tie, both pick the earliest type in THIS order — deterministic AND parity-matching
+  # (the reference's `max(scores, key=...)` returns the first-inserted key on ties).
+  @fingerprint_order ~w(bug-fix feature exploration maintenance review refactoring)
+
+  # Context-window sizes by model — ported from compute-metrics.py MODEL_CONTEXT_WINDOWS and
+  # EXTENDED to current models (the reference map predates opus-4-8). `[1m]` variants use the 1M
+  # beta window. Unknown models → nil window → no context-pressure signal (conservative).
+  @context_windows %{
+    "claude-opus-4-8" => 200_000,
+    "claude-opus-4-8[1m]" => 1_000_000,
+    "claude-opus-4-7" => 200_000,
+    "claude-opus-4-7[1m]" => 1_000_000,
+    "claude-opus-4-6" => 200_000,
+    "claude-opus-4-6[1m]" => 1_000_000,
+    "claude-sonnet-4-6" => 200_000,
+    "claude-sonnet-4-6[1m]" => 1_000_000,
+    "claude-sonnet-4-5" => 200_000,
+    "claude-haiku-4-5" => 200_000,
+    "claude-haiku-4-5-20251001" => 200_000,
+    "claude-3-5-sonnet-20241022" => 200_000,
+    "claude-3-5-haiku-20241022" => 200_000
+  }
+
   @type signals :: %{
           retry_loops: non_neg_integer(),
           user_corrections: non_neg_integer(),
@@ -122,9 +146,13 @@ defmodule Faber.Detect do
   end
 
   # The signal contributing the most to `raw` (value × weight); nil when there is no friction.
+  # Ties break deterministically by signal name (the second tuple element) so the dominant signal
+  # is reproducible run-to-run — `Enum.max_by/2` over a map is otherwise order-dependent on ties.
   defp dominant_signal(signals) do
     {signal, value} =
-      Enum.max_by(signals, fn {signal, value} -> value * Map.fetch!(@weights, signal) end)
+      Enum.max_by(signals, fn {signal, value} ->
+        {value * Map.fetch!(@weights, signal), signal}
+      end)
 
     if value > 0, do: signal, else: nil
   end
@@ -207,7 +235,12 @@ defmodule Faber.Detect do
     if total_score <= 0.0 do
       %{type: "unknown", confidence: 0.0}
     else
-      {best, best_score} = Enum.max_by(scores, fn {_type, score} -> score end)
+      # Pick the max score, ties broken by @fingerprint_order (deterministic + parity-matching).
+      {best, best_score} =
+        @fingerprint_order
+        |> Enum.map(fn t -> {t, Map.get(scores, t, 0.0)} end)
+        |> Enum.max_by(fn {_t, score} -> score end)
+
       %{type: best, confidence: Float.round(best_score / total_score, 2)}
     end
   end
@@ -253,6 +286,81 @@ defmodule Faber.Detect do
       missed: missed,
       used: Enum.sort(MapSet.to_list(used))
     }
+  end
+
+  @type context :: %{max_ctx_pct: float() | nil, primary_model: String.t() | nil}
+
+  @doc """
+  Context pressure from per-turn `message.usage`: the peak prompt-token fill as a percentage of
+  the model's context window. `nil` when there's no usage data or the model's window is unknown.
+
+  Port of compute-metrics.py `extract_token_usage` / `get_context_window`; prompt tokens per turn
+  = `input + cache_creation + cache_read`. Feeds the `max_ctx_pct ≥ 90` tier-2 trigger.
+  """
+  @spec context(Enumerable.t()) :: context()
+  def context(events) do
+    prompts =
+      events
+      |> Enum.map(&turn_prompt_tokens/1)
+      |> Enum.reject(&is_nil/1)
+
+    model = primary_model(events)
+    window = context_window(model)
+
+    max_ctx_pct =
+      case {prompts, window} do
+        {[], _} -> nil
+        {_, nil} -> nil
+        {ps, w} -> Float.round(Enum.max(ps) / w * 100, 1)
+      end
+
+    %{max_ctx_pct: max_ctx_pct, primary_model: model}
+  end
+
+  # Prompt tokens for one turn = input + cache_creation + cache_read; nil if the event has no
+  # `message.usage` block (only assistant turns carry usage).
+  defp turn_prompt_tokens(%Event{raw: raw}) when is_map(raw) do
+    with %{} = msg <- Map.get(raw, "message"),
+         %{} = u <- Map.get(msg, "usage") do
+      num(u["input_tokens"]) + num(u["cache_creation_input_tokens"]) +
+        num(u["cache_read_input_tokens"])
+    else
+      _ -> nil
+    end
+  end
+
+  defp turn_prompt_tokens(_), do: nil
+
+  defp num(n) when is_number(n), do: n
+  defp num(_), do: 0
+
+  # Most-frequent model across turns (ties break by name for reproducibility).
+  defp primary_model(events) do
+    events
+    |> Enum.map(fn
+      %Event{raw: raw} when is_map(raw) -> get_in(raw, ["message", "model"])
+      _ -> nil
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> nil
+      models -> models |> Enum.frequencies() |> Enum.max_by(fn {m, c} -> {c, m} end) |> elem(0)
+    end
+  end
+
+  defp context_window(nil), do: nil
+
+  defp context_window(model) do
+    cond do
+      w = @context_windows[model] ->
+        w
+
+      w = @context_windows[String.replace_suffix(model, "[1m]", "")] ->
+        w
+
+      true ->
+        Enum.find_value(@context_windows, fn {k, w} -> if String.contains?(model, k), do: w end)
+    end
   end
 
   defp add_if(list, true, item), do: [item | list]
@@ -408,11 +516,14 @@ defmodule Faber.Detect do
     |> count_transitions()
   end
 
+  # Most-frequent tool in a chunk; ties break by FIRST APPEARANCE in the chunk (Enum.max_by over
+  # the first-seen order), matching Python Counter.most_common — deterministic AND parity-matching.
   defp dominant(names) do
+    freq = Enum.frequencies(names)
+
     names
-    |> Enum.frequencies()
-    |> Enum.max_by(fn {_name, count} -> count end)
-    |> elem(0)
+    |> Enum.uniq()
+    |> Enum.max_by(&Map.fetch!(freq, &1))
   end
 
   defp count_transitions(seq) do

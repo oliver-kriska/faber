@@ -5,7 +5,7 @@ defmodule Mix.Tasks.Faber.Scan do
 
       mix faber.scan                       # top 20 across ~/.claude/projects
       mix faber.scan --top 30
-      mix faber.scan --limit 200           # only score the first 200 sessions
+      mix faber.scan --limit 200           # score an even sample of 200 sessions
       mix faber.scan --base /path/to/dir --min-messages 10
 
   Options:
