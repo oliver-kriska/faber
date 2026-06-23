@@ -44,4 +44,37 @@ defmodule FaberWeb.DashboardLiveTest do
     assert html =~ "composite"
     assert html =~ "Iron Laws"
   end
+
+  test "the ranked table renders rows in descending friction order", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+    html = render_async(view)
+
+    # Each row is `<td muted>#</td><td num>friction</td>` — pull the friction column out and
+    # confirm the view preserves Scan's friction-descending order.
+    frictions =
+      ~r|<td class="muted">\d+</td>\s*<td class="num">([\d.]+)</td>|
+      |> Regex.scan(html, capture: :all_but_first)
+      |> List.flatten()
+      |> Enum.map(&String.to_float/1)
+
+    assert length(frictions) >= 2
+    assert frictions == Enum.sort(frictions, :desc)
+  end
+
+  test "a malformed or out-of-range propose index is a safe no-op", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+    render_async(view)
+
+    # Out-of-range index → Enum.at/2 yields nil; non-integer → Integer.parse fails. Both must
+    # fall through the `else` clause without opening a panel or crashing the LiveView.
+    html = render_click(view, "propose", %{"i" => "999"})
+    refute html =~ "Proposing a skill"
+    refute html =~ "composite"
+
+    html = render_click(view, "propose", %{"i" => "abc"})
+    refute html =~ "Proposing a skill"
+
+    # The process survived both bad clicks and still re-renders.
+    assert render(view) =~ "session friction"
+  end
 end
