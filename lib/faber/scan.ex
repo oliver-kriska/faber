@@ -9,7 +9,8 @@ defmodule Faber.Scan do
   can't take down the scan.
   """
 
-  alias Faber.{Detect, Ingest}
+  alias Faber.Detect
+  alias Faber.Ingest.Source
 
   defmodule Result do
     @moduledoc "Per-session friction summary produced by `Faber.Scan`."
@@ -62,7 +63,10 @@ defmodule Faber.Scan do
 
   Options:
 
-    * `:base` — transcript root (default: the ingest format's `default_base/0`)
+    * `:source` — where sessions come from: `:files` (default, walks the filesystem) or `:ccrider`
+      (read ccrider's SQLite index; see `Faber.Ingest.Source`). Also `config :faber, :ingest_source`.
+    * `:base` — transcript root (default: the ingest format's `default_base/0`); `:files` source only
+    * `:db` — ccrider DB path (default `~/.config/ccrider/sessions.db`); `:ccrider` source only
     * `:format` — ingest format / agent (default `:claude`; see `Faber.Ingest.Format`)
     * `:limit` — cap the number of sessions scored, sampled as an even spread across the
       corpus (default: all). NOT an alphabetical prefix — that would hide high-friction sessions.
@@ -80,12 +84,11 @@ defmodule Faber.Scan do
     timeout = Keyword.get(opts, :timeout, @session_timeout_ms)
     dedupe = Keyword.get(opts, :dedupe, true)
     rank_by = Keyword.get(opts, :rank_by, :raw)
-    ingest_opts = Keyword.take(opts, [:base, :format])
+    source = Source.resolve(opts)
 
-    ingest_opts
-    |> Ingest.discover()
+    source.discover(opts)
     |> maybe_take(opts[:limit])
-    |> Task.async_stream(&score_session(&1, ingest_opts),
+    |> Task.async_stream(&score_session(&1, opts),
       max_concurrency: max_concurrency,
       timeout: timeout,
       on_timeout: :kill_task,
@@ -123,18 +126,23 @@ defmodule Faber.Scan do
   end
 
   @doc """
-  Score a single session file into a `Result`.
+  Score a single session into a `Result`.
+
+  `handle` is whatever the active source yields — a file path (`:files`, the default) or a ccrider
+  session descriptor (`:ccrider`). The source resolves from `opts` (or config), so the historical
+  `score_session(path)` call keeps working unchanged.
   """
-  @spec score_session(Path.t(), keyword()) :: Result.t()
-  def score_session(path, ingest_opts \\ []) do
-    {events, parse_errors} = Ingest.parse_file(path, ingest_opts)
+  @spec score_session(Source.handle(), keyword()) :: Result.t()
+  def score_session(handle, opts \\ []) do
+    source = Source.resolve(opts)
+    {events, parse_errors} = source.parse(handle, opts)
     f = Detect.friction(events)
     fp = Detect.fingerprint(events)
     op = Detect.opportunity(events)
     ctx = Detect.context(events)
 
     %Result{
-      path: path,
+      path: source.label(handle),
       session_id: session_id(events),
       friction: f.score,
       raw: f.raw,

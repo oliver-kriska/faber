@@ -45,7 +45,7 @@ defmodule Faber.MixProject do
   # `mix test` skips the `@tag :sidecar` parity tests (they spawn python3); `mix test.full` runs
   # them so native↔sidecar engine drift is caught. See CLAUDE.md / README.
   defp aliases do
-    ["test.full": ["test --include sidecar"]]
+    ["test.full": ["test --include sidecar --include ccrider"]]
   end
 
   def cli do
