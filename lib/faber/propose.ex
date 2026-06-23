@@ -44,17 +44,29 @@ defmodule Faber.Propose do
   Options are forwarded to `Faber.LLM.generate_object/3` (e.g. `:llm` to override the
   implementation, `:model`, `:stub_response`). Returns `{:ok, %Faber.Proposal{}}` or
   `{:error, term()}` if the LLM call fails.
+
+  `:feedback` (a string) turns this into a **reflective** re-proposal: it is appended to the user
+  prompt so the LLM derives an improved draft from the current one and its eval weaknesses, rather
+  than regenerating blind. `Faber.Loop`'s `:reflect` strategy supplies it (see `Faber.Optimize`).
   """
   @spec propose(Scan.Result.t(), Adapter.t(), keyword()) ::
           {:ok, Proposal.t()} | {:error, term()}
   def propose(%Scan.Result{} = result, %Adapter{} = adapter, opts \\ []) do
     {system, user} = build_prompt(result, adapter)
+    user = augment_with_feedback(user, opts[:feedback])
     opts = Keyword.put(opts, :system_prompt, system)
 
     case LLM.generate_object(user, @schema, opts) do
       {:ok, object} -> {:ok, build_proposal(object, result, adapter)}
       {:error, _} = err -> err
     end
+  end
+
+  defp augment_with_feedback(user, nil), do: user
+  defp augment_with_feedback(user, ""), do: user
+
+  defp augment_with_feedback(user, feedback) when is_binary(feedback) do
+    user <> "\n\n" <> feedback
   end
 
   @doc """

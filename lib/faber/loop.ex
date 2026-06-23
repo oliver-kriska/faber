@@ -244,9 +244,16 @@ defmodule Faber.Loop do
 
   @doc """
   Refine a proposal for `result` under `adapter` by repeatedly re-proposing and keeping the
-  best-scoring variant. Wires `Faber.Propose` (regeneration) + `Faber.Eval` (scoring) into
-  `run/1`. Forwards `opts` to both (e.g. `:llm`, `:sidecar`, `:threshold`, `:max_iterations`,
-  `:patience`, `:target`).
+  best-scoring variant. Wires `Faber.Propose` + `Faber.Eval` (scoring) into `run/1`. Forwards
+  `opts` to both (e.g. `:llm`, `:sidecar`, `:threshold`, `:max_iterations`, `:patience`, `:target`).
+
+  `:strategy` selects how each candidate is generated:
+
+    * `:regenerate` (default) — re-propose from the friction finding from scratch each iteration.
+    * `:reflect` — **reflective evolution** (the keyless GEPA-style path): score the current best,
+      find its weakest eval dimension + failed checks, and feed that back into `Propose` so the next
+      candidate is a *targeted* edit of the current draft. See `Faber.Optimize.reflect/3` and
+      `.claude/research/2026-06-23-gepa-reflective-loop-decision.md`.
   """
   @spec refine(Scan.Result.t(), Adapter.t(), keyword()) :: State.t() | {:error, term()}
   def refine(%Scan.Result{} = result, %Adapter{} = adapter, opts \\ []) do
@@ -262,19 +269,10 @@ defmodule Faber.Loop do
   defp run_refinement(result, adapter, seed, opts) do
     content = Propose.render_skill_md(seed, adapter)
 
-    propose_fn = fn _state ->
-      case Propose.propose(result, adapter, opts) do
-        {:ok, p} ->
-          {:ok,
-           %{content: Propose.render_skill_md(p, adapter), description: "regenerated #{p.name}"}}
-
-        {:error, _} = err ->
-          err
-      end
-    end
-
     # Judge each candidate by THIS adapter's stack-specific eval bar (the moat), not a generic one.
     eval_opts = Keyword.put(opts, :adapter, adapter)
+    strategy = Keyword.get(opts, :strategy, :regenerate)
+    propose_fn = build_propose_fn(strategy, result, adapter, eval_opts, opts)
 
     eval_fn = fn c ->
       case Eval.score(c, eval_opts) do
@@ -292,4 +290,73 @@ defmodule Faber.Loop do
       )
     )
   end
+
+  # Blind regeneration — the baseline. Each candidate is independent of the last.
+  defp build_propose_fn(:regenerate, result, adapter, _eval_opts, opts) do
+    fn _state ->
+      case Propose.propose(result, adapter, opts) do
+        {:ok, p} ->
+          {:ok,
+           %{content: Propose.render_skill_md(p, adapter), description: "regenerated #{p.name}"}}
+
+        {:error, _} = err ->
+          err
+      end
+    end
+  end
+
+  # Reflective evolution — derive the next candidate from the current best + its eval feedback.
+  defp build_propose_fn(:reflect, result, adapter, eval_opts, opts) do
+    fn state ->
+      {target, feedback} = reflection_feedback(state.best_content, eval_opts)
+
+      case Propose.propose(result, adapter, Keyword.put(opts, :feedback, feedback)) do
+        {:ok, p} ->
+          {:ok,
+           %{content: Propose.render_skill_md(p, adapter), description: "reflect: #{target}"}}
+
+        {:error, _} = err ->
+          err
+      end
+    end
+  end
+
+  # Score the current best (deterministic, native — ~free) and turn its weakest dimension + failed
+  # checks into a targeted-edit instruction. Eval dimensions are the "named factors"; this is the
+  # credit-assignment step (KB: bounded-factor-level-prompt-optimization).
+  defp reflection_feedback(content, eval_opts) do
+    case Eval.score(content, eval_opts) do
+      {:ok, %{dimensions: dims, composite: comp}} when map_size(dims) > 0 ->
+        {name, dim} = Enum.min_by(dims, fn {_n, d} -> d["score"] end)
+        failed = for a <- dim["assertions"] || [], a["passed"] == false, do: a["evidence"]
+        {name, feedback_string(content, comp, name, dim["score"], failed)}
+
+      _ ->
+        {"overall", feedback_string(content, nil, "overall", nil, [])}
+    end
+  end
+
+  defp feedback_string(content, composite, target, score, failed) do
+    weaknesses =
+      case failed do
+        [] -> "  - (no specific failing checks — tighten this dimension without weakening others)"
+        list -> Enum.map_join(list, "\n", &"  - #{&1}")
+      end
+
+    """
+    REVISION TASK — improve the EXISTING skill below; do not start over.
+    Current composite score: #{fmt_score(composite)}. Weakest dimension: "#{target}" (#{fmt_score(score)}).
+    Fix ONLY these weaknesses while keeping every existing strength intact:
+    #{weaknesses}
+
+    Return the full improved skill as the structured object. Preserve the skill's intent, name, and
+    any parts that already work; change only what addresses the weaknesses above.
+
+    --- CURRENT SKILL.md ---
+    #{content}
+    """
+  end
+
+  defp fmt_score(nil), do: "n/a"
+  defp fmt_score(n) when is_number(n), do: :erlang.float_to_binary(n * 1.0, decimals: 3)
 end

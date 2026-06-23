@@ -34,6 +34,51 @@ defmodule Faber.LoopTest do
     def generate_object(_prompt, _schema, _opts), do: {:error, :llm_unavailable}
   end
 
+  # Reflective double: returns a deliberately weak skill on the first (feedback-free) call, and a
+  # strong one once the prompt carries reflective feedback ("REVISION TASK"). Proves the :reflect
+  # strategy threads the eval's weakness back into the next proposal — scored by the REAL native
+  # deterministic eval, so a strictly better candidate is genuinely produced and kept.
+  defmodule ReflectiveLLM do
+    @behaviour Faber.LLM
+    @impl true
+    def generate_object(prompt, _schema, _opts) do
+      if String.contains?(prompt, "REVISION TASK") do
+        {:ok,
+         %{
+           name: "investigate-retry-loops",
+           description:
+             "Investigate failing shell commands by reading the error before retrying. " <>
+               "Use when a command is retried after an error. NOT for first failures.",
+           effort: "low",
+           rationale:
+             "Stop blind retries: read the error, form one hypothesis, change one variable, re-run.",
+           iron_laws: [
+             "Read the actual error output before retrying — never re-run blind.",
+             "Change exactly one variable per attempt so the result is attributable.",
+             "After 3 failed attempts, stop and escalate with what was tried."
+           ],
+           usage: "Load when a command like mix test is re-run after an errored result.",
+           example: "mix test --failed",
+           should_trigger: ["the same command keeps failing"],
+           should_not_trigger: ["first time running this"]
+         }}
+      else
+        {:ok,
+         %{
+           name: "investigate-retry-loops",
+           description: "Does general things sometimes.",
+           effort: "low",
+           rationale: "help",
+           iron_laws: ["try again", "maybe read"],
+           usage: nil,
+           example: nil,
+           should_trigger: [],
+           should_not_trigger: []
+         }}
+      end
+    end
+  end
+
   # A supervised, per-test mutable cell (auto-cleaned by ExUnit).
   defp cell(initial) do
     start_supervised!({Agent, fn -> initial end}, id: {:cell, System.unique_integer([:positive])})
@@ -270,6 +315,41 @@ defmodule Faber.LoopTest do
     test "returns {:error, reason} when the seed proposal fails, instead of crashing" do
       assert {:error, :llm_unavailable} =
                Loop.refine(sample_result(), sample_adapter(), llm: FailingLLM)
+    end
+  end
+
+  describe "refine/3 :reflect strategy (keyless reflective evolution)" do
+    test "feeds eval weaknesses back to produce a strictly better candidate and keeps it" do
+      # Seed (no feedback) is weak; the reflective re-proposal sees the weakness feedback and
+      # returns a strong skill. The native deterministic eval scores both, so the gain is real.
+      state =
+        Loop.refine(sample_result(), sample_adapter(),
+          llm: ReflectiveLLM,
+          strategy: :reflect,
+          max_iterations: 1,
+          target: 0.99
+        )
+
+      assert state.status == :complete
+      kept = Enum.filter(state.history, & &1.kept)
+      assert length(kept) == 1
+      [entry] = kept
+      # Reflective edit improved on the seed, and the entry records which dimension it targeted.
+      assert entry.new_composite > entry.old_composite
+      assert entry.description =~ "reflect:"
+      assert state.best_composite == entry.new_composite
+    end
+
+    test "Faber.Optimize.reflect/3 delegates to the reflective loop" do
+      state =
+        Faber.Optimize.reflect(sample_result(), sample_adapter(),
+          llm: ReflectiveLLM,
+          max_iterations: 1,
+          target: 0.99
+        )
+
+      assert %Loop.State{status: :complete} = state
+      assert Enum.any?(state.history, &(&1.kept and &1.description =~ "reflect:"))
     end
   end
 
