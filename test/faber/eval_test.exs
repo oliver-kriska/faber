@@ -126,6 +126,37 @@ defmodule Faber.EvalTest do
     end
   end
 
+  describe "score/2 (eval_set + refs — the 8-dimension full eval)" do
+    test ":full adds the accuracy dimension; :default (the gate baseline) does not" do
+      {:ok, proposal} =
+        Faber.Propose.propose(sample_result(), sample_adapter(), llm: Faber.LLM.Stub)
+
+      skill = Faber.Propose.render_skill_md(proposal)
+
+      {:ok, full} = Eval.score(skill, eval_set: :full)
+      assert Map.has_key?(full.dimensions, "accuracy")
+
+      {:ok, default} = Eval.score(skill)
+      refute Map.has_key?(default.dimensions, "accuracy")
+    end
+
+    test ":refs makes accuracy bite when a referenced file is missing from the known set" do
+      {:ok, proposal} =
+        Faber.Propose.propose(sample_result(), sample_adapter(), llm: Faber.LLM.Stub)
+
+      skill = Faber.Propose.render_skill_md(proposal)
+
+      # The rendered skill references `${CLAUDE_SKILL_DIR}/references/<name>.md`. A known set that
+      # omits it must fail accuracy and pull the composite below the clean (matching-set) run.
+      {:ok, clean} = Eval.score(skill, eval_set: :full, refs: %{files: ["#{proposal.name}.md"]})
+      {:ok, broken} = Eval.score(skill, eval_set: :full, refs: %{files: ["unrelated.md"]})
+
+      assert clean.dimensions["accuracy"]["score"] == 1.0
+      assert broken.dimensions["accuracy"]["score"] < 1.0
+      assert broken.composite < clean.composite
+    end
+  end
+
   describe "score/2 (real python sidecar)" do
     @describetag :sidecar
 
@@ -137,12 +168,26 @@ defmodule Faber.EvalTest do
       bad = "---\nname: stuff\n---\n\n# Stuff\n\nVague prose, no laws, no examples.\n"
 
       # Parity must hold across the score range, not just on a passing fixture — a single-input
-      # check could mask a systematic native/sidecar bias (review testing W5).
-      for input <- [good, bad] do
-        assert {:ok, native} = Eval.score(input, engine: :native)
-        assert {:ok, sidecar} = Eval.score(input, engine: :sidecar)
+      # check could mask a systematic native/sidecar bias (review testing W5). Both eval sets are
+      # checked so the new accuracy dimension stays in lockstep across engines too.
+      for input <- [good, bad], eval_set <- [:default, :full] do
+        assert {:ok, native} = Eval.score(input, engine: :native, eval_set: eval_set)
+        assert {:ok, sidecar} = Eval.score(input, engine: :sidecar, eval_set: eval_set)
         assert_in_delta native.composite, sidecar.composite, 0.05
       end
+    end
+
+    test "native and sidecar agree on accuracy when ref known-sets are injected" do
+      {:ok, proposal} =
+        Faber.Propose.propose(sample_result(), sample_adapter(), llm: Faber.LLM.Stub)
+
+      skill = Faber.Propose.render_skill_md(proposal)
+      refs = %{files: ["unrelated.md"], skills: [], agents: []}
+
+      assert {:ok, native} = Eval.score(skill, engine: :native, eval_set: :full, refs: refs)
+      assert {:ok, sidecar} = Eval.score(skill, engine: :sidecar, eval_set: :full, refs: refs)
+      assert_in_delta native.composite, sidecar.composite, 0.05
+      assert native.dimensions["accuracy"]["score"] == sidecar.dimensions["accuracy"]["score"]
     end
   end
 

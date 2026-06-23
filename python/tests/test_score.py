@@ -10,8 +10,11 @@ from faber_eval.matchers import (
     has_iron_laws,
     no_dangerous_patterns,
     split_frontmatter,
+    valid_agent_refs,
+    valid_file_refs,
+    valid_skill_refs,
 )
-from faber_eval.scorer import score_skill
+from faber_eval.scorer import FULL_EVAL, inject_refs, score_skill
 
 GOOD_SKILL = """---
 name: investigate-retry-loops
@@ -103,6 +106,59 @@ class TestMatchers(unittest.TestCase):
         # But a bare dangerous command in normal body IS flagged.
         live = "---\nname: x\ndescription: y\n---\n\n## Steps\n\nrun rm -rf / now\n"
         self.assertFalse(no_dangerous_patterns(live)[0])
+
+
+class TestAccuracyMatchers(unittest.TestCase):
+    def test_valid_file_refs_membership(self):
+        # GOOD_SKILL references investigate-retry-loops.md.
+        self.assertTrue(valid_file_refs(GOOD_SKILL, known_files=["investigate-retry-loops.md"])[0])
+        ok, evidence = valid_file_refs(GOOD_SKILL, known_files=["other.md"])
+        self.assertFalse(ok)
+        self.assertIn("investigate-retry-loops.md", evidence)
+
+    def test_valid_file_refs_neutral_without_known_set(self):
+        self.assertTrue(valid_file_refs(GOOD_SKILL)[0])
+        self.assertEqual(
+            valid_file_refs("no refs here", known_files=["x.md"])[1],
+            "no reference file references found",
+        )
+
+    def test_valid_file_refs_ignores_cross_skill(self):
+        content = "see `compound-docs/references/schema.md` for details"
+        self.assertTrue(valid_file_refs(content, known_files=[])[0])
+
+    def test_valid_skill_refs(self):
+        content = "run /phx:plan then [[investigate]] and the `verify` skill"
+        self.assertTrue(valid_skill_refs(content, known_skills=["plan", "investigate", "verify"])[0])
+        ok, evidence = valid_skill_refs(content, known_skills=["plan"])
+        self.assertFalse(ok)
+        self.assertIn("investigate", evidence)
+
+    def test_valid_agent_refs_builtins(self):
+        content = 'subagent_type: "elixir-reviewer" and `security-analyzer`'
+        self.assertTrue(
+            valid_agent_refs(content, known_agents=["elixir-reviewer", "security-analyzer"])[0]
+        )
+        # Built-ins are valid even when not in the known set.
+        self.assertTrue(valid_agent_refs('subagent_type: "Explore"', known_agents=[])[0])
+
+
+class TestFullEval(unittest.TestCase):
+    def test_full_eval_adds_accuracy_neutral_without_refs(self):
+        result = score_skill(GOOD_SKILL, FULL_EVAL)
+        self.assertIn("accuracy", result["dimensions"])
+        self.assertEqual(result["dimensions"]["accuracy"]["score"], 1.0)
+        self.assertGreaterEqual(result["composite"], 0.9, result)
+
+    def test_inject_refs_makes_accuracy_bite(self):
+        broken = inject_refs(FULL_EVAL, {"known_files": ["unrelated.md"]})
+        result = score_skill(GOOD_SKILL, broken)
+        self.assertLess(result["dimensions"]["accuracy"]["score"], 1.0)
+        self.assertLess(result["composite"], score_skill(GOOD_SKILL, FULL_EVAL)["composite"])
+
+    def test_weight_total_reported(self):
+        # full_eval's 7 structural weights sum to 0.95 (behavioral's 0.10 is folded by Faber.Eval).
+        self.assertEqual(score_skill(GOOD_SKILL, FULL_EVAL)["weight_total"], 0.95)
 
 
 class TestScorer(unittest.TestCase):

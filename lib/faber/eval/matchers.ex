@@ -299,6 +299,80 @@ defmodule Faber.Eval.Matchers do
     end
   end
 
+  # ── accuracy (cross-reference resolution) ─────────────────────────────────────
+  #
+  # The plugin's accuracy matchers list the filesystem (os.listdir/isfile) to resolve refs. To keep
+  # these matchers PURE (the module's contract) and the native↔sidecar parity exact, Faber instead
+  # validates refs against caller-supplied *known-sets* — plain lists threaded in via `params`. The
+  # filesystem walk happens once at the boundary (`Faber.Eval`, from the adapter/install tree) and
+  # the resolved names flow in as data. Without a known-set the check neutral-passes (it cannot
+  # validate, and must never block the gate for missing context) — mirroring the reference's own
+  # "cannot locate plugin root — skipping" behavior.
+
+  @builtin_agents ~w(general-purpose Explore Plan code-simplifier)
+
+  @doc "Own-skill `references/<file>` paths resolve against `:known_files` (basenames)."
+  def valid_file_refs(content, params) do
+    # Cross-skill refs (`other-skill/references/x.md`) are someone else's to validate — exclude them.
+    cross =
+      ~r{([\w-]+)/references/([\w.-]+\.md)}
+      |> Regex.scan(content)
+      |> Enum.reject(fn [_, prefix, _] -> prefix in ["CLAUDE_SKILL_DIR}", "CLAUDE_SKILL_DIR"] end)
+      |> Enum.map(fn [_, _, file] -> file end)
+      |> MapSet.new()
+
+    refs =
+      ~r{(?:CLAUDE_SKILL_DIR\}?/)?references/([\w.-]+\.md)}
+      |> Regex.scan(content)
+      |> Enum.map(fn [_, file] -> file end)
+      |> Enum.uniq()
+      |> Enum.reject(&MapSet.member?(cross, &1))
+
+    validate_refs(refs, params[:known_files], "reference file", &Path.basename/1)
+  end
+
+  @doc "Skill refs (`/ns:name`, `[[name]]`, `` `name` skill``) resolve against `:known_skills`."
+  def valid_skill_refs(content, params) do
+    refs =
+      regex_names(~r{(?<!/)/\w[\w-]*:(\w[\w-]*)}, content) ++
+        regex_names(~r{\[\[([\w-]+)\]\]}, content) ++
+        regex_names(~r{`([\w-]+)`\s+skill}, content)
+
+    validate_refs(Enum.uniq(refs), params[:known_skills], "skill", & &1)
+  end
+
+  @doc "Agent refs (`subagent_type:`, `` `name-role` ``) resolve against `:known_agents` + built-ins."
+  def valid_agent_refs(content, params) do
+    builtin = params[:builtin_agents] || @builtin_agents
+
+    refs =
+      regex_names(~r{subagent_type[=:]\s*["']?([\w-]+)}, content) ++
+        regex_names(
+          ~r{`([\w-]+-(?:reviewer|analyzer|architect|validator|runner|specialist|advisor|judge|supervisor|orchestrator|researcher|tracer))`},
+          content
+        )
+
+    refs = refs |> Enum.uniq() |> Enum.reject(&(&1 in builtin))
+    validate_refs(refs, params[:known_agents], "agent", & &1)
+  end
+
+  defp regex_names(re, content), do: re |> Regex.scan(content) |> Enum.map(&List.last/1)
+
+  # nil known-set → neutral pass (cannot validate); empty refs → pass; else membership check.
+  defp validate_refs(_refs, nil, label, _norm),
+    do: {true, "no #{label} index supplied — skipping"}
+
+  defp validate_refs([], _known, label, _norm), do: {true, "no #{label} references found"}
+
+  defp validate_refs(refs, known, label, norm) do
+    known_set = MapSet.new(known, norm)
+    missing = Enum.reject(refs, &MapSet.member?(known_set, &1))
+
+    if missing == [],
+      do: {true, "all #{length(refs)} #{label} references valid"},
+      else: {false, "missing #{label}s: #{inspect(Enum.sort(missing))}"}
+  end
+
   @doc "Dispatch a check by type. Unknown types fail (caught by the scorer)."
   @spec run_check(atom() | String.t(), String.t(), map()) :: {boolean(), String.t()}
   def run_check(type, content, params) do
@@ -316,6 +390,9 @@ defmodule Faber.Eval.Matchers do
       "has_examples" -> has_examples(content, params)
       "action_density" -> action_density(content, params)
       "specificity_ratio" -> specificity_ratio(content, params)
+      "valid_file_refs" -> valid_file_refs(content, params)
+      "valid_skill_refs" -> valid_skill_refs(content, params)
+      "valid_agent_refs" -> valid_agent_refs(content, params)
       other -> {false, "unknown check_type: #{other}"}
     end
   end

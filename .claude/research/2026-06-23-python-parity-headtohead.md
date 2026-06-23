@@ -82,13 +82,35 @@ All four divergent signals are explained; none is a defect. Chasing bit-parity w
 the deliberate `retry_loops`/`context_compactions` improvements and counting skill-injection text
 as user corrections — i.e. making Faber *worse*. The port is confirmed correct.
 
-## Note: not the eval side
+## Note: the eval side (updated 2026-06-23 — gap closed, E1–E3)
 
-This covers the **scan/friction** side only. Faber's **eval** is a deliberate **subset** of the
-plugin's `lab/eval/` — 6 of 8 dimensions (drops `accuracy` = needs a real plugin tree, and
-`behavioral` = needs a cached trigger run), reweighted to sum to 1.0. The native↔Faber-sidecar
-parity test (`@describetag :sidecar`) guards that the Elixir and Python *implementations of
-Faber's eval* agree within 0.05; it does not claim parity with `lab/eval`'s composite, by design.
+This report's measurements cover the **scan/friction** side. The **eval** side originally shipped 6
+of the plugin's 8 `lab/eval` dimensions (dropped `accuracy` = "needs a real plugin tree", and
+`behavioral` = "needs a cached trigger run"). Both are now implemented:
+
+- **`accuracy`** — three ref-resolution matchers (`valid_file_refs`, `valid_skill_refs`,
+  `valid_agent_refs`) ported to **both** engines (Elixir `Matchers` + Python `matchers.py`). The
+  plugin's versions list the filesystem; Faber's are kept **pure** — they validate refs against
+  caller-supplied *known-sets* (`:refs` → `known_files`/`known_skills`/`known_agents`), and the
+  filesystem walk happens once at the boundary (`Faber.Eval`). Pure functions ⇒ native↔sidecar
+  parity is exact. Without a known-set the check neutral-passes (never blocks the gate for missing
+  context — same philosophy as the reference's "cannot locate plugin root — skipping").
+- **`behavioral`** — the existing `Faber.Eval.Trigger` (keyless LLM routing accuracy) now reports
+  precision/recall and is **folded into the composite** as the `behavioral` dimension (weight 0.10,
+  three threshold assertions mirroring the reference) when `trigger: true`. A well-formed but
+  mis-routing skill can now fail the gate.
+
+**Design choice — no gate inflation.** The *default* eval stays the 6 structural dimensions
+(`eval_set: :default`). Adding always-neutral dimensions to the default would have handed every
+skill ~0.25 of free weight and silently weakened the 0.75 gate. So the 8-dimension shape lives in
+`eval_set: :full` (+ `accuracy`) with `behavioral` folded only when trigger data exists — each new
+dimension contributes **only when it has real signal**. Weights mirror the reference
+(`lab/eval/scorer.py` `default_eval`).
+
+The native↔Faber-sidecar parity test (`@describetag :sidecar`) now guards **both** eval sets and the
+ref-injected accuracy path (Elixir vs Python agree within 0.05). It still does not claim parity with
+`lab/eval`'s *composite* (Faber's per-dimension checks are its own, deliberately), by design — it
+guards that Faber's two engines agree.
 
 ## Follow-up (2026-06-23): detection improvements (D1–D3)
 

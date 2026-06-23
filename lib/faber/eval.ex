@@ -18,12 +18,17 @@ defmodule Faber.Eval do
   alias Faber.{Adapter, Proposal, Propose, Sidecar}
   alias Faber.Eval.Native
 
+  # `:trigger` is added dynamically when `trigger: true` (behavioral fold); not all callers see it.
   @type result :: %{
           composite: float(),
           dimensions: map(),
           threshold: float(),
-          passed: boolean()
+          passed: boolean(),
+          weight_total: float()
         }
+
+  @ref_checks ~w(valid_file_refs valid_skill_refs valid_agent_refs)
+  @behavioral_weight 0.10
 
   @doc """
   Score a proposal or SKILL.md string.
@@ -37,6 +42,15 @@ defmodule Faber.Eval do
       `mode: vendored` dimensions drive native scoring; `mode: exec-in-place` dispatches to the
       referenced scorer (env-bound) and falls back to the default native eval if unavailable.
     * `:eval`      — an explicit eval definition (overrides `:adapter`)
+    * `:eval_set`  — `:default` (6 structural dimensions, the gate baseline) or `:full` (8 — adds
+      `accuracy`; `behavioral` is folded in when `:trigger`). Default `:default`, so adding the new
+      dimensions never silently inflates the gate.
+    * `:refs`      — resolved cross-reference known-sets for the `accuracy` dimension, a map with
+      `:files` / `:skills` / `:agents` (and optional `:builtin_agents`) lists. The boundary resolves
+      these from the install/adapter tree once; they thread into the (pure) accuracy matchers. Absent
+      a known-set, accuracy neutral-passes — it never blocks the gate for missing context.
+    * `:trigger`   — when true, run the behavioral trigger-accuracy eval and fold it into the
+      composite as the `behavioral` dimension (weight #{0.10}). Costs one LLM call per fixture.
   """
   @spec score(Proposal.t() | String.t(), keyword()) :: {:ok, result()} | {:error, term()}
   def score(proposal_or_md, opts \\ [])
@@ -110,12 +124,17 @@ defmodule Faber.Eval do
     end
   end
 
-  defp run_engine(:native, skill_md, eval_def, _opts) do
-    {:ok, Native.score(skill_md, eval_def)}
+  defp run_engine(:native, skill_md, eval_def, opts) do
+    def_ = (eval_def || native_default(opts)) |> inject_refs(opts[:refs])
+    {:ok, Native.score(skill_md, def_)}
   end
 
   defp run_engine(:sidecar, skill_md, eval_def, opts) do
-    request = maybe_put(%{"skill_md" => skill_md}, "eval", eval_def)
+    request =
+      %{"skill_md" => skill_md}
+      |> maybe_put("eval", eval_def)
+      |> maybe_put("eval_set", sidecar_eval_set(opts[:eval_set]))
+      |> maybe_put("refs", sidecar_refs(opts[:refs]))
 
     case Sidecar.call("score", request, opts) do
       {:ok, %{"status" => "ok", "result" => result}} -> {:ok, result}
@@ -124,6 +143,56 @@ defmodule Faber.Eval do
       {:error, _} = err -> err
     end
   end
+
+  # `:full` opts into the 8-dimension eval (adds accuracy); default stays the 6-dimension gate
+  # baseline. nil → Native applies its own built-in default.
+  defp native_default(opts) do
+    case opts[:eval_set] do
+      :full -> Native.full_eval()
+      _ -> nil
+    end
+  end
+
+  defp sidecar_eval_set(:full), do: "full"
+  defp sidecar_eval_set(_), do: nil
+
+  # Thread resolved ref known-sets into every accuracy check's params (the matcher reads only its own
+  # key; extras are ignored). Keeps the matchers pure — the filesystem walk happens at the boundary.
+  defp inject_refs(nil, _refs), do: nil
+  defp inject_refs(def_, refs) when not is_map(refs), do: def_
+
+  defp inject_refs(def_, refs) when is_list(def_) do
+    extra = ref_params(refs)
+
+    Enum.map(def_, fn {name, weight, checks} ->
+      checks =
+        Enum.map(checks, fn {type, params} ->
+          if to_string(type) in @ref_checks,
+            do: {type, Map.merge(params, extra)},
+            else: {type, params}
+        end)
+
+      {name, weight, checks}
+    end)
+  end
+
+  defp ref_params(refs) do
+    %{}
+    |> put_ref(:known_files, refs[:files] || refs["files"])
+    |> put_ref(:known_skills, refs[:skills] || refs["skills"])
+    |> put_ref(:known_agents, refs[:agents] || refs["agents"])
+    |> put_ref(:builtin_agents, refs[:builtin_agents] || refs["builtin_agents"])
+  end
+
+  defp put_ref(map, _key, nil), do: map
+  defp put_ref(map, key, value), do: Map.put(map, key, value)
+
+  # JSON request form for the sidecar: string keys the Python `inject_refs` understands.
+  defp sidecar_refs(refs) when is_map(refs) do
+    Map.new(ref_params(refs), fn {k, v} -> {to_string(k), v} end)
+  end
+
+  defp sidecar_refs(_), do: nil
 
   # Translate a vendored adapter's eval dimensions (string-keyed YAML) into Native's internal form.
   defp build_native_def(dimensions) do
@@ -170,14 +239,70 @@ defmodule Faber.Eval do
   end
 
   # Behavioral trigger-accuracy is opt-in (`trigger: true`) — it costs one LLM call per fixture, so
-  # it stays off the structural hot path. Only a %Proposal{} carries the trigger fixtures.
+  # it stays off the structural hot path. Only a %Proposal{} carries the trigger fixtures. When it
+  # runs, its accuracy/precision/recall fold into the composite as the `behavioral` dimension, so a
+  # well-formed-but-mis-routing skill can still fail the gate (the reference's 8th dimension).
   defp maybe_add_trigger(result, proposal, opts) do
     if opts[:trigger] do
-      Map.put(result, :trigger, Faber.Eval.Trigger.score(proposal, opts))
+      case Faber.Eval.Trigger.score(proposal, opts) do
+        %{accuracy: _} = trigger -> fold_behavioral(result, trigger)
+        {:skipped, _} = skipped -> Map.put(result, :trigger, skipped)
+      end
     else
       result
     end
   end
+
+  # Build the `behavioral` dimension from the trigger metrics (mirroring the reference's three
+  # assertions) and re-weight it into the composite at `@behavioral_weight`, relative to the
+  # structural mass the scorer reported (`weight_total`), so the math is exact for any eval set.
+  defp fold_behavioral(result, trigger) do
+    checks = [
+      {trigger.accuracy >= 0.75, "trigger accuracy #{pct(trigger.accuracy)} (>= 75%)"},
+      {trigger.precision >= 0.80, "precision #{pct(trigger.precision)} (>= 80%)"},
+      {trigger.recall >= 0.60, "recall #{pct(trigger.recall)} (>= 60%)"}
+    ]
+
+    passed = Enum.count(checks, fn {ok, _} -> ok end)
+    total = length(checks)
+    score = passed / total
+
+    dimension = %{
+      "dimension" => "behavioral",
+      "score" => Float.round(score, 4),
+      "passed" => passed,
+      "failed" => total - passed,
+      "total" => total,
+      "assertions" =>
+        Enum.with_index(checks, fn {ok, evidence}, i ->
+          %{
+            "id" => "behavioral-#{i}",
+            "check_type" => "trigger_accuracy",
+            "passed" => ok,
+            "evidence" => evidence
+          }
+        end)
+    }
+
+    struct_mass = result.weight_total
+
+    composite =
+      (result.composite * struct_mass + score * @behavioral_weight) /
+        (struct_mass + @behavioral_weight)
+
+    composite = Float.round(composite, 4)
+
+    %{
+      result
+      | composite: composite,
+        weight_total: Float.round(struct_mass + @behavioral_weight, 4),
+        dimensions: Map.put(result.dimensions, "behavioral", dimension),
+        passed: composite >= result.threshold
+    }
+    |> Map.put(:trigger, trigger)
+  end
+
+  defp pct(f), do: "#{round(f * 100)}%"
 
   defp build_result(result, threshold) do
     composite = result["composite"] || 0.0
@@ -186,7 +311,8 @@ defmodule Faber.Eval do
       composite: composite,
       dimensions: result["dimensions"] || %{},
       threshold: threshold,
-      passed: composite >= threshold
+      passed: composite >= threshold,
+      weight_total: result["weight_total"] || 1.0
     }
   end
 

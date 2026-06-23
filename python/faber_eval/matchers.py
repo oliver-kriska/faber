@@ -13,6 +13,7 @@ are deliberately generic so a proposal can be scored before any adapter is attac
 
 from __future__ import annotations
 
+import os
 import re
 
 # ── frontmatter ────────────────────────────────────────────────────────────
@@ -306,6 +307,64 @@ def specificity_ratio(content, min_ratio=0.15, **_):
     return False, f"specificity {ratio:.2f} (want >= {min_ratio})"
 
 
+# ── accuracy (cross-reference resolution) ─────────────────────────────────────
+#
+# The plugin's accuracy matchers list the filesystem to resolve refs. To keep these matchers PURE
+# (this module's contract) and the native↔sidecar parity exact, Faber validates refs against
+# caller-supplied *known-sets* threaded in via params; the filesystem walk happens once at the
+# boundary. A missing known-set neutral-passes (cannot validate → never block the gate), mirroring
+# the reference's "cannot locate plugin root — skipping" behavior.
+
+_BUILTIN_AGENTS = ("general-purpose", "Explore", "Plan", "code-simplifier")
+_AGENT_ROLES = (
+    "reviewer|analyzer|architect|validator|runner|specialist|advisor|judge|"
+    "supervisor|orchestrator|researcher|tracer"
+)
+
+
+def _validate_refs(refs, known, label, norm=lambda x: x):
+    if known is None:
+        return True, f"no {label} index supplied — skipping"
+    if not refs:
+        return True, f"no {label} references found"
+    known_set = {norm(k) for k in known}
+    missing = sorted({r for r in refs if r not in known_set})
+    if not missing:
+        return True, f"all {len(set(refs))} {label} references valid"
+    return False, f"missing {label}s: {missing}"
+
+
+def valid_file_refs(content, known_files=None, **_):
+    cross = {
+        m.group(2)
+        for m in re.finditer(r"([\w-]+)/references/([\w.-]+\.md)", content)
+        if m.group(1) not in ("CLAUDE_SKILL_DIR}", "CLAUDE_SKILL_DIR")
+    }
+    refs = [
+        f
+        for f in dict.fromkeys(
+            re.findall(r"(?:CLAUDE_SKILL_DIR\}?/)?references/([\w.-]+\.md)", content)
+        )
+        if f not in cross
+    ]
+    return _validate_refs(refs, known_files, "reference file", norm=os.path.basename)
+
+
+def valid_skill_refs(content, known_skills=None, **_):
+    refs = re.findall(r"(?<!/)/\w[\w-]*:(\w[\w-]*)", content)
+    refs += re.findall(r"\[\[([\w-]+)\]\]", content)
+    refs += re.findall(r"`([\w-]+)`\s+skill", content)
+    return _validate_refs(list(dict.fromkeys(refs)), known_skills, "skill")
+
+
+def valid_agent_refs(content, known_agents=None, builtin_agents=None, **_):
+    builtin = set(builtin_agents or _BUILTIN_AGENTS)
+    refs = re.findall(r"subagent_type[=:]\s*[\"']?([\w-]+)", content)
+    refs += re.findall(rf"`([\w-]+-(?:{_AGENT_ROLES}))`", content)
+    refs = [r for r in dict.fromkeys(refs) if r not in builtin]
+    return _validate_refs(refs, known_agents, "agent")
+
+
 MATCHERS = {
     "section_exists": section_exists,
     "max_section_lines": max_section_lines,
@@ -323,6 +382,9 @@ MATCHERS = {
     "has_examples": has_examples,
     "action_density": action_density,
     "specificity_ratio": specificity_ratio,
+    "valid_file_refs": valid_file_refs,
+    "valid_skill_refs": valid_skill_refs,
+    "valid_agent_refs": valid_agent_refs,
 }
 
 

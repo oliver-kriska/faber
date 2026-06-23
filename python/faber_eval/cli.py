@@ -23,11 +23,16 @@ import json
 import sys
 
 from faber_eval import __version__
-from faber_eval.scorer import score_skill
+from faber_eval.scorer import FULL_EVAL, inject_refs, score_skill
 
 
 def score(request):
-    """Structural eval of a proposed skill. Ports the plugin's lab/eval matchers."""
+    """Structural eval of a proposed skill. Ports the plugin's lab/eval matchers.
+
+    Eval selection: an explicit ``eval`` dict wins; else ``eval_set: "full"`` picks the 8-dimension
+    ``FULL_EVAL``; else the 6-dimension ``DEFAULT_EVAL``. Resolved ref known-sets in ``refs`` are
+    threaded into the accuracy checks so they validate against the caller's tree.
+    """
     content = request.get("skill_md") or request.get("content")
     if not content:
         return {
@@ -36,7 +41,11 @@ def score(request):
             "version": __version__,
             "error": "missing 'skill_md' (or 'content') in request",
         }
-    result = score_skill(content, request.get("eval"))
+    eval_def = request.get("eval")
+    if eval_def is None and request.get("eval_set") == "full":
+        eval_def = FULL_EVAL
+    eval_def = inject_refs(eval_def, request.get("refs"))
+    result = score_skill(content, eval_def)
     return {
         "command": "score",
         "status": "ok",

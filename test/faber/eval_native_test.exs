@@ -85,6 +85,55 @@ defmodule Faber.Eval.NativeTest do
     end
   end
 
+  describe "accuracy matchers (pure, known-set membership)" do
+    test "valid_file_refs validates own-skill reference paths against the known set" do
+      # @good references `${CLAUDE_SKILL_DIR}/references/investigate-retry-loops.md`.
+      assert {true, _} =
+               Matchers.valid_file_refs(@good, %{known_files: ["investigate-retry-loops.md"]})
+
+      assert {false, evidence} = Matchers.valid_file_refs(@good, %{known_files: ["other.md"]})
+      assert evidence =~ "investigate-retry-loops.md"
+    end
+
+    test "valid_file_refs neutral-passes without a known set, and when there are no refs" do
+      assert {true, "no reference file index supplied — skipping"} =
+               Matchers.valid_file_refs(@good, %{})
+
+      assert {true, "no reference file references found"} =
+               Matchers.valid_file_refs("no refs here", %{known_files: ["x.md"]})
+    end
+
+    test "valid_file_refs ignores cross-skill references (not this skill's to validate)" do
+      content = "see `compound-docs/references/schema.md` for details"
+
+      assert {true, "no reference file references found"} =
+               Matchers.valid_file_refs(content, %{known_files: []})
+    end
+
+    test "valid_skill_refs resolves /ns:name, [[wikilink]] and `name` skill forms" do
+      content = "run /phx:plan then the [[investigate]] step and the `verify` skill"
+
+      assert {true, _} =
+               Matchers.valid_skill_refs(content, %{known_skills: ~w(plan investigate verify)})
+
+      assert {false, ev} = Matchers.valid_skill_refs(content, %{known_skills: ~w(plan)})
+      assert ev =~ "investigate"
+    end
+
+    test "valid_agent_refs honors built-ins and the known set" do
+      content = ~s(subagent_type: "elixir-reviewer" and the `security-analyzer`)
+
+      assert {true, _} =
+               Matchers.valid_agent_refs(content, %{
+                 known_agents: ~w(elixir-reviewer security-analyzer)
+               })
+
+      # Built-in agents never count as missing even when absent from the known set.
+      builtin = ~s(use subagent_type: "general-purpose" here)
+      assert {true, _} = Matchers.valid_agent_refs(builtin, %{known_agents: []})
+    end
+  end
+
   describe "score/2" do
     test "a well-formed skill scores high" do
       result = Native.score(@good)
@@ -108,6 +157,43 @@ defmodule Faber.Eval.NativeTest do
     test "nil/empty definition falls back to the default eval" do
       assert Native.score(@good, nil)["dimensions"] == Native.score(@good)["dimensions"]
       assert Map.has_key?(Native.score(@good, [])["dimensions"], "completeness")
+    end
+
+    test "reports the total dimension weight (for exact behavioral folding)" do
+      assert Native.score(@good)["weight_total"] == 1.0
+
+      # full_eval's 7 structural weights sum to 0.95 (the remaining 0.10 is behavioral, folded later).
+      assert Native.score(@good, Native.full_eval())["weight_total"] == 0.95
+    end
+  end
+
+  describe "full_eval (8-dimension shape)" do
+    test "adds an accuracy dimension that neutral-passes without ref known-sets" do
+      result = Native.score(@good, Native.full_eval())
+      assert Map.has_key?(result["dimensions"], "accuracy")
+      assert result["dimensions"]["accuracy"]["score"] == 1.0
+
+      # Behavioral is NOT a structural dimension — it is folded in by Faber.Eval when trigger runs.
+      refute Map.has_key?(result["dimensions"], "behavioral")
+      assert result["composite"] >= 0.9
+    end
+
+    test "accuracy bites when a ref known-set is injected and a ref is broken" do
+      # @good references investigate-retry-loops.md; tell accuracy only other.md exists.
+      def_ =
+        Enum.map(Native.full_eval(), fn
+          {"accuracy", w, checks} ->
+            {"accuracy", w,
+             Enum.map(checks, fn {t, p} -> {t, Map.put(p, :known_files, ["other.md"])} end)}
+
+          dim ->
+            dim
+        end)
+
+      result = Native.score(@good, def_)
+      # valid_file_refs now fails → accuracy drops below 1.0 → composite below the clean run.
+      assert result["dimensions"]["accuracy"]["score"] < 1.0
+      assert result["composite"] < Native.score(@good, Native.full_eval())["composite"]
     end
   end
 end

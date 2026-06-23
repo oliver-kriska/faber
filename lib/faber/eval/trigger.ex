@@ -19,7 +19,18 @@ defmodule Faber.Eval.Trigger do
   @schema [triggers: [type: :boolean, required: true]]
 
   @type result ::
-          %{accuracy: float(), correct: non_neg_integer(), total: pos_integer(), cases: [map()]}
+          %{
+            accuracy: float(),
+            precision: float(),
+            recall: float(),
+            correct: non_neg_integer(),
+            total: pos_integer(),
+            tp: non_neg_integer(),
+            fp: non_neg_integer(),
+            fn: non_neg_integer(),
+            tn: non_neg_integer(),
+            cases: [map()]
+          }
           | {:skipped, :no_fixtures}
 
   @doc """
@@ -48,8 +59,33 @@ defmodule Faber.Eval.Trigger do
 
     correct = Enum.count(results, & &1.correct)
     total = length(results)
-    %{accuracy: correct / total, correct: correct, total: total, cases: results}
+
+    # A backend error (`actual == :error`) is neither a true nor false positive — it just counts as
+    # an incorrect prediction in `accuracy`, and is excluded from precision/recall (which key off
+    # boolean `true` predictions only).
+    tp = Enum.count(results, &(&1.expected == true and &1.actual == true))
+    fp = Enum.count(results, &(&1.expected == false and &1.actual == true))
+    fn_ = Enum.count(results, &(&1.expected == true and &1.actual != true))
+    tn = Enum.count(results, &(&1.expected == false and &1.actual != true))
+
+    %{
+      accuracy: correct / total,
+      precision: ratio(tp, tp + fp),
+      recall: ratio(tp, tp + fn_),
+      correct: correct,
+      total: total,
+      tp: tp,
+      fp: fp,
+      fn: fn_,
+      tn: tn,
+      cases: results
+    }
   end
+
+  # No positive predictions / no positive truths → vacuously perfect (matches the reference's 1.0
+  # default when the denominator is empty).
+  defp ratio(_num, 0), do: 1.0
+  defp ratio(num, den), do: num / den
 
   defp ask(%Proposal{} = p, phrase, opts) do
     prompt = """
