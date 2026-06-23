@@ -1,0 +1,20 @@
+{"timestamp":"2026-06-23T06:00:00.000Z","type":"session_meta","payload":{"session_id":"codex-sess-1","id":"codex-sess-1","cwd":"/Users/x/Projects/demo","model_provider":"openai","cli_version":"0.142.0"}}
+{"timestamp":"2026-06-23T06:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"please fix the failing build, the tests keep breaking"}}
+{"timestamp":"2026-06-23T06:00:02.000Z","type":"event_msg","payload":{"type":"agent_message","message":"I'll run the tests to see what's failing.","phase":"commentary"}}
+{"timestamp":"2026-06-23T06:00:03.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"mix test\",\"workdir\":\"/Users/x/Projects/demo\"}","call_id":"call_1"}}
+{"timestamp":"2026-06-23T06:00:04.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"Chunk ID: a\nProcess exited with code 1\nOutput:\n1 test, 1 failure"}}
+{"timestamp":"2026-06-23T06:00:05.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"mix test\",\"workdir\":\"/Users/x/Projects/demo\"}","call_id":"call_2"}}
+{"timestamp":"2026-06-23T06:00:06.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_2","output":"Process exited with code 1\n1 test, 1 failure"}}
+{"timestamp":"2026-06-23T06:00:07.000Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"mix test\",\"workdir\":\"/Users/x/Projects/demo\"}","call_id":"call_3"}}
+{"timestamp":"2026-06-23T06:00:08.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_3","output":"Process exited with code 0\n1 test, 0 failures"}}
+{"timestamp":"2026-06-23T06:00:09.000Z","type":"event_msg","payload":{"type":"user_message","message":"no, that's wrong — please revert that change"}}
+{"timestamp":"2026-06-23T06:00:10.000Z","type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch\n*** Update File: lib/demo.ex\n+  IO.puts(:ok)\n*** End Patch","call_id":"call_4"}}
+{"timestamp":"2026-06-23T06:00:11.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_4","output":"{\"output\":\"Success. Updated the following files:\\nM lib/demo.ex\\n\",\"metadata\":{\"exit_code\":0,\"duration_seconds\":0.0}}"}}
+{"timestamp":"2026-06-23T06:00:12.000Z","type":"response_item","payload":{"type":"function_call","name":"view_image","arguments":"{\"path\":\"/tmp/shot.png\",\"detail\":\"high\"}","call_id":"call_5"}}
+{"timestamp":"2026-06-23T06:00:13.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_5","output":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}}
+{"timestamp":"2026-06-23T06:00:14.000Z","type":"response_item","payload":{"type":"function_call","name":"write_stdin","arguments":"{\"session_id\":123,\"chars\":\"y\\n\"}","call_id":"call_6"}}
+{"timestamp":"2026-06-23T06:00:15.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_6","output":"Process exited with code 0"}}
+{"timestamp":"2026-06-23T06:00:16.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":180000,"cached_input_tokens":0,"output_tokens":50,"total_tokens":180050},"total_token_usage":{"input_tokens":180000},"model_context_window":200000}}}
+{"timestamp":"2026-06-23T06:00:17.000Z","type":"event_msg","payload":{"type":"token_count","info":null}}
+{"timestamp":"2026-06-23T06:00:18.000Z","type":"response_item","payload":{"type":"reasoning","encrypted_content":"xxx"}}
+{"timestamp":"2026-06-23T06:00:19.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /Users/x/Projects/demo"}]}}

@@ -9,9 +9,9 @@ defmodule Faber.Ingest do
 
   The format is resolved (in order) from the call's `:format` option, then
   `config :faber, :ingest_format`, then the default — `Faber.Ingest.Format.Claude` (Claude Code's
-  `~/.claude/projects/**/*.jsonl`). v1 ships only the Claude format; Codex/OpenCode/Pi are a new
-  module each behind this seam once their transcript specs are pinned down (see
-  `Faber.Ingest.Format`).
+  `~/.claude/projects/**/*.jsonl`). `Faber.Ingest.Format.Codex` (OpenAI Codex's
+  `~/.codex/sessions`) ships too; OpenCode/Pi are a new module each behind this seam once their
+  transcript specs are pinned down (see `Faber.Ingest.Format`).
   """
 
   alias Faber.Ingest.{Event, Format}

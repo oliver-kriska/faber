@@ -291,14 +291,41 @@ defmodule Faber.Detect do
   @type context :: %{max_ctx_pct: float() | nil, primary_model: String.t() | nil}
 
   @doc """
-  Context pressure from per-turn `message.usage`: the peak prompt-token fill as a percentage of
-  the model's context window. `nil` when there's no usage data or the model's window is unknown.
+  Context pressure: the peak prompt-token fill as a percentage of the model's context window.
+  `nil` when there's no usage data or the window is unknown.
 
-  Port of compute-metrics.py `extract_token_usage` / `get_context_window`; prompt tokens per turn
-  = `input + cache_creation + cache_read`. Feeds the `max_ctx_pct ≥ 90` tier-2 trigger.
+  Two cross-agent sources, preferred in order:
+
+    * **Normalized `Event.usage`** (Codex) — the format already carries `prompt_tokens` and the
+      window *inline* (Codex's model isn't in any static map), so use it directly.
+    * **Per-turn `message.usage`** (Claude) — port of compute-metrics.py `extract_token_usage` /
+      `get_context_window`; prompt tokens per turn = `input + cache_creation + cache_read`, window
+      resolved from `message.model`.
+
+  Feeds the `max_ctx_pct ≥ 90` tier-2 trigger.
   """
   @spec context(Enumerable.t()) :: context()
   def context(events) do
+    events = Enum.to_list(events)
+
+    case Enum.filter(events, & &1.usage) do
+      [] -> context_from_message_usage(events)
+      usages -> context_from_normalized_usage(usages)
+    end
+  end
+
+  # Codex path: prompt fill + window come pre-normalized on the event (window is inline, not a
+  # model lookup), so primary_model is left nil — Scan doesn't surface it and scoring never reads it.
+  defp context_from_normalized_usage(events_with_usage) do
+    peak = events_with_usage |> Enum.max_by(& &1.usage.prompt_tokens)
+    %{prompt_tokens: prompt, context_window: window} = peak.usage
+
+    max_ctx_pct = if window, do: Float.round(prompt / window * 100, 1), else: nil
+    %{max_ctx_pct: max_ctx_pct, primary_model: nil}
+  end
+
+  # Claude path (unchanged): per-turn usage on the assistant message, window from the model map.
+  defp context_from_message_usage(events) do
     prompts =
       events
       |> Enum.map(&turn_prompt_tokens/1)

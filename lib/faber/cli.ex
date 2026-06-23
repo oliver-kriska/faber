@@ -46,7 +46,7 @@ defmodule Faber.CLI do
   def parse(["scan" | rest]) do
     {opts, _, _} =
       OptionParser.parse(rest,
-        strict: [limit: :integer, rank_by: :string, source: :string, db: :string]
+        strict: [limit: :integer, rank_by: :string, source: :string, db: :string, format: :string]
       )
 
     {:scan, opts}
@@ -55,7 +55,7 @@ defmodule Faber.CLI do
   def parse(["propose" | rest]) do
     {opts, _, _} =
       OptionParser.parse(rest,
-        strict: [rank: :integer, install: :boolean, source: :string, db: :string]
+        strict: [rank: :integer, install: :boolean, source: :string, db: :string, format: :string]
       )
 
     {:propose, opts}
@@ -121,9 +121,10 @@ defmodule Faber.CLI do
   def run(:scan, opts) do
     scan_opts =
       opts
-      |> Keyword.take([:limit, :base, :min_messages, :format, :db])
+      |> Keyword.take([:limit, :base, :min_messages, :db])
       |> put_if(:rank_by, normalize_rank_by(opts[:rank_by]))
       |> put_if(:source, normalize_source(opts[:source]))
+      |> put_if(:format, normalize_format(opts[:format]))
 
     results = Scan.run(scan_opts)
     IO.puts(render_table(results))
@@ -137,8 +138,9 @@ defmodule Faber.CLI do
     # would sample a subset and could miss the worst sessions). `--limit` still passes through.
     scan_opts =
       opts
-      |> Keyword.take([:limit, :base, :min_messages, :format, :db])
+      |> Keyword.take([:limit, :base, :min_messages, :db])
       |> put_if(:source, normalize_source(opts[:source]))
+      |> put_if(:format, normalize_format(opts[:format]))
 
     with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
          %Scan.Result{} = result <- Enum.at(Scan.run(scan_opts), rank - 1),
@@ -253,6 +255,11 @@ defmodule Faber.CLI do
   defp normalize_source("ccrider"), do: :ccrider
   defp normalize_source(_), do: nil
 
+  defp normalize_format(f) when f in [:claude, :codex], do: f
+  defp normalize_format("claude"), do: :claude
+  defp normalize_format("codex"), do: :codex
+  defp normalize_format(_), do: nil
+
   defp put_if(opts, _key, nil), do: opts
   defp put_if(opts, key, value), do: Keyword.put(opts, key, value)
 
@@ -271,15 +278,18 @@ defmodule Faber.CLI do
     faber #{version()} — local-first improvement engine for AI coding agents
 
     Usage:
-      faber scan [--limit N] [--rank-by raw|rate] [--source files|ccrider] [--db PATH]
+      faber scan [--limit N] [--rank-by raw|rate] [--source S] [--format F] [--db PATH]
                                                     Rank session friction
-      faber propose [--rank N] [--install] [--source files|ccrider] [--db PATH]
+      faber propose [--rank N] [--install] [--source S] [--format F] [--db PATH]
                                                     Draft + eval a skill for one session
       faber serve [--port P] [--no-open]            Start the dashboard UI in your browser
       faber help | --version
 
-    Sources: --source files (default) walks ~/.claude/projects; --source ccrider reads ccrider's
+    Sources (--source): files (default) walks the agent's transcript dir; ccrider reads ccrider's
     SQLite index (--db, default ~/.config/ccrider/sessions.db). Or set config :faber, :ingest_source.
+
+    Formats (--format): claude (default, ~/.claude/projects) or codex (~/.codex/sessions). The codex
+    format is files-only — ccrider stores codex content empty, so use --source files --format codex.
     """
   end
 end

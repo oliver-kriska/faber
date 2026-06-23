@@ -34,9 +34,13 @@ defmodule Faber.Ingest.FormatTest do
       assert Format.resolve(format: FakeFormat) == FakeFormat
     end
 
+    test "accepts the shipped :codex alias" do
+      assert Format.resolve(format: :codex) == Faber.Ingest.Format.Codex
+    end
+
     test "raises on an unknown / not-yet-shipped alias" do
       assert_raise ArgumentError, ~r/unknown ingest format/, fn ->
-        Format.resolve(format: :codex)
+        Format.resolve(format: :opencode)
       end
     end
   end
