@@ -278,11 +278,18 @@ defmodule Faber.CLI do
     end
   end
 
-  defp session(%{path: path, session_id: sid}) do
-    project = path |> Path.dirname() |> Path.basename()
+  defp session(%{path: path, session_id: sid} = result) do
+    project = project_label(result, path)
     short = if is_binary(sid), do: String.slice(sid, 0, 8), else: Path.basename(path, ".jsonl")
     "#{project}/#{short}"
   end
+
+  # Prefer the session's real working dir (clean project name) over the transcript path, which is
+  # an opaque slug for Claude and a date directory for Codex. Falls back to the path basename.
+  defp project_label(%{cwd: cwd}, _path) when is_binary(cwd) and cwd != "",
+    do: Path.basename(cwd)
+
+  defp project_label(_result, path), do: path |> Path.dirname() |> Path.basename()
 
   defp normalize_rank_by(rb) when rb in [:raw, :rate], do: rb
   defp normalize_rank_by("rate"), do: :rate

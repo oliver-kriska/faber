@@ -115,9 +115,17 @@ defmodule Faber.Ingest.Format.Codex do
 
   def normalize(map) when is_map(map), do: %Event{raw: map}
 
-  # session_meta seeds the session id (and is otherwise inert).
+  # session_meta seeds the session id and the project cwd (and is otherwise inert). Codex carries
+  # `cwd` only on this first line — Scan threads the first non-nil cwd onto the whole session, so
+  # the project shows as the real working dir, not the rollout file's date directory.
   defp normalize_payload("session_meta", _pt, payload, base) do
-    %{base | type: :other, is_meta: true, session_id: payload["session_id"] || payload["id"]}
+    %{
+      base
+      | type: :other,
+        is_meta: true,
+        session_id: payload["session_id"] || payload["id"],
+        cwd: payload["cwd"]
+    }
   end
 
   # The human's typed prompt — the canonical user turn.

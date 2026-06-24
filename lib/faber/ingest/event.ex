@@ -40,6 +40,7 @@ defmodule Faber.Ingest.Event do
           tool_results: [tool_result()],
           is_meta: boolean(),
           usage: usage() | nil,
+          cwd: String.t() | nil,
           raw: map()
         }
 
@@ -54,6 +55,7 @@ defmodule Faber.Ingest.Event do
             tool_results: [],
             is_meta: false,
             usage: nil,
+            cwd: nil,
             raw: %{}
 
   @doc """

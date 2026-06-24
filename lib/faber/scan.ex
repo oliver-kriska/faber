@@ -33,11 +33,15 @@ defmodule Faber.Scan do
             parse_errors: non_neg_integer(),
             max_ctx_pct: float() | nil,
             file_paths: [String.t()],
+            cwd: String.t() | nil,
             tier2: boolean()
           }
     defstruct [
       :path,
       :session_id,
+      # The session's working directory (from the transcript), used for a clean project label —
+      # the on-disk transcript path is an opaque slug (Claude) or a date dir (Codex).
+      :cwd,
       :friction,
       :raw,
       :rate,
@@ -148,6 +152,7 @@ defmodule Faber.Scan do
     %Result{
       path: source.label(handle),
       session_id: session_id(events),
+      cwd: session_cwd(events),
       friction: f.score,
       raw: f.raw,
       rate: rate(f.raw, f.message_count),
@@ -199,6 +204,12 @@ defmodule Faber.Scan do
 
   defp session_id(events) do
     Enum.find_value(events, fn e -> e.session_id end)
+  end
+
+  # The session's working dir, taken from the first event that carries one. Codex records it only
+  # on the `session_meta` line; Claude repeats it on every entry — `find_value` handles both.
+  defp session_cwd(events) do
+    Enum.find_value(events, fn e -> e.cwd end)
   end
 
   # A `:limit` caps how many sessions are scored (a speed knob). Sample an EVEN SPREAD across the

@@ -141,9 +141,14 @@ defmodule Faber.Ingest.Format.CodexTest do
       assert nilled.usage == nil
     end
 
-    test "session_meta seeds the session id; preamble messages are inert" do
-      meta = Codex.normalize(msg("session_meta", %{"session_id" => "s-1"}))
-      assert %Event{type: :other, is_meta: true, session_id: "s-1"} = meta
+    test "session_meta seeds the session id and cwd; preamble messages are inert" do
+      meta =
+        Codex.normalize(
+          msg("session_meta", %{"session_id" => "s-1", "cwd" => "/Users/x/Projects/demo"})
+        )
+
+      assert %Event{type: :other, is_meta: true, session_id: "s-1", cwd: "/Users/x/Projects/demo"} =
+               meta
 
       # response_item/message (the AGENTS.md/role=user preamble) must NOT count as a user turn.
       pre =
@@ -175,6 +180,8 @@ defmodule Faber.Ingest.Format.CodexTest do
 
       assert r.session_id == "codex-sess-1"
       assert r.parse_errors == 0
+      # cwd from session_meta drives a clean project label, not the rollout date dir.
+      assert r.cwd == "/Users/x/Projects/demo"
 
       # 6 tool calls: 3 Bash (exec_command) + 1 Edit (apply_patch) + 1 Read (view_image) + 1 WriteStdin.
       assert r.tool_count == 6

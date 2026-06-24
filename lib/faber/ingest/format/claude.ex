@@ -75,6 +75,7 @@ defmodule Faber.Ingest.Format.Claude do
       tool_uses: extract_tool_uses(content),
       tool_results: extract_tool_results(content),
       is_meta: map["isMeta"] == true,
+      cwd: map["cwd"],
       raw: map
     }
   end

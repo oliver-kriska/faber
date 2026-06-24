@@ -40,6 +40,15 @@ defmodule Faber.CLITest do
       assert out =~ "sessions shown"
     end
 
+    test "scan labels a codex session by its cwd project, not the rollout date dir" do
+      opts = [base: "test/fixtures/codex", format: :codex, min_messages: 0]
+      out = capture_io(fn -> assert CLI.run(:scan, opts) == 0 end)
+
+      # session_meta cwd is /Users/x/Projects/demo → "demo/"; never the date-dir basename "codex".
+      assert out =~ "demo/"
+      refute out =~ "codex/codex-se"
+    end
+
     test "propose drafts + evals a skill (stub LLM, native eval)" do
       out = capture_io(fn -> assert CLI.run(:propose, @fixtures ++ [rank: 1]) == 0 end)
       assert out =~ "composite"
