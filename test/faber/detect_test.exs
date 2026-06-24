@@ -207,14 +207,35 @@ defmodule Faber.DetectTest do
 
       assert %{max_ctx_pct: nil} = Detect.context([event])
     end
+
+    test "infers the 1M-beta window when peak exceeds the standard window" do
+      # Claude Code records the plain model id even on a 1M session, so a 366k peak under the 200k
+      # standard window is the tell that the 1M beta was active → 36.7%, not 183%.
+      event = usage_event("claude-opus-4-8", 366_745, 0)
+      assert %{max_ctx_pct: 36.7} = Detect.context([event])
+    end
+
+    test "resolves opus-4-5 (date-suffixed) against the model map" do
+      event = usage_event("claude-opus-4-5-20251101", 150_000, 0)
+
+      assert %{max_ctx_pct: 75.0, primary_model: "claude-opus-4-5-20251101"} =
+               Detect.context([event])
+    end
+
+    test "clamps a pathological fill to 100%" do
+      event = usage_event("claude-opus-4-8", 1_500_000, 0)
+      assert %{max_ctx_pct: 100.0} = Detect.context([event])
+    end
   end
 
-  defp asst_usage(input, cache_read) do
+  defp asst_usage(input, cache_read), do: usage_event("claude-opus-4-8", input, cache_read)
+
+  defp usage_event(model, input, cache_read) do
     Faber.Ingest.normalize(%{
       "type" => "assistant",
       "message" => %{
         "role" => "assistant",
-        "model" => "claude-opus-4-8",
+        "model" => model,
         "usage" => %{
           "input_tokens" => input,
           "cache_creation_input_tokens" => 0,

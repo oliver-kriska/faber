@@ -81,6 +81,8 @@ defmodule Faber.Detect do
     "claude-opus-4-7[1m]" => 1_000_000,
     "claude-opus-4-6" => 200_000,
     "claude-opus-4-6[1m]" => 1_000_000,
+    "claude-opus-4-5" => 200_000,
+    "claude-opus-4-5[1m]" => 1_000_000,
     "claude-sonnet-4-6" => 200_000,
     "claude-sonnet-4-6[1m]" => 1_000_000,
     "claude-sonnet-4-5" => 200_000,
@@ -89,6 +91,10 @@ defmodule Faber.Detect do
     "claude-3-5-sonnet-20241022" => 200_000,
     "claude-3-5-haiku-20241022" => 200_000
   }
+
+  # Hard ceiling on reported context fill — a final safety net so a stale model→window map can never
+  # report a nonsensical >100%.
+  @max_ctx_pct 100.0
 
   @type signals :: %{
           retry_loops: non_neg_integer(),
@@ -320,28 +326,39 @@ defmodule Faber.Detect do
     peak = events_with_usage |> Enum.max_by(& &1.usage.prompt_tokens)
     %{prompt_tokens: prompt, context_window: window} = peak.usage
 
-    max_ctx_pct = if window, do: Float.round(prompt / window * 100, 1), else: nil
-    %{max_ctx_pct: max_ctx_pct, primary_model: nil}
+    %{max_ctx_pct: pct(prompt, window), primary_model: nil}
   end
 
-  # Claude path (unchanged): per-turn usage on the assistant message, window from the model map.
+  # Claude path: per-turn usage on the assistant message, window from the model map.
   defp context_from_message_usage(events) do
-    prompts =
+    peak =
       events
       |> Enum.map(&turn_prompt_tokens/1)
       |> Enum.reject(&is_nil/1)
+      |> Enum.max(fn -> nil end)
 
     model = primary_model(events)
-    window = context_window(model)
+    %{max_ctx_pct: pct(peak, resolve_window(model, peak)), primary_model: model}
+  end
 
-    max_ctx_pct =
-      case {prompts, window} do
-        {[], _} -> nil
-        {_, nil} -> nil
-        {ps, w} -> Float.round(Enum.max(ps) / w * 100, 1)
-      end
+  # Peak prompt fill as a % of the window — rounded and clamped to `@max_ctx_pct`. `nil` when either
+  # input is missing.
+  defp pct(nil, _window), do: nil
+  defp pct(_peak, nil), do: nil
+  defp pct(peak, window), do: Float.round(min(peak / window * 100, @max_ctx_pct), 1)
 
-    %{max_ctx_pct: max_ctx_pct, primary_model: model}
+  # The context window for a model, accounting for the 1M beta: Claude Code records the plain model
+  # id (`claude-opus-4-8`) even when a session ran on the 1M window, so a peak prompt that exceeds
+  # the standard window is the tell that the 1M beta was active — prefer the model's `[1m]` window
+  # when one is known. Without a peak (no usage) we can't tell, so fall back to the standard window.
+  defp resolve_window(nil, _peak), do: nil
+
+  defp resolve_window(model, peak) do
+    case context_window(model) do
+      nil -> nil
+      base when is_integer(peak) and peak > base -> onem_window(model) || base
+      base -> base
+    end
   end
 
   # Prompt tokens for one turn = input + cache_creation + cache_read; nil if the event has no
@@ -375,8 +392,6 @@ defmodule Faber.Detect do
     end
   end
 
-  defp context_window(nil), do: nil
-
   defp context_window(model) do
     cond do
       w = @context_windows[model] ->
@@ -388,6 +403,19 @@ defmodule Faber.Detect do
       true ->
         Enum.find_value(@context_windows, fn {k, w} -> if String.contains?(model, k), do: w end)
     end
+  end
+
+  # The 1M-beta window for a model, if one is registered — tried exact, date-stripped, then by
+  # substring against the `[1m]` keys (mirrors `context_window/1`'s cascade).
+  defp onem_window(model) do
+    base = String.replace(model, ~r/-\d{8}$/, "")
+
+    @context_windows[model <> "[1m]"] || @context_windows[base <> "[1m]"] ||
+      Enum.find_value(@context_windows, fn {k, w} ->
+        if String.ends_with?(k, "[1m]") and
+             String.contains?(model, String.replace_suffix(k, "[1m]", "")),
+           do: w
+      end)
   end
 
   defp add_if(list, true, item), do: [item | list]
