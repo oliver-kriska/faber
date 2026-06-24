@@ -109,6 +109,54 @@ defmodule Faber.Adapter do
     |> Enum.reverse()
   end
 
+  # ── stack matching (gating) ────────────────────────────────────────────────
+
+  @doc """
+  Does this adapter's stack apply to a session that touched `paths`?
+
+  The manifest's `file_globs` declare which files mark a project as "this stack" (`mix.exs`,
+  `**/*.{ex,exs}`, …); a session matches when any path it referenced (edited/read/patched) matches
+  any glob. This is how Faber refuses to draft, say, an Elixir skill for a Next.js Codex session.
+
+  Matching is **filesystem-independent** — it runs against the paths the session itself referenced,
+  not the project on disk — so it works cross-machine and for sessions whose project has moved. A
+  glob matches a path suffix (`lib/**/*.ex` matches `/Users/x/app/lib/a/b.ex`).
+  """
+  @spec matches_session?(t(), [String.t()]) :: boolean()
+  def matches_session?(%Adapter{file_globs: globs}, paths) when is_list(paths) do
+    regexes = Enum.map(globs, &glob_regex/1)
+    Enum.any?(paths, fn p -> is_binary(p) and Enum.any?(regexes, &Regex.match?(&1, p)) end)
+  end
+
+  @doc """
+  Translate an adapter `file_glob` into a `Regex` that matches a path **suffix** (anchored at a
+  path boundary). Supports `**` (any dirs), `*`/`?` (within a segment), and `{a,b}` alternation.
+  Exposed for testing.
+  """
+  @spec glob_regex(String.t()) :: Regex.t()
+  def glob_regex(glob) do
+    body =
+      glob
+      |> String.split(~r"(\*\*/|\*\*|\*|\?|\{[^}]*\})", include_captures: true, trim: true)
+      |> Enum.map_join(&glob_token/1)
+
+    Regex.compile!("(^|/)" <> body <> "$")
+  end
+
+  defp glob_token("**/"), do: "(?:.*/)?"
+  defp glob_token("**"), do: ".*"
+  defp glob_token("*"), do: "[^/]*"
+  defp glob_token("?"), do: "[^/]"
+
+  defp glob_token("{" <> _ = brace) do
+    alts =
+      brace |> String.slice(1..-2//1) |> String.split(",") |> Enum.map_join("|", &Regex.escape/1)
+
+    "(?:" <> alts <> ")"
+  end
+
+  defp glob_token(literal), do: Regex.escape(literal)
+
   # ── building ──────────────────────────────────────────────────────────────
 
   defp build(dir, manifest, laws, signatures, playbooks, eval, templates) do

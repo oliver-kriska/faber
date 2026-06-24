@@ -6,7 +6,7 @@
 {"type":"assistant","uuid":"a3","timestamp":"2026-01-01T00:00:05.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"mix test foo"}}]}}
 {"type":"user","uuid":"u4","timestamp":"2026-01-01T00:00:06.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t3","content":"passed"}]}}
 {"type":"user","uuid":"u5","timestamp":"2026-01-01T00:00:07.000Z","message":{"role":"user","content":"no, that's wrong, do it differently"}}
-{"type":"assistant","uuid":"a4","timestamp":"2026-01-01T00:00:08.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t4","name":"Read","input":{"file_path":"/x"}}]}}
+{"type":"assistant","uuid":"a4","timestamp":"2026-01-01T00:00:08.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t4","name":"Read","input":{"file_path":"/x/lib/parser.ex"}}]}}
 {"type":"user","uuid":"u6","timestamp":"2026-01-01T00:00:09.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t4","content":"contents"}]}}
 {"type":"user","uuid":"u7","timestamp":"2026-01-01T00:00:10.000Z","message":{"role":"user","content":"[Request interrupted by user]"}}
 {"type":"system","uuid":"sys1","timestamp":"2026-01-01T00:00:11.000Z","subtype":"compact_boundary","content":"context compacted"}

@@ -193,6 +193,10 @@ defmodule Faber.Ingest.Format.CodexTest do
       # Context pressure comes from token_count's inline window: 180k / 200k = 90%.
       assert r.max_ctx_pct == 90.0
       assert r.tier2
+
+      # file_paths (stack signal) captures apply_patch's file + the viewed image.
+      assert "lib/demo.ex" in r.file_paths
+      assert "/tmp/shot.png" in r.file_paths
     end
   end
 

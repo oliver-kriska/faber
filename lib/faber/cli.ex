@@ -55,7 +55,14 @@ defmodule Faber.CLI do
   def parse(["propose" | rest]) do
     {opts, _, _} =
       OptionParser.parse(rest,
-        strict: [rank: :integer, install: :boolean, source: :string, db: :string, format: :string]
+        strict: [
+          rank: :integer,
+          install: :boolean,
+          force: :boolean,
+          source: :string,
+          db: :string,
+          format: :string
+        ]
       )
 
     {:propose, opts}
@@ -144,6 +151,7 @@ defmodule Faber.CLI do
 
     with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
          %Scan.Result{} = result <- Enum.at(Scan.run(scan_opts), rank - 1),
+         :ok <- stack_gate(adapter, result, opts[:force]),
          {:ok, proposal} <- Propose.propose(result, adapter),
          {:ok, eval} <- Eval.score(proposal, adapter: adapter) do
       IO.puts(render_proposal(proposal, eval, adapter))
@@ -154,10 +162,41 @@ defmodule Faber.CLI do
         IO.puts(:stderr, "faber: no session at rank #{rank}")
         1
 
+      {:error, {:stack_mismatch, adapter, result}} ->
+        IO.puts(:stderr, stack_mismatch_message(adapter, result))
+        1
+
       {:error, reason} ->
         IO.puts(:stderr, "faber propose failed: #{inspect(reason)}")
         1
     end
+  end
+
+  # Stack-aware gate: refuse to draft a skill when the chosen session doesn't belong to the
+  # adapter's stack (e.g. proposing an Elixir skill for a Codex/Next.js session). `--force` skips it.
+  defp stack_gate(_adapter, _result, true), do: :ok
+
+  defp stack_gate(adapter, result, _force) do
+    if Adapter.matches_session?(adapter, result.file_paths),
+      do: :ok,
+      else: {:error, {:stack_mismatch, adapter, result}}
+  end
+
+  defp stack_mismatch_message(adapter, result) do
+    exts =
+      result.file_paths
+      |> Enum.map(&Path.extname/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.frequencies()
+      |> Enum.sort_by(fn {_ext, n} -> -n end)
+      |> Enum.map_join(", ", fn {ext, n} -> "#{ext}×#{n}" end)
+
+    """
+    faber: session #{session(result)} doesn't match adapter '#{adapter.name}' (stack mismatch).
+      Files touched: #{if exts == "", do: "none", else: exts}
+      This adapter targets: #{Enum.join(adapter.file_globs, ", ")}
+      Re-run with --force to draft anyway.
+    """
   end
 
   # ── serve ────────────────────────────────────────────────────────────────-
@@ -280,8 +319,9 @@ defmodule Faber.CLI do
     Usage:
       faber scan [--limit N] [--rank-by raw|rate] [--source S] [--format F] [--db PATH]
                                                     Rank session friction
-      faber propose [--rank N] [--install] [--source S] [--format F] [--db PATH]
+      faber propose [--rank N] [--install] [--force] [--source S] [--format F] [--db PATH]
                                                     Draft + eval a skill for one session
+                                                    (--force: skip the stack-match gate)
       faber serve [--port P] [--no-open]            Start the dashboard UI in your browser
       faber help | --version
 

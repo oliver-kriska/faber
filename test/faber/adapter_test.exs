@@ -70,4 +70,59 @@ defmodule Faber.AdapterTest do
       assert {:error, {:yaml_error, _path, _reason}} = Adapter.load("/nonexistent/adapter")
     end
   end
+
+  describe "matches_session?/2 — stack gating against the reference adapter" do
+    setup do
+      assert {:ok, adapter} = Adapter.load(@reference_adapter)
+      %{adapter: adapter}
+    end
+
+    test "matches a session that edited Elixir files", %{adapter: a} do
+      assert Adapter.matches_session?(a, ["/Users/x/Projects/demo/lib/demo/accounts.ex"])
+      assert Adapter.matches_session?(a, ["/Users/x/Projects/demo/test/demo_test.exs"])
+      assert Adapter.matches_session?(a, ["/Users/x/Projects/demo/mix.exs"])
+      assert Adapter.matches_session?(a, ["config/runtime.exs"])
+    end
+
+    test "does NOT match a Next.js / JS session (the Codex cross-stack case)", %{adapter: a} do
+      js = [
+        "/Users/x/Projects/naostro/app/page.tsx",
+        "/Users/x/Projects/naostro/components/Hero.jsx",
+        "/Users/x/Projects/naostro/package.json",
+        "/Users/x/Projects/naostro/styles.css"
+      ]
+
+      refute Adapter.matches_session?(a, js)
+    end
+
+    test "no referenced paths → no match (safe default)", %{adapter: a} do
+      refute Adapter.matches_session?(a, [])
+    end
+
+    test "matches if ANY path is in-stack, even amid foreign files", %{adapter: a} do
+      assert Adapter.matches_session?(a, ["/x/readme.md", "/x/lib/a/b/c.ex", "/x/notes.txt"])
+    end
+  end
+
+  describe "glob_regex/1" do
+    test "extension brace glob matches .ex and .exs anywhere" do
+      re = Adapter.glob_regex("**/*.{ex,exs}")
+      assert Regex.match?(re, "/a/b/c.ex")
+      assert Regex.match?(re, "lib/foo.exs")
+      refute Regex.match?(re, "/a/b/c.tsx")
+    end
+
+    test "root-marker glob matches the file at any depth or bare" do
+      re = Adapter.glob_regex("mix.exs")
+      assert Regex.match?(re, "/Users/x/proj/mix.exs")
+      assert Regex.match?(re, "mix.exs")
+      refute Regex.match?(re, "/Users/x/proj/notmix.exs")
+    end
+
+    test "single * stays within a path segment" do
+      re = Adapter.glob_regex("config/*.exs")
+      assert Regex.match?(re, "/x/config/runtime.exs")
+      refute Regex.match?(re, "/x/config/sub/runtime.exs")
+    end
+  end
 end

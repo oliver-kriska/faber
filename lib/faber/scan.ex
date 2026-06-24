@@ -32,6 +32,7 @@ defmodule Faber.Scan do
             message_count: non_neg_integer(),
             parse_errors: non_neg_integer(),
             max_ctx_pct: float() | nil,
+            file_paths: [String.t()],
             tier2: boolean()
           }
     defstruct [
@@ -52,7 +53,10 @@ defmodule Faber.Scan do
       :message_count,
       :parse_errors,
       :max_ctx_pct,
-      :tier2
+      # File paths the session touched (edited/read/patched) — the stack signal `Faber.Adapter`
+      # matches its `file_globs` against to decide whether an adapter applies to this session.
+      file_paths: [],
+      tier2: false
     ]
   end
 
@@ -159,8 +163,26 @@ defmodule Faber.Scan do
       message_count: f.message_count,
       parse_errors: length(parse_errors),
       max_ctx_pct: ctx.max_ctx_pct,
+      file_paths: referenced_paths(events),
       tier2: tier2?(f, op, ctx)
     }
+  end
+
+  # File paths the session referenced through tool calls (Edit/Write/Read/NotebookEdit `file_path`,
+  # Read/view_image `path`). Feeds `Faber.Adapter.matches_session?/2` for stack-aware gating — a
+  # session that edits/reads `.ex` files matches the Elixir adapter; a Next.js one won't.
+  defp referenced_paths(events) do
+    events
+    |> Enum.flat_map(& &1.tool_uses)
+    |> Enum.flat_map(fn
+      %{input: input} when is_map(input) ->
+        [input["file_path"], input["path"], input["notebook_path"]]
+
+      _ ->
+        []
+    end)
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.uniq()
   end
 
   # Tier-2 (deep qualitative analysis) eligibility, per the plugin's scoring guide: a session

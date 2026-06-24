@@ -46,6 +46,18 @@ defmodule Faber.CLITest do
       assert out =~ "Iron Laws"
     end
 
+    test "propose refuses a stack-mismatched session, and --force overrides" do
+      opts = [base: "test/fixtures/nonelixir", min_messages: 0, rank: 1]
+
+      err = capture_io(:stderr, fn -> assert CLI.run(:propose, opts) == 1 end)
+      assert err =~ "stack mismatch"
+      assert err =~ "--force"
+
+      # --force skips the gate → the stub LLM drafts + native eval scores the skill.
+      out = capture_io(fn -> assert CLI.run(:propose, opts ++ [force: true]) == 0 end)
+      assert out =~ "composite"
+    end
+
     test "help and version exit 0" do
       assert capture_io(fn -> assert CLI.run(:help, []) == 0 end) =~ "Usage:"
       assert capture_io(fn -> assert CLI.run(:version, []) == 0 end) =~ "faber"
