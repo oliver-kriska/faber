@@ -12,6 +12,15 @@ defmodule Faber.Eval.Native do
 
   alias Faber.Eval.Matchers
 
+  # Version of the score *result contract* (dimensions/assertions shape), decoupled from the app
+  # release version. Bump only when the result shape changes; the sidecar carries the same constant
+  # (`python/faber_eval/scorer.py SCHEMA_VERSION`) and the parity test asserts they match.
+  @schema_version "1.0"
+
+  @doc "The score-result contract version (see `@schema_version`)."
+  @spec schema_version() :: String.t()
+  def schema_version, do: @schema_version
+
   @default_eval [
     {"completeness", 0.25,
      [
@@ -126,6 +135,7 @@ defmodule Faber.Eval.Native do
     composite = if den > 0, do: num / den, else: 0.0
 
     %{
+      "schema_version" => @schema_version,
       "composite" => Float.round(composite, 4),
       "dimensions" => dimensions,
       "weight_total" => Float.round(den, 4)

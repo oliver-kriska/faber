@@ -29,6 +29,14 @@ defmodule Faber.EvalTest do
 
   @skill "---\nname: x\ndescription: y\n---\n# X\n"
 
+  describe "result contract" do
+    test "carries the schema_version (native engine, hermetic)" do
+      assert {:ok, r} = Eval.score(@skill, engine: :native)
+      assert r.schema_version == Faber.Eval.Native.schema_version()
+      assert r.schema_version == "1.0"
+    end
+  end
+
   describe "score/2 (stubbed sidecar)" do
     test "passes when composite >= threshold" do
       {:ok, r} = Eval.score(@skill, sidecar: PassSidecar, threshold: 0.75)
@@ -169,11 +177,13 @@ defmodule Faber.EvalTest do
 
       # Parity must hold across the score range, not just on a passing fixture — a single-input
       # check could mask a systematic native/sidecar bias (review testing W5). Both eval sets are
-      # checked so the new accuracy dimension stays in lockstep across engines too.
+      # checked so the new accuracy dimension stays in lockstep across engines too. Comparison is
+      # EXACT per-dimension/per-assertion (not composite-within-0.05): a loose composite tolerance
+      # can mask two matchers drifting in opposite directions that net out (the two-runtime risk).
       for input <- [good, bad], eval_set <- [:default, :full] do
         assert {:ok, native} = Eval.score(input, engine: :native, eval_set: eval_set)
         assert {:ok, sidecar} = Eval.score(input, engine: :sidecar, eval_set: eval_set)
-        assert_in_delta native.composite, sidecar.composite, 0.05
+        assert_exact_parity(native, sidecar)
       end
     end
 
@@ -186,8 +196,42 @@ defmodule Faber.EvalTest do
 
       assert {:ok, native} = Eval.score(skill, engine: :native, eval_set: :full, refs: refs)
       assert {:ok, sidecar} = Eval.score(skill, engine: :sidecar, eval_set: :full, refs: refs)
-      assert_in_delta native.composite, sidecar.composite, 0.05
+      assert_exact_parity(native, sidecar)
       assert native.dimensions["accuracy"]["score"] == sidecar.dimensions["accuracy"]["score"]
+    end
+  end
+
+  # Exact structural parity between the native and sidecar engines: same contract version, composite,
+  # weight_total, dimension set, per-dimension score + pass/fail counts, and — the real anti-drift
+  # check — identical per-assertion verdicts (a matcher diverging flips a `passed` here). Evidence
+  # *wording* and the python-only `weight` key are allowed to differ; the verdict is not.
+  defp assert_exact_parity(native, sidecar) do
+    assert native.schema_version == sidecar.schema_version
+    assert native.composite == sidecar.composite
+    assert native.weight_total == sidecar.weight_total
+
+    assert Enum.sort(Map.keys(native.dimensions)) == Enum.sort(Map.keys(sidecar.dimensions))
+
+    for {name, nd} <- native.dimensions do
+      sd = sidecar.dimensions[name]
+
+      assert nd["score"] == sd["score"], "#{name} score drift: #{nd["score"]} vs #{sd["score"]}"
+      assert nd["passed"] == sd["passed"], "#{name} passed-count drift"
+      assert nd["failed"] == sd["failed"], "#{name} failed-count drift"
+      assert nd["total"] == sd["total"]
+
+      na = nd["assertions"]
+      sa = sd["assertions"]
+      assert length(na) == length(sa)
+
+      for {n, s} <- Enum.zip(na, sa) do
+        assert n["id"] == s["id"]
+        assert n["check_type"] == s["check_type"]
+
+        assert n["passed"] == s["passed"],
+               "#{name} assertion #{n["id"]} (#{n["check_type"]}) verdict drift: " <>
+                 "#{n["passed"]} vs #{s["passed"]}"
+      end
     end
   end
 

@@ -16,6 +16,11 @@ from __future__ import annotations
 
 from faber_eval.matchers import run_check
 
+# Version of the score *result contract* (dimensions/assertions shape), decoupled from the package
+# release version (``faber_eval.__version__``). Must equal the native scorer's constant
+# (``Faber.Eval.Native @schema_version``); the parity test asserts they match.
+SCHEMA_VERSION = "1.0"
+
 # dimension -> (weight, [ {type, weight?, **params}, ... ])
 DEFAULT_EVAL = {
     "completeness": {
@@ -211,6 +216,7 @@ def score_skill(content: str, eval_def: dict | None = None) -> dict:
 
     composite = composite_num / composite_den if composite_den else 0.0
     return {
+        "schema_version": SCHEMA_VERSION,
         "composite": round(composite, 4),
         "dimensions": dimensions,
         "weight_total": round(composite_den, 4),

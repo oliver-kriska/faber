@@ -20,12 +20,17 @@ defmodule Faber.Eval do
 
   # `:trigger` is added dynamically when `trigger: true` (behavioral fold); not all callers see it.
   @type result :: %{
+          schema_version: String.t(),
           composite: float(),
           dimensions: map(),
           threshold: float(),
           passed: boolean(),
           weight_total: float()
         }
+
+  # Fallback contract version if a (legacy) scorer result omits it; the engines (Native +
+  # python sidecar) carry their own and the parity test asserts they agree.
+  @schema_version "1.0"
 
   @ref_checks ~w(valid_file_refs valid_skill_refs valid_agent_refs)
   @behavioral_weight 0.10
@@ -308,6 +313,7 @@ defmodule Faber.Eval do
     composite = result["composite"] || 0.0
 
     %{
+      schema_version: result["schema_version"] || @schema_version,
       composite: composite,
       dimensions: result["dimensions"] || %{},
       threshold: threshold,
