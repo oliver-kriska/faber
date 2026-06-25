@@ -88,7 +88,17 @@ defmodule Faber.MCP.NoEgressTest do
   defp collect(acc) do
     receive do
       {:trace, _pid, :call, {mod, fun, _args}} -> collect([{mod, fun} | acc])
-      {:dump, ref, to} -> send(to, {:calls, ref, acc})
+      # Drain any trace messages already enqueued ahead of nothing-left before replying, so the dump
+      # can't miss a late-but-delivered call (belt-and-suspenders atop flush_trace_delivery/0).
+      {:dump, ref, to} -> send(to, {:calls, ref, drain(acc)})
+    end
+  end
+
+  defp drain(acc) do
+    receive do
+      {:trace, _pid, :call, {mod, fun, _args}} -> drain([{mod, fun} | acc])
+    after
+      0 -> acc
     end
   end
 end

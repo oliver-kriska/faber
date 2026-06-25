@@ -22,7 +22,18 @@ defmodule Faber.MCP.Tools.GetSkill do
     # Resolve against the discovered listing (never a caller-supplied path) → traversal-proof.
     case Enum.find(Install.list_installed(), &(&1.name == name)) do
       %{path: path} ->
-        {:reply, Response.text(Response.tool(), File.read!(path)), frame}
+        # A clean tool error (not a 500) if the file vanished between listing and read (TOCTOU).
+        case File.read(path) do
+          {:ok, body} ->
+            {:reply, Response.text(Response.tool(), body), frame}
+
+          {:error, reason} ->
+            {:reply,
+             Response.error(
+               Response.tool(),
+               "Could not read skill #{inspect(name)} (#{:file.format_error(reason)})"
+             ), frame}
+        end
 
       nil ->
         {:reply,

@@ -101,7 +101,7 @@ defmodule Faber.Install do
     [Path.expand(dir), "*", "SKILL.md"]
     |> Path.join()
     |> Path.wildcard()
-    |> Enum.map(&skill_summary/1)
+    |> Enum.flat_map(&skill_summary/1)
     |> Enum.sort_by(& &1.name)
   end
 
@@ -189,14 +189,22 @@ defmodule Faber.Install do
     end
   end
 
+  # `[summary]` or `[]` — a `SKILL.md` that vanished between the wildcard scan and this read (TOCTOU)
+  # is skipped, not crashed (this feeds the MCP `faber_list_skills`/`faber_get_skill` tools).
   defp skill_summary(path) do
-    content = File.read!(path)
+    case File.read(path) do
+      {:ok, content} ->
+        [
+          %{
+            name: frontmatter(content, "name") || Path.basename(Path.dirname(path)),
+            description: frontmatter(content, "description") || "",
+            path: path
+          }
+        ]
 
-    %{
-      name: frontmatter(content, "name") || Path.basename(Path.dirname(path)),
-      description: frontmatter(content, "description") || "",
-      path: path
-    }
+      {:error, _} ->
+        []
+    end
   end
 
   # One-line frontmatter scalar (tolerates an optional surrounding double-quote, as render emits).

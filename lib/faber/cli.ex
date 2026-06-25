@@ -112,8 +112,26 @@ defmodule Faber.CLI do
   def dispatch({:serve, opts}), do: serve(opts)
 
   def dispatch({command, opts}) do
-    spawn(fn -> System.halt(run(command, opts)) end)
+    # ALWAYS halt — if run/2 raises, halt with 1 rather than leaving the release VM hung with no
+    # exit path (one-shot commands have no other process keeping the node alive).
+    spawn(fn ->
+      status =
+        try do
+          run(command, opts)
+        rescue
+          e -> halt_on_raise(e, __STACKTRACE__)
+        end
+
+      System.halt(status)
+    end)
+
     :ok
+  end
+
+  defp halt_on_raise(error, stacktrace) do
+    IO.puts(:stderr, "faber: #{Exception.message(error)}")
+    IO.puts(:stderr, Exception.format_stacktrace(stacktrace))
+    1
   end
 
   @doc "Run a one-shot command, returning a process exit status (0 ok / 1 error). No `halt`."

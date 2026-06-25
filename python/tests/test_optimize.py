@@ -89,6 +89,10 @@ class MetricFeedbackTests(unittest.TestCase):
         self.assertIn("Composite score", feedback)
         # The bad skill fails dimensions; the feedback should enumerate them as bullet lines.
         self.assertIn("- ", feedback)
+        # And the "what to fix" half: failed checks must be named (reads scorer's `assertions`/
+        # `check_type`). This assertion is what catches the wrong-key regression that previously
+        # made the suffix silently empty while scores still worked.
+        self.assertIn("— failed:", feedback)
 
 
 class ShapeResultTests(unittest.TestCase):

@@ -21,6 +21,8 @@ Design — what's tested vs. what isn't:
   ``.claude/research/2026-06-23-gepa-reflective-loop-decision.md``).
 """
 
+from __future__ import annotations
+
 import importlib.util
 import os
 
@@ -94,7 +96,12 @@ def metric_feedback(skill_md: str, eval_def: dict | None) -> tuple[float, str]:
     ranked = sorted(dims.items(), key=lambda kv: kv[1].get("score", 0.0))
     lines = [f"Composite score: {composite:.3f}. Weakest dimensions first:"]
     for name, dim in ranked:
-        failed = [c.get("name", "?") for c in dim.get("checks", []) if not c.get("passed", True)]
+        # `_score_dimension` emits `assertions` (each with `check_type`/`passed`), NOT `checks`/`name`.
+        failed = [
+            a.get("check_type", "?")
+            for a in dim.get("assertions", [])
+            if not a.get("passed", True)
+        ]
         suffix = f" — failed: {', '.join(failed)}" if failed else ""
         lines.append(f"- {name}: {dim.get('score', 0.0):.3f}{suffix}")
     return composite, "\n".join(lines)
@@ -172,9 +179,13 @@ def _run_gepa_live(skill_md, eval_def, rollouts):  # pragma: no cover - needs ds
     """Real ``dspy.GEPA`` optimization. UNVALIDATED until run live (requires dspy + an API key).
 
     Framing: wrap the SKILL.md as the output of a trivial single-predictor program; GEPA reflectively
-    evolves that predictor's instruction to maximize ``metric_feedback``. The exact dspy.GEPA API may
-    differ across dspy versions — confirm against the installed version when enabling. Any failure
-    here is caught by ``run`` and returned as ``status: "error"``.
+    evolves that predictor's instruction to maximize ``metric_feedback``.
+
+    WARNING — the exact ``dspy.GEPA`` API has drifted across dspy versions: the budget kwarg
+    (``max_metric_calls`` vs ``auto``/``max_full_evals``) and a likely-required ``reflection_lm=``
+    argument must be confirmed against the installed dspy before this runs clean (the ``>=2.5`` pin
+    is broad). The single-example trainset==valset is intentionally degenerate (we optimize one
+    document, not a dataset). Any failure here is caught by ``run`` → ``status: "error"``.
     """
     import dspy
 

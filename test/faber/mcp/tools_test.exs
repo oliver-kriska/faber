@@ -49,6 +49,17 @@ defmodule Faber.MCP.ToolsTest do
       # Sanity: the phrase really is in the fixture we just scanned.
       assert File.read!("test/fixtures/sample_session.jsonl") =~ @raw_transcript_phrase
       refute blob =~ @raw_transcript_phrase
+
+      # Wire-level allowlist: every finding's JSON keys (string keys, as a client sees them) stay
+      # within the privacy-safe projection — catches a leak the atom-keyed summarize/1 test can't.
+      wire_allowed =
+        ~w(session_id friction raw rate dominant_signal opportunity tool_count error_count
+           message_count max_ctx_pct cwd file_paths missed skills_used fingerprint)
+
+      for finding <- Jason.decode!(hd(resp.content)["text"])["findings"] do
+        assert Enum.all?(Map.keys(finding), &(&1 in wire_allowed)),
+               "leaked key(s): #{inspect(Map.keys(finding) -- wire_allowed)}"
+      end
     end
 
     test "summarize/1 exposes exactly the aggregate allowlist (no leaked fields)" do

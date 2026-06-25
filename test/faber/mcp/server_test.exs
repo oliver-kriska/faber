@@ -34,6 +34,7 @@ defmodule Faber.MCP.ServerTest do
       # happens under `faber serve` (endpoint server: true).
       pid = start_supervised!({Server, transport: {:streamable_http, start: true}})
       assert is_pid(pid)
+      assert Process.alive?(pid)
       assert is_pid(Process.whereis(Registry.supervisor_name(Server)))
     end
   end
