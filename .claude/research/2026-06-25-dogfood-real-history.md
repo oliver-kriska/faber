@@ -111,14 +111,18 @@ falsely claiming Faber installed all 38, polluting the instructions loaded into 
 Root cause: the cross-agent pointer design assumes a **Faber-dedicated** skills dir. It has no
 notion of *provenance* (which skills Faber installed vs. which were already there).
 
-Deferred deliberately — the right fix is a **design decision**, not a one-liner. Options:
-1. **Install-provenance marker** — `Faber.Install.install` drops a sentinel (a `.faber` file in the
-   skill dir, or a `faber: true` frontmatter key); `sync_pointer` filters `list_installed` to
-   Faber-marked skills. Cleanest, but changes whether the MCP `faber_list_skills` should list all
-   vs. only-Faber (separate question).
-2. **Dedicated dir** — install under a Faber-owned subdir; but Claude only auto-discovers
-   `~/.claude/skills/*`, so this breaks discovery. Rejected.
-3. Keep current behavior and only ever sync against a dir the user dedicates to Faber (document it).
+**FIXED** (commit `5d1032d`) — went with the provenance marker. `Faber.Install.install/2` now drops
+a `.faber.json` sentinel beside each `SKILL.md` (a `%Proposal{}` also records
+adapter/source_session/fingerprint — never the transcript `path`, per the privacy boundary). New
+`list_faber_installed/1` filters `list_installed/1` to marked dirs; `sync_pointer`/`check_pointer`
+**and** the MCP `faber_list_skills`/`faber_get_skill` tools now use it (the MCP fork resolved itself
+— both tools' moduledocs already said "skills Faber has installed", so the filter is simply the
+behavior they always documented). `list_installed/1` stays the generic "all skills in dir" primitive.
 
-Recommendation: option 1 (provenance marker), in its own focused change — it touches the
-Install/MCP contract and deserves explicit sign-off.
+Verified on the real dir: `list_faber_installed` → `["context-budget"]` while `list_installed` → 39.
+The other options were rejected: a frontmatter `faber: true` key pollutes the visible skill content,
+and a dedicated dir breaks Claude's `~/.claude/skills/*` auto-discovery.
+
+The pointer-sync into the global `~/.claude/CLAUDE.md` was still **not run** — it's now safe (lists
+only `context-budget`) but redundant for Claude (auto-discovery already loads the installed skill;
+the pointer's real value is cross-agent, e.g. codex's `AGENTS.md`). Left as a one-command opt-in.
