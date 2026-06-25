@@ -38,3 +38,8 @@ __pycache__/
 
 # Burrito single-binary build output
 /burrito_out/
+
+# Secrets — never commit API keys / local env (e.g. CLAUDE_API / ANTHROPIC_API_KEY)
+.env
+.env.*
+!.env.example
