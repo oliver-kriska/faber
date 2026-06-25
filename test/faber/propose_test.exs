@@ -186,6 +186,22 @@ defmodule Faber.ProposeTest do
       refute md =~ "## Workflow"
       refute md =~ "## Patterns"
     end
+
+    test "the Examples fence carries a >=2-line worked example (has_examples passes)" do
+      {:ok, p} = Propose.propose(result(), adapter())
+      md = Propose.render_skill_md(p)
+
+      # usage comment over the concrete example → two non-empty lines in one fence.
+      assert {true, _} = Faber.Eval.Matchers.has_examples(md, %{min_blocks: 1})
+    end
+
+    test "the example fence stays >=2 lines even when usage/example are absent" do
+      # The renderer must guarantee the structural minimum regardless of LLM cooperation.
+      p = %Proposal{name: "x", description: "d", rationale: "r", iron_laws: ["a", "b", "c"]}
+      md = Propose.render_skill_md(p)
+
+      assert {true, _} = Faber.Eval.Matchers.has_examples(md, %{min_blocks: 1})
+    end
   end
 
   describe "render_skill_md/2 (adapter template)" do
@@ -248,6 +264,22 @@ defmodule Faber.ProposeTest do
       assert filled =~ "1. Read the actual error first"
       assert filled =~ "## Patterns"
       assert filled =~ "- **Runs**: focused, not full"
+    end
+
+    test "the real faber-elixir template's Usage fence passes has_examples" do
+      {:ok, adapter} = Adapter.load("adapters/faber-elixir")
+      {:ok, p} = Propose.propose(result(), adapter)
+      md = Propose.render_skill_md(p, adapter)
+
+      # The template ships a single fenced block (Usage); the renderer guarantees it holds the
+      # usage comment + example, so the clarity dimension's has_examples check passes via the
+      # adapter path — the gap dogfooding caught: clarity stuck at 0.50 (action_density ok, examples
+      # missing).
+      assert {true, _} = Faber.Eval.Matchers.has_examples(md, %{min_blocks: 1})
+
+      # And it holds even when the LLM omits usage/example.
+      bare = Propose.render_skill_md(%{p | usage: nil, example: nil}, adapter)
+      assert {true, _} = Faber.Eval.Matchers.has_examples(bare, %{min_blocks: 1})
     end
   end
 end

@@ -9,6 +9,7 @@ templates:
     description: >-
       SKILL.md scaffold in the plugin idiom: frontmatter (name, description, effort,
       argument-hint, allowed-tools), an "Iron Laws — Never Violate These" section, a Usage
-      block, numbered Workflow steps, and do/don't Patterns bullets. Workflow and Patterns are
-      presence-gated, so an empty list drops the whole section. Placeholders use {{tokens}};
+      block carrying a >=2-line worked example (usage comment + concrete snippet), numbered
+      Workflow steps, and do/don't Patterns bullets. Workflow and Patterns are presence-gated,
+      so an empty list drops the whole section. Placeholders use {{tokens}};
       {{#section}}…{{/section}} marks a repeated/conditional block.

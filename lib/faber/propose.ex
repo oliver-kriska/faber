@@ -93,7 +93,9 @@ defmodule Faber.Propose do
       clause naming concrete scenarios. Prefer specific tech/error names over category labels.
       Add a short "NOT for …" clause when it disambiguates from an adjacent skill.
     - iron_laws: at least 3 non-negotiable, stack-appropriate invariants, imperative voice.
-    - usage: how/when the skill fires. example: a concrete command or code snippet.
+    - usage: one line on how/when the skill fires.
+    - example: a concrete, runnable snippet of AT LEAST TWO lines — e.g. the command plus the
+      check that confirms it worked, or a 2-step invocation — never a bare one-liner.
     - workflow: 3–6 ordered, imperative steps the agent follows when the skill fires (e.g.
       "Run the failing test in isolation with `mix test path:line`"). Each is one actionable line.
     - patterns: 2–4 stack-specific idioms or anti-patterns, each as `Name: do X, not Y` (a concrete
@@ -170,7 +172,9 @@ defmodule Faber.Propose do
       "description" => escape(p.description),
       "effort" => p.effort,
       "one_line_purpose" => p.rationale,
-      "usage_examples" => p.usage || p.example || "# (no example provided)",
+      # Always ≥2 non-empty lines (usage comment + example), so the template's single fenced block
+      # satisfies the eval's has_examples check the way the built-in renderer's `## Examples` does.
+      "usage_examples" => usage_block(p),
       "iron_laws" =>
         p.iron_laws
         |> Enum.with_index(1)
@@ -219,8 +223,7 @@ defmodule Faber.Propose do
     #{workflow_section(p.workflow)}#{patterns_section(p.patterns)}## Examples
 
     ```bash
-    # #{p.usage || "example"}
-    #{p.example || "# (no example provided)"}
+    #{usage_block(p)}
     ```
 
     ## References
@@ -244,6 +247,24 @@ defmodule Faber.Propose do
     body = Enum.map_join(patterns, "\n", fn p -> "- #{format_pattern(p)}" end)
     "\n## Patterns\n\n#{body}\n\n"
   end
+
+  # A 2-line worked example: a usage comment over the concrete snippet. Always ≥2 non-empty lines so
+  # a single fenced block satisfies the eval's has_examples (≥2 lines) check — shared by the built-in
+  # `## Examples` fence and the adapter template's `## Usage` fence.
+  defp usage_block(%Proposal{usage: usage, example: example}) do
+    comment = "# " <> (present(usage) || "When the trigger conditions in the description match")
+    body = present(example) || "# (add a concrete example)"
+    comment <> "\n" <> body
+  end
+
+  defp present(s) when is_binary(s) do
+    case String.trim(s) do
+      "" -> nil
+      _ -> s
+    end
+  end
+
+  defp present(_), do: nil
 
   # "Name: guidance" → "**Name**: guidance" (a bold-bulleted, actionable do/don't line); a line with
   # no colon is bolded whole.
