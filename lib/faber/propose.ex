@@ -185,7 +185,7 @@ defmodule Faber.Propose do
       "steps" =>
         p.workflow
         |> Enum.with_index(1)
-        |> Enum.map(fn {step, i} -> %{"step_index" => i, "step_body" => step} end),
+        |> Enum.map(fn {step, i} -> %{"step_index" => i, "step_body" => oneline(step)} end),
       "patterns_present" => p.patterns != [],
       "patterns" => Enum.map(p.patterns, fn pat -> %{"pattern_text" => format_pattern(pat)} end)
     }
@@ -237,7 +237,9 @@ defmodule Faber.Propose do
   defp workflow_section([]), do: ""
 
   defp workflow_section(steps) do
-    body = steps |> Enum.with_index(1) |> Enum.map_join("\n", fn {s, i} -> "#{i}. #{s}" end)
+    body =
+      steps |> Enum.with_index(1) |> Enum.map_join("\n", fn {s, i} -> "#{i}. #{oneline(s)}" end)
+
     "\n## Workflow\n\n#{body}\n\n"
   end
 
@@ -252,8 +254,10 @@ defmodule Faber.Propose do
   # a single fenced block satisfies the eval's has_examples (≥2 lines) check — shared by the built-in
   # `## Examples` fence and the adapter template's `## Usage` fence.
   defp usage_block(%Proposal{usage: usage, example: example}) do
-    comment = "# " <> (present(usage) || "When the trigger conditions in the description match")
-    body = present(example) || "# (add a concrete example)"
+    comment =
+      "# " <> fence_safe(present(usage) || "When the trigger conditions in the description match")
+
+    body = fence_safe(present(example) || "# (add a concrete example)")
     comment <> "\n" <> body
   end
 
@@ -266,10 +270,22 @@ defmodule Faber.Propose do
 
   defp present(_), do: nil
 
+  # Defang an LLM value before it goes inside a ```fenced``` block: collapse any run of ≥3 backticks
+  # to one (so the value can't close the fence early) and strip surrounding blank lines (so the fence
+  # has no stray empty lines). The skill file is local, not a web sink, so this is hygiene, not RCE
+  # defense — but it keeps generated skills well-formed regardless of what the model returns.
+  defp fence_safe(text) do
+    text |> to_string() |> String.replace(~r/`{3,}/, "`") |> String.trim()
+  end
+
+  # Flatten a list item to a single line — a multi-line workflow step or pattern would otherwise
+  # inject extra markdown structure into the numbered list / bullet.
+  defp oneline(text), do: text |> to_string() |> String.replace(~r/\s+/, " ") |> String.trim()
+
   # "Name: guidance" → "**Name**: guidance" (a bold-bulleted, actionable do/don't line); a line with
-  # no colon is bolded whole.
+  # no colon is bolded whole. Collapsed to one line first (both render paths go through here).
   defp format_pattern(text) do
-    case String.split(text, ":", parts: 2) do
+    case text |> oneline() |> String.split(":", parts: 2) do
       [name, rest] -> "**#{String.trim(name)}**:#{rest}"
       [only] -> "**#{String.trim(only)}**"
     end

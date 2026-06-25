@@ -90,6 +90,16 @@ defmodule Faber.ProposeTest do
     end
   end
 
+  describe "schema/0" do
+    test "declares the workflow + patterns fields the renderers depend on" do
+      # The Stub returns its stub_response verbatim (ignoring the schema), so without this guard a
+      # schema regression that drops these fields would pass every other test silently.
+      schema = Propose.schema()
+      assert Keyword.has_key?(schema, :workflow)
+      assert Keyword.has_key?(schema, :patterns)
+    end
+  end
+
   describe "propose/3" do
     test "returns a Proposal from the configured stub LLM" do
       {:ok, %Proposal{} = p} = Propose.propose(result(), adapter())
@@ -102,7 +112,7 @@ defmodule Faber.ProposeTest do
       assert p.source.dominant_signal == :retry_loops
     end
 
-    test "maps a custom stub_response (atom keys) into the struct" do
+    test "maps a custom stub_response with string keys (the get/2 fallback) into the struct" do
       custom = %{
         "name" => "tidy-migrations",
         "description" => "A focused skill for keeping Ecto migrations reversible and small.",
@@ -117,6 +127,23 @@ defmodule Faber.ProposeTest do
       # Absent workflow/patterns default to empty lists (the section is then omitted at render).
       assert p.workflow == []
       assert p.patterns == []
+    end
+
+    test "maps a stub_response with atom keys (exercises the get/2 primary Map.fetch path)" do
+      custom = %{
+        name: "atomic-skill",
+        description: "An atom-keyed object, as some providers return.",
+        rationale: "because",
+        iron_laws: ["one", "two", "three"],
+        workflow: ["Step one"],
+        patterns: ["Focused: do X, not Y"]
+      }
+
+      {:ok, p} = Propose.propose(result(), adapter(), llm: Faber.LLM.Stub, stub_response: custom)
+      assert p.name == "atomic-skill"
+      assert p.iron_laws == ["one", "two", "three"]
+      assert p.workflow == ["Step one"]
+      assert p.patterns == ["Focused: do X, not Y"]
     end
 
     test "maps workflow + patterns lists from the LLM object" do
@@ -193,6 +220,10 @@ defmodule Faber.ProposeTest do
 
       # usage comment over the concrete example → two non-empty lines in one fence.
       assert {true, _} = Faber.Eval.Matchers.has_examples(md, %{min_blocks: 1})
+
+      # Independent of the matcher: assert the fence itself directly, so a matcher regex change can't
+      # silently "pass" this without the renderer actually guaranteeing the >=2-line minimum.
+      assert fence_nonempty_lines(md) >= 2
     end
 
     test "the example fence stays >=2 lines even when usage/example are absent" do
@@ -200,6 +231,26 @@ defmodule Faber.ProposeTest do
       p = %Proposal{name: "x", description: "d", rationale: "r", iron_laws: ["a", "b", "c"]}
       md = Propose.render_skill_md(p)
 
+      assert {true, _} = Faber.Eval.Matchers.has_examples(md, %{min_blocks: 1})
+      assert fence_nonempty_lines(md) >= 2
+    end
+
+    test "a backtick-fenced LLM example can't break out of the Examples fence" do
+      # An adversarial/sloppy model returns ``` inside the example; the renderer must defang it so
+      # the surrounding fence stays intact (one well-formed block).
+      p = %Proposal{
+        name: "x",
+        description: "d",
+        rationale: "r",
+        iron_laws: ["a", "b", "c"],
+        usage: "when X",
+        example: "```elixir\nIO.puts(:hi)\n```"
+      }
+
+      md = Propose.render_skill_md(p)
+
+      # Exactly one fenced block survives (the value's triple-backticks were collapsed).
+      assert length(Regex.scan(~r/```/, md)) == 2
       assert {true, _} = Faber.Eval.Matchers.has_examples(md, %{min_blocks: 1})
     end
   end
@@ -238,6 +289,10 @@ defmodule Faber.ProposeTest do
       assert md =~ "name: #{p.name}"
       assert md =~ "## Iron Laws"
       assert md =~ "## References"
+
+      # "eval-passing" is a real claim, not just structural markers: score it through the native
+      # (hermetic) engine and assert it clears the gate.
+      assert {:ok, %{passed: true}} = Faber.Eval.score(md, engine: :native)
     end
 
     test "the real faber-elixir template presence-gates Workflow/Patterns" do
@@ -280,6 +335,15 @@ defmodule Faber.ProposeTest do
       # And it holds even when the LLM omits usage/example.
       bare = Propose.render_skill_md(%{p | usage: nil, example: nil}, adapter)
       assert {true, _} = Faber.Eval.Matchers.has_examples(bare, %{min_blocks: 1})
+    end
+  end
+
+  # Count non-empty lines inside the first fenced block — a matcher-independent check that the
+  # renderer really emits a >=2-line example.
+  defp fence_nonempty_lines(md) do
+    case Regex.run(~r/```[\w]*\n(.*?)```/s, md) do
+      [_, inner] -> inner |> String.split("\n") |> Enum.count(&(String.trim(&1) != ""))
+      _ -> 0
     end
   end
 end

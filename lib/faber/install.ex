@@ -60,24 +60,28 @@ defmodule Faber.Install do
   end
 
   def install({name, skill_md}, opts) when is_binary(name) and is_binary(skill_md) do
-    with :ok <- validate_name(name) do
-      skill_dir = Path.join(opts[:dir] || default_dir(), name)
-      path = Path.join(skill_dir, "SKILL.md")
-
-      if File.exists?(path) and not Keyword.get(opts, :force, false) do
-        {:error, {:exists, path}}
-      else
-        with :ok <- File.mkdir_p(skill_dir),
-             :ok <- File.write(path, skill_md),
-             :ok <- write_marker(skill_dir, name, opts) do
-          {:ok, path}
-        end
-      end
+    # `validate_name/1` is the first clause, so no path is touched on disk until the (untrusted) name
+    # is proven safe; the `=` bindings below are pure (`Path.join`), run only after that.
+    with :ok <- validate_name(name),
+         skill_dir = Path.join(opts[:dir] || default_dir(), name),
+         path = Path.join(skill_dir, "SKILL.md"),
+         :ok <- ensure_writable(path, opts),
+         :ok <- File.mkdir_p(skill_dir),
+         :ok <- File.write(path, skill_md),
+         :ok <- write_marker(skill_dir, name, opts) do
+      {:ok, path}
     end
   end
 
   defp validate_name(name) do
     if Regex.match?(@name_re, name), do: :ok, else: {:error, {:invalid_name, name}}
+  end
+
+  # `:ok` when nothing is installed there yet (or `:force` is set), else the already-installed error.
+  defp ensure_writable(path, opts) do
+    if File.exists?(path) and not Keyword.get(opts, :force, false),
+      do: {:error, {:exists, path}},
+      else: :ok
   end
 
   # Stamp the provenance sentinel so `list_faber_installed/1` (and thus the pointer + MCP listing)
@@ -259,9 +263,18 @@ defmodule Faber.Install do
     end
   end
 
+  # Precompiled per known frontmatter field — `skill_summary/1` only ever asks for these two, so the
+  # regex isn't rebuilt on every read. Unknown fields fall back to a one-off runtime compile.
+  @frontmatter_res %{
+    "name" => ~r/^name:\s*"?(.+?)"?\s*$/m,
+    "description" => ~r/^description:\s*"?(.+?)"?\s*$/m
+  }
+
   # One-line frontmatter scalar (tolerates an optional surrounding double-quote, as render emits).
   defp frontmatter(content, field) do
-    case Regex.run(~r/^#{field}:\s*"?(.+?)"?\s*$/m, content) do
+    re = @frontmatter_res[field] || Regex.compile!("^#{field}:\\s*\"?(.+?)\"?\\s*$", "m")
+
+    case Regex.run(re, content) do
       [_, val] -> String.trim(val)
       _ -> nil
     end

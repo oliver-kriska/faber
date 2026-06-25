@@ -78,6 +78,23 @@ defmodule Faber.InstallTest do
       refute Map.has_key?(data, "path")
       refute File.read!(path) =~ "secret.jsonl"
     end
+
+    @tag :tmp_dir
+    test "an empty-source %Proposal{} writes no nil provenance keys (drop_nils)", %{tmp_dir: dir} do
+      p = %Proposal{
+        name: "no-source",
+        description: "d",
+        rationale: "r",
+        iron_laws: ["a", "b", "c"],
+        source: %{}
+      }
+
+      {:ok, path} = Install.install(p, dir: dir)
+      data = path |> Path.dirname() |> Path.join(".faber.json") |> File.read!() |> Jason.decode!()
+
+      # adapter/source_session/fingerprint were all nil → dropped; only the always-present keys remain.
+      assert Enum.sort(Map.keys(data)) == ["installed_by", "name"]
+    end
   end
 
   describe "list_faber_installed/1" do
@@ -93,8 +110,10 @@ defmodule Faber.InstallTest do
       names = Install.list_faber_installed(dir) |> Enum.map(& &1.name)
       assert names == ["faber-one"]
 
-      # The generic primitive still sees both.
-      assert Install.list_installed(dir) |> Enum.map(& &1.name) == ["faber-one", "users-own"]
+      # The generic primitive still sees both (membership, not a sort-order-coupled equality).
+      all = Install.list_installed(dir) |> Enum.map(& &1.name)
+      assert "faber-one" in all
+      assert "users-own" in all
     end
   end
 
