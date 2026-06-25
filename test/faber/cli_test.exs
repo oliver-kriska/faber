@@ -55,6 +55,32 @@ defmodule Faber.CLITest do
       assert out =~ "Iron Laws"
     end
 
+    test "propose --install writes the rendered skill into the skills dir" do
+      tmp =
+        Path.join(System.tmp_dir!(), "faber-cli-install-#{System.unique_integer([:positive])}")
+
+      prev = Application.get_env(:faber, :skills_dir)
+      Application.put_env(:faber, :skills_dir, tmp)
+
+      on_exit(fn ->
+        if prev,
+          do: Application.put_env(:faber, :skills_dir, prev),
+          else: Application.delete_env(:faber, :skills_dir)
+
+        File.rm_rf(tmp)
+      end)
+
+      out =
+        capture_io(fn -> assert CLI.run(:propose, @fixtures ++ [rank: 1, install: true]) == 0 end)
+
+      assert out =~ "installed → "
+
+      # The stub proposal's name is "investigate-retry-loops"; the file must actually exist on disk.
+      installed = Path.wildcard(Path.join([tmp, "*", "SKILL.md"]))
+      assert [path] = installed
+      assert File.read!(path) =~ "name:"
+    end
+
     test "propose refuses a stack-mismatched session, and --force overrides" do
       opts = [base: "test/fixtures/nonelixir", min_messages: 0, rank: 1]
 
