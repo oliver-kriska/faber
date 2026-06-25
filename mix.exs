@@ -88,6 +88,10 @@ defmodule Faber.MixProject do
       {:phoenix_live_view, "~> 1.0"},
       {:phoenix_html, "~> 4.1"},
       {:bandit, "~> 1.5"},
+      # MCP server (Anubis, formerly Hermes) — exposes mined skills/friction as read-only MCP tools
+      # over streamable HTTP, mounted at /mcp and started only under `faber serve`. Localhost-bound,
+      # single-user, no auth (see lib/faber/mcp/).
+      {:anubis_mcp, "~> 1.6"},
       # Single-binary packaging (mix release → self-extracting binary with ERTS bundled). Only the
       # release path uses it; runtime code guards on it so dev/test never call into Burrito.
       {:burrito, "~> 1.0"},

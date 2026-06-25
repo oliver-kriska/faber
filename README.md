@@ -50,6 +50,7 @@ ingest sessions → detect friction → propose skill (adapter-informed)
 | M4 | Eval gate via the Python matcher sidecar (composite + dimensions) | `Faber.Eval`, `Faber.Sidecar`, `python/faber_eval` |
 | M5 | Self-improving loop — propose→eval→keep with git ratchet + plateau | `Faber.Loop` (+ `Git`, `Journal`, `Server`, `Supervisor`) |
 | M6 | LiveView friction dashboard (Bandit, no build step) | `FaberWeb.DashboardLive` |
+| +  | Read-only MCP server (Anubis) — friction/skills as live tools for coding agents | `Faber.MCP.Server`, `Faber.MCP.Tools.*` |
 
 See [`HANDOFF.md`](HANDOFF.md) for the full thesis and architecture rationale,
 [`docs/ADAPTER_CONTRACT.md`](docs/ADAPTER_CONTRACT.md) for the adapter pack spec, and
@@ -77,6 +78,19 @@ iex -S mix                     # dashboard at http://localhost:4000 (mix phx.ser
 ```
 
 The Python eval sidecar lives in `python/` (stdlib-only; `python3 -m unittest discover -s python/tests`).
+
+### MCP server
+
+`faber serve` exposes a **read-only** MCP server at `http://localhost:<port>/mcp` (localhost-bound,
+single-user, no auth). Connect a coding agent with:
+
+```sh
+claude mcp add --transport http faber http://localhost:4710/mcp
+```
+
+Tools: `faber_search_friction` (ranked friction findings — **aggregates only, never raw transcript
+text**), `faber_list_skills`, `faber_get_skill`. It starts only under `faber serve` /
+`mix phx.server` (never for one-shot CLI commands).
 
 ## License
 

@@ -381,6 +381,7 @@ defmodule Faber.CLI do
                                                     Draft + eval a skill for one session
                                                     (--force: skip the stack-match gate)
       faber serve [--port P] [--no-open]            Start the dashboard UI in your browser
+                                                    (also serves the read-only MCP server at /mcp)
       faber sync [--target claude,codex] [--check] [--force] [--dir PATH]
                                                     Register installed skills in each agent's
                                                     context file (managed block; --check: report

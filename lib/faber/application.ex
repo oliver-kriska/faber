@@ -40,9 +40,14 @@ defmodule Faber.Application do
     end
   end
 
-  # Web dashboard (M6). Start it for normal app boot (dev/test, `mix phx.server`) and for the
-  # `serve` command; omit it for one-shot CLI commands so they don't bind a port.
-  defp web_children(nil), do: [FaberWeb.Endpoint]
-  defp web_children({:serve, _opts}), do: [FaberWeb.Endpoint]
+  # Web dashboard (M6) + MCP server (#3). Start them for normal app boot (dev/test, `mix phx.server`)
+  # and for the `serve` command; omit for one-shot CLI commands so they don't bind a port or stand up
+  # the MCP session machinery. The MCP server starts before the endpoint so it's ready when the `/mcp`
+  # plug first accepts a request; the HTTP listener is the endpoint's (the server child only manages
+  # MCP sessions, it binds nothing itself).
+  defp web_children(nil), do: [mcp_server(), FaberWeb.Endpoint]
+  defp web_children({:serve, _opts}), do: [mcp_server(), FaberWeb.Endpoint]
   defp web_children(_one_shot), do: []
+
+  defp mcp_server, do: {Faber.MCP.Server, transport: :streamable_http}
 end
