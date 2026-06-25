@@ -45,6 +45,57 @@ defmodule Faber.InstallTest do
       assert {:ok, path} = Install.install(p, dir: dir)
       assert File.read!(path) =~ "name: tidy-thing"
     end
+
+    @tag :tmp_dir
+    test "drops a .faber.json provenance marker beside the SKILL.md", %{tmp_dir: dir} do
+      {:ok, path} = Install.install({"marked", "# hi\n"}, dir: dir)
+      marker = Path.join(Path.dirname(path), ".faber.json")
+
+      assert File.exists?(marker)
+      assert %{"installed_by" => "faber", "name" => "marked"} = Jason.decode!(File.read!(marker))
+    end
+
+    @tag :tmp_dir
+    test "a %Proposal{} marker carries its source provenance (never the transcript path)", %{
+      tmp_dir: dir
+    } do
+      p = %Proposal{
+        name: "from-session",
+        description: "d",
+        rationale: "r",
+        iron_laws: ["a", "b", "c"],
+        adapter: "faber-elixir",
+        source: %{session_id: "abc123", fingerprint: "bug-fix", path: "/Users/x/secret.jsonl"}
+      }
+
+      {:ok, path} = Install.install(p, dir: dir)
+      data = path |> Path.dirname() |> Path.join(".faber.json") |> File.read!() |> Jason.decode!()
+
+      assert data["adapter"] == "faber-elixir"
+      assert data["source_session"] == "abc123"
+      assert data["fingerprint"] == "bug-fix"
+      # The internal transcript location is provenance the privacy boundary keeps out.
+      refute Map.has_key?(data, "path")
+      refute File.read!(path) =~ "secret.jsonl"
+    end
+  end
+
+  describe "list_faber_installed/1" do
+    @tag :tmp_dir
+    test "returns only skills Faber installed, not the user's own", %{tmp_dir: dir} do
+      {:ok, _} =
+        Install.install({"faber-one", "---\nname: faber-one\ndescription: Mine.\n---\n"},
+          dir: dir
+        )
+
+      write_unmanaged_skill(dir, "users-own", "Theirs.")
+
+      names = Install.list_faber_installed(dir) |> Enum.map(& &1.name)
+      assert names == ["faber-one"]
+
+      # The generic primitive still sees both.
+      assert Install.list_installed(dir) |> Enum.map(& &1.name) == ["faber-one", "users-own"]
+    end
   end
 
   describe "cross-agent pointers (managed block)" do
@@ -122,6 +173,25 @@ defmodule Faber.InstallTest do
       assert {:error, {:unknown_agent, "borg"}} = Install.sync_pointer("borg", dir: skills)
       assert {:error, {:unknown_agent, "borg"}} = Install.check_pointer("borg", dir: skills)
     end
+
+    @tag :tmp_dir
+    test "the pointer lists only Faber-installed skills, never the user's own in a shared dir", %{
+      skills: skills,
+      ctx: ctx
+    } do
+      # `alpha` was installed via install/2 (marked); this one is the user's, sitting in the same dir.
+      write_unmanaged_skill(skills, "users-own", "User wrote this themselves.")
+
+      assert {:ok, :written} = Install.sync_pointer("claude", file: ctx, dir: skills)
+      body = File.read!(ctx)
+
+      assert body =~ "**alpha** — Alpha triages bugs."
+      refute body =~ "users-own"
+      refute body =~ "User wrote this themselves."
+
+      # And the user's own skill being present must not register as drift.
+      assert Install.check_pointer("claude", file: ctx, dir: skills) == :in_sync
+    end
   end
 
   describe "agent_context_file/1" do
@@ -135,5 +205,13 @@ defmodule Faber.InstallTest do
   defp install_skill(dir, name, description) do
     md = "---\nname: #{name}\ndescription: #{description}\n---\n\n# #{name}\n"
     {:ok, _} = Install.install({name, md}, dir: dir, force: true)
+  end
+
+  # A skill the user wrote themselves — a SKILL.md with NO `.faber.json` marker, sharing the dir.
+  defp write_unmanaged_skill(dir, name, description) do
+    skill_dir = Path.join(dir, name)
+    File.mkdir_p!(skill_dir)
+    md = "---\nname: #{name}\ndescription: #{description}\n---\n\n# #{name}\n"
+    File.write!(Path.join(skill_dir, "SKILL.md"), md)
   end
 end

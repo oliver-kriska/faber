@@ -17,6 +17,13 @@ defmodule Faber.Install do
   # an absolute path, which `Path.join` would honor) would escape the skills directory.
   @name_re ~r/\A[a-z0-9][a-z0-9-]{0,63}\z/
 
+  # Provenance sentinel written beside each installed SKILL.md. Its presence is how Faber tells the
+  # skills IT installed apart from a user's own skills sharing the same dir (`~/.claude/skills` is
+  # not Faber-dedicated). The cross-agent pointer + the MCP listing filter on it, so syncing never
+  # claims a pre-existing skill as Faber-managed. Hidden + JSON so it never collides with skill
+  # discovery (which reads `SKILL.md`) and can carry richer provenance later.
+  @marker ".faber.json"
+
   @doc """
   Install `proposal` (or a `{name, skill_md}` pair) under `<dir>/<name>/SKILL.md`.
 
@@ -25,6 +32,9 @@ defmodule Faber.Install do
   an existing skill). Returns `{:ok, path}` or `{:error, reason}` — including
   `{:error, {:exists, path}}` when already installed and `force` is not set, or
   `{:error, {:invalid_name, name}}` when the name isn't a safe path segment.
+
+  Also writes a `#{@marker}` provenance sentinel beside the `SKILL.md` so `list_faber_installed/1`
+  can distinguish Faber's skills from the user's own in a shared skills dir.
   """
   @spec install(Proposal.t() | {String.t(), String.t()}, keyword()) ::
           {:ok, Path.t()} | {:error, term()}
@@ -37,18 +47,29 @@ defmodule Faber.Install do
         _ -> Propose.render_skill_md(p)
       end
 
-    install({p.name, md}, opts)
+    # Carry where the skill came from into the provenance marker (no transcript `path` — that's an
+    # internal location the privacy boundary keeps out of projections).
+    provenance =
+      drop_nils(%{
+        "adapter" => p.adapter,
+        "source_session" => p.source[:session_id],
+        "fingerprint" => p.source[:fingerprint]
+      })
+
+    install({p.name, md}, Keyword.put(opts, :provenance, provenance))
   end
 
   def install({name, skill_md}, opts) when is_binary(name) and is_binary(skill_md) do
     with :ok <- validate_name(name) do
-      path = Path.join([opts[:dir] || default_dir(), name, "SKILL.md"])
+      skill_dir = Path.join(opts[:dir] || default_dir(), name)
+      path = Path.join(skill_dir, "SKILL.md")
 
       if File.exists?(path) and not Keyword.get(opts, :force, false) do
         {:error, {:exists, path}}
       else
-        with :ok <- File.mkdir_p(Path.dirname(path)),
-             :ok <- File.write(path, skill_md) do
+        with :ok <- File.mkdir_p(skill_dir),
+             :ok <- File.write(path, skill_md),
+             :ok <- write_marker(skill_dir, name, opts) do
           {:ok, path}
         end
       end
@@ -58,6 +79,16 @@ defmodule Faber.Install do
   defp validate_name(name) do
     if Regex.match?(@name_re, name), do: :ok, else: {:error, {:invalid_name, name}}
   end
+
+  # Stamp the provenance sentinel so `list_faber_installed/1` (and thus the pointer + MCP listing)
+  # can recognize this skill as Faber-installed. Best-effort richness, stable keys so it stays
+  # deterministic for tests.
+  defp write_marker(skill_dir, name, opts) do
+    data = Map.merge(%{"installed_by" => "faber", "name" => name}, opts[:provenance] || %{})
+    File.write(Path.join(skill_dir, @marker), Jason.encode!(data) <> "\n")
+  end
+
+  defp drop_nils(map), do: :maps.filter(fn _k, v -> not is_nil(v) end, map)
 
   @doc "The configured skills directory (`config :faber, :skills_dir`, default `~/.claude/skills`)."
   @spec default_dir() :: Path.t()
@@ -69,7 +100,8 @@ defmodule Faber.Install do
   #
   # Installing a skill writes a dedicated `<dir>/<name>/SKILL.md`, but an agent only loads it if it
   # knows it exists. `sync_pointer/2` injects an idempotent, digest-guarded managed block listing
-  # the installed skills into the agent's shared context file (`CLAUDE.md` / `AGENTS.md`), so a
+  # the **Faber-installed** skills (those with the `.faber.json` marker — never the user's own
+  # skills sharing the dir) into the agent's shared context file (`CLAUDE.md` / `AGENTS.md`), so a
   # second agent picks them up too — without clobbering the user's own text.
 
   # Declarative agent → shared-context-file registry. The engine stays agent-agnostic; add a row to
@@ -105,6 +137,24 @@ defmodule Faber.Install do
     |> Enum.sort_by(& &1.name)
   end
 
+  @doc """
+  Like `list_installed/1` but only the skills **Faber installed** — those carrying the `#{@marker}`
+  provenance sentinel. This is what the cross-agent pointer and the MCP listing use, so a user's own
+  skills sharing the dir are never claimed as Faber-managed.
+  """
+  @spec list_faber_installed(Path.t()) :: [
+          %{name: String.t(), description: String.t(), path: Path.t()}
+        ]
+  def list_faber_installed(dir \\ default_dir()) do
+    dir
+    |> list_installed()
+    |> Enum.filter(&faber_installed?/1)
+  end
+
+  defp faber_installed?(%{path: skill_path}) do
+    skill_path |> Path.dirname() |> Path.join(@marker) |> File.exists?()
+  end
+
   @doc "Render the managed-block body that lists `skills` for an agent's context file."
   @spec render_pointer_body([%{name: String.t(), description: String.t()}]) :: String.t()
   def render_pointer_body(skills) do
@@ -119,10 +169,11 @@ defmodule Faber.Install do
   end
 
   @doc """
-  Sync the managed pointer block for `agent` into its shared context file from the skills currently
-  installed in the skills dir. Options: `:file` (override the target file), `:dir` (override the
-  skills dir), `:force` (overwrite a hand-edited block). Returns `{:ok, :written | :unchanged}`,
-  `{:error, :block_modified}`, or `{:error, {:unknown_agent, agent}}`.
+  Sync the managed pointer block for `agent` into its shared context file from the **Faber-installed**
+  skills in the skills dir (those carrying the `#{@marker}` marker — not the user's own skills).
+  Options: `:file` (override the target file), `:dir` (override the skills dir), `:force` (overwrite a
+  hand-edited block). Returns `{:ok, :written | :unchanged}`, `{:error, :block_modified}`, or
+  `{:error, {:unknown_agent, agent}}`.
   """
   @spec sync_pointer(String.t(), keyword()) ::
           {:ok, :written | :unchanged} | {:error, term()}
@@ -132,7 +183,7 @@ defmodule Faber.Install do
         {:error, {:unknown_agent, agent}}
 
       file ->
-        body = render_pointer_body(list_installed(opts[:dir] || default_dir()))
+        body = render_pointer_body(list_faber_installed(opts[:dir] || default_dir()))
         install_pointer(file, body, opts)
     end
   end
@@ -140,7 +191,8 @@ defmodule Faber.Install do
   @doc """
   Read-only counterpart to `sync_pointer/2`: report whether `agent`'s context file is `:in_sync`,
   has `:drift` (a stale Faber block), is `:modified` (hand-edited block — won't be overwritten
-  without `:force`), or `:absent` (no block yet). Never writes.
+  without `:force`), or `:absent` (no block yet). Compares against the **Faber-installed** skills
+  only. Never writes.
   """
   @spec check_pointer(String.t(), keyword()) ::
           :in_sync | :drift | :modified | :absent | {:error, term()}
@@ -151,7 +203,7 @@ defmodule Faber.Install do
 
       file ->
         existing = if File.exists?(file), do: File.read!(file), else: ""
-        body = render_pointer_body(list_installed(opts[:dir] || default_dir()))
+        body = render_pointer_body(list_faber_installed(opts[:dir] || default_dir()))
 
         cond do
           not ManagedBlock.has_block?(existing) -> :absent

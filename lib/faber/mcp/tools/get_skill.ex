@@ -19,8 +19,9 @@ defmodule Faber.MCP.Tools.GetSkill do
 
   @impl true
   def execute(%{name: name}, frame) do
-    # Resolve against the discovered listing (never a caller-supplied path) → traversal-proof.
-    case Enum.find(Install.list_installed(), &(&1.name == name)) do
+    # Resolve against the discovered Faber-installed listing (never a caller-supplied path) →
+    # traversal-proof, and scoped to skills Faber installed (matching this tool's contract).
+    case Enum.find(Install.list_faber_installed(), &(&1.name == name)) do
       %{path: path} ->
         # A clean tool error (not a 500) if the file vanished between listing and read (TOCTOU).
         case File.read(path) do

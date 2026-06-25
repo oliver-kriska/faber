@@ -17,7 +17,7 @@ defmodule Faber.MCP.Tools.ListSkills do
   @impl true
   def execute(_params, frame) do
     skills =
-      Install.list_installed()
+      Install.list_faber_installed()
       |> Enum.map(&%{name: &1.name, description: &1.description})
 
     {:reply, Response.json(Response.tool(), %{count: length(skills), skills: skills}), frame}
