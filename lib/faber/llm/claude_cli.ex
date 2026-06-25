@@ -24,12 +24,32 @@ defmodule Faber.LLM.ClaudeCLI do
   def generate_object(prompt, schema, opts) do
     bin = opts[:claude_bin] || Application.get_env(:faber, :claude_bin, "claude")
     system = build_system(opts[:system_prompt], schema)
+    model = opts[:model] || Application.get_env(:faber, :claude_model)
 
-    args =
-      ["-p", to_string(prompt), "--output-format", "json"] ++
-        system_args(system) ++ model_args(opts)
+    case System.find_executable(bin) do
+      nil -> {:error, {:claude_cli_unavailable, bin}}
+      resolved -> run(resolved, to_string(prompt), system, model)
+    end
+  end
 
-    case System.cmd(bin, args, stderr_to_stdout: false) do
+  # Redirect stdin from /dev/null so `claude -p` doesn't wait 3s for piped input that never comes
+  # (the prompt is on the command line). `System.cmd/3` can't close the child's stdin, so wrap in
+  # `sh -c`; every dynamic value goes through the ENVIRONMENT, never the command string, so prompt /
+  # system content can't be word-split or shell-injected. `${VAR:+--flag "$VAR"}` omits empty flags.
+  defp run(bin, prompt, system, model) do
+    script =
+      ~s(exec "$FB_BIN" -p "$FB_PROMPT" --output-format json) <>
+        ~s( ${FB_SYS:+--append-system-prompt "$FB_SYS"}) <>
+        ~s( ${FB_MODEL:+--model "$FB_MODEL"} < /dev/null)
+
+    env = [
+      {"FB_BIN", bin},
+      {"FB_PROMPT", prompt},
+      {"FB_SYS", system},
+      {"FB_MODEL", to_string(model || "")}
+    ]
+
+    case System.cmd("sh", ["-c", script], env: env, stderr_to_stdout: false) do
       {out, 0} ->
         with {:ok, text} <- parse_envelope(out),
              {:ok, object} <- extract_json(text) do
@@ -91,16 +111,6 @@ defmodule Faber.LLM.ClaudeCLI do
   end
 
   # ── helpers ────────────────────────────────────────────────────────────────
-
-  defp system_args(""), do: []
-  defp system_args(system), do: ["--append-system-prompt", system]
-
-  defp model_args(opts) do
-    case opts[:model] || Application.get_env(:faber, :claude_model) do
-      nil -> []
-      model -> ["--model", to_string(model)]
-    end
-  end
 
   defp type_label(:string), do: "string"
   defp type_label(:integer), do: "integer"
