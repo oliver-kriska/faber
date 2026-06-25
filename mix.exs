@@ -43,17 +43,20 @@ defmodule Faber.MixProject do
   end
 
   # `mix test` skips the `@tag :sidecar` parity tests (they spawn python3); `mix test.full` runs
-  # them so native↔sidecar engine drift is caught. `mix test.live` runs the real-model smoke test
-  # (shells out to `claude -p`; slow, spends subscription quota). See CLAUDE.md / README.
+  # them so native↔sidecar engine drift is caught. `mix test.live` runs the keyless real-model smoke
+  # test (shells out to `claude -p`; spends subscription quota). `mix test.live.api` runs the
+  # API-backed (ReqLLM) live test — needs a key (`set -a; . ./.env; set +a` first) and costs money.
+  # See CLAUDE.md / README.
   defp aliases do
     [
       "test.full": ["test --include sidecar --include ccrider"],
-      "test.live": ["test --include live"]
+      "test.live": ["test --include live"],
+      "test.live.api": ["test --include live_api"]
     ]
   end
 
   def cli do
-    [preferred_envs: ["test.full": :test, "test.live": :test]]
+    [preferred_envs: ["test.full": :test, "test.live": :test, "test.live.api": :test]]
   end
 
   defp description do
