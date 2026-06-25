@@ -73,6 +73,15 @@ defmodule Faber.CLI do
     {:serve, opts}
   end
 
+  def parse(["sync" | rest]) do
+    {opts, _, _} =
+      OptionParser.parse(rest,
+        strict: [target: :string, check: :boolean, force: :boolean, dir: :string, file: :string]
+      )
+
+    {:sync, opts}
+  end
+
   def parse([other | _]), do: {:unknown, arg: other}
 
   @doc """
@@ -171,6 +180,48 @@ defmodule Faber.CLI do
         1
     end
   end
+
+  def run(:sync, opts) do
+    targets = parse_targets(opts[:target])
+    check? = opts[:check] == true
+    pass = Keyword.take(opts, [:force, :dir, :file])
+
+    results =
+      Enum.map(targets, fn agent ->
+        {agent,
+         if(check?,
+           do: Install.check_pointer(agent, pass),
+           else: Install.sync_pointer(agent, pass)
+         )}
+      end)
+
+    Enum.each(results, fn {agent, result} -> IO.puts(format_sync(agent, result)) end)
+    if Enum.all?(results, fn {_a, r} -> sync_ok?(r) end), do: 0, else: 1
+  end
+
+  defp parse_targets(nil), do: ["claude"]
+  defp parse_targets(str), do: str |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
+
+  defp sync_ok?({:ok, _}), do: true
+  defp sync_ok?(:in_sync), do: true
+  defp sync_ok?(_), do: false
+
+  defp format_sync(agent, {:ok, :written}), do: "#{agent}: pointer updated"
+  defp format_sync(agent, {:ok, :unchanged}), do: "#{agent}: already up to date"
+  defp format_sync(agent, :in_sync), do: "#{agent}: in sync"
+  defp format_sync(agent, :drift), do: "#{agent}: DRIFT — run `faber sync --target #{agent}`"
+
+  defp format_sync(agent, :absent),
+    do: "#{agent}: no Faber block yet — run `faber sync --target #{agent}`"
+
+  defp format_sync(agent, :modified),
+    do: "#{agent}: block hand-edited — `faber sync --target #{agent} --force` to overwrite"
+
+  defp format_sync(agent, {:error, :block_modified}),
+    do: "#{agent}: block hand-edited — re-run with --force to overwrite"
+
+  defp format_sync(agent, {:error, {:unknown_agent, a}}), do: "#{agent}: unknown agent '#{a}'"
+  defp format_sync(agent, other), do: "#{agent}: #{inspect(other)}"
 
   # Stack-aware gate: refuse to draft a skill when the chosen session doesn't belong to the
   # adapter's stack (e.g. proposing an Elixir skill for a Codex/Next.js session). `--force` skips it.
@@ -330,6 +381,10 @@ defmodule Faber.CLI do
                                                     Draft + eval a skill for one session
                                                     (--force: skip the stack-match gate)
       faber serve [--port P] [--no-open]            Start the dashboard UI in your browser
+      faber sync [--target claude,codex] [--check] [--force] [--dir PATH]
+                                                    Register installed skills in each agent's
+                                                    context file (managed block; --check: report
+                                                    drift only, no write)
       faber help | --version
 
     Sources (--source): files (default) walks the agent's transcript dir; ccrider reads ccrider's

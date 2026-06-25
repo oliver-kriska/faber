@@ -23,6 +23,9 @@ defmodule Faber.CLITest do
       assert CLI.parse(["serve", "--port", "9000", "--no-open"]) ==
                {:serve, [port: 9000, open: false]}
 
+      assert CLI.parse(["sync", "--target", "claude,codex", "--check"]) ==
+               {:sync, [target: "claude,codex", check: true]}
+
       assert CLI.parse(["bogus"]) == {:unknown, arg: "bogus"}
     end
   end
@@ -91,6 +94,45 @@ defmodule Faber.CLITest do
       # --force skips the gate → the stub LLM drafts + native eval scores the skill.
       out = capture_io(fn -> assert CLI.run(:propose, opts ++ [force: true]) == 0 end)
       assert out =~ "composite"
+    end
+
+    test "sync writes the managed pointer block and --check reports drift" do
+      dir = Path.join(System.tmp_dir!(), "faber-cli-sync-#{System.unique_integer([:positive])}")
+      skills = Path.join(dir, "skills")
+      ctx = Path.join(dir, "CLAUDE.md")
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, _} =
+        Faber.Install.install(
+          {"demo-skill", "---\nname: demo-skill\ndescription: Demo does things.\n---\n# Demo\n"},
+          dir: skills
+        )
+
+      out =
+        capture_io(fn ->
+          assert CLI.run(:sync, target: "claude", file: ctx, dir: skills) == 0
+        end)
+
+      assert out =~ "claude: pointer updated"
+      assert File.read!(ctx) =~ "**demo-skill** — Demo does things."
+
+      # --check on an up-to-date file exits 0; after a new skill it reports drift and exits 1.
+      assert capture_io(fn ->
+               assert CLI.run(:sync, target: "claude", file: ctx, dir: skills, check: true) == 0
+             end) =~ "in sync"
+
+      {:ok, _} =
+        Faber.Install.install(
+          {"new-one", "---\nname: new-one\ndescription: New thing.\n---\n# New\n"},
+          dir: skills
+        )
+
+      err_out =
+        capture_io(fn ->
+          assert CLI.run(:sync, target: "claude", file: ctx, dir: skills, check: true) == 1
+        end)
+
+      assert err_out =~ "DRIFT"
     end
 
     test "help and version exit 0" do
