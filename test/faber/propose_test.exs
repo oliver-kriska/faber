@@ -83,6 +83,10 @@ defmodule Faber.ProposeTest do
       assert user =~ "investigate"
       # The adapter/stack context is woven into the user half too, not only the system prompt.
       assert user =~ "faber-elixir"
+
+      # The proposer asks for an actionable body (workflow steps + do/don't patterns), not just laws.
+      assert system =~ "workflow:"
+      assert system =~ "patterns:"
     end
   end
 
@@ -110,6 +114,24 @@ defmodule Faber.ProposeTest do
       assert p.name == "tidy-migrations"
       assert p.iron_laws == ["one", "two", "three"]
       assert p.effort == "medium"
+      # Absent workflow/patterns default to empty lists (the section is then omitted at render).
+      assert p.workflow == []
+      assert p.patterns == []
+    end
+
+    test "maps workflow + patterns lists from the LLM object" do
+      custom = %{
+        "name" => "x",
+        "description" => "d",
+        "rationale" => "r",
+        "iron_laws" => ["a", "b", "c"],
+        "workflow" => ["Run the failing test in isolation", "Form one hypothesis"],
+        "patterns" => ["Focused runs: mix test file:line, not the full suite"]
+      }
+
+      {:ok, p} = Propose.propose(result(), adapter(), llm: Faber.LLM.Stub, stub_response: custom)
+      assert p.workflow == ["Run the failing test in isolation", "Form one hypothesis"]
+      assert p.patterns == ["Focused runs: mix test file:line, not the full suite"]
     end
 
     test "surfaces an LLM error" do
@@ -134,6 +156,35 @@ defmodule Faber.ProposeTest do
       # At least three numbered Iron Laws.
       law_numbers = Regex.scan(~r/^\d+\.\s/m, md)
       assert length(law_numbers) >= 3
+    end
+
+    test "renders Workflow (numbered) + Patterns (bold do/don't) when present" do
+      p = %Proposal{
+        name: "x",
+        description: "d",
+        rationale: "r",
+        iron_laws: ["a", "b", "c"],
+        workflow: ["Run `mix test path:line`", "Change one variable"],
+        patterns: ["Focused runs: use mix test file:line, not the full suite"]
+      }
+
+      md = Propose.render_skill_md(p)
+
+      assert md =~ "## Workflow"
+      assert md =~ "1. Run `mix test path:line`"
+      assert md =~ "2. Change one variable"
+      assert md =~ "## Patterns"
+      # "Name: rest" → bold-bulleted do/don't line (also satisfies action_density).
+      assert md =~ "- **Focused runs**: use mix test file:line, not the full suite"
+    end
+
+    test "omits the Workflow/Patterns sections entirely when empty (no dangling header)" do
+      {:ok, p} = Propose.propose(result(), adapter())
+      assert p.workflow == [] and p.patterns == []
+      md = Propose.render_skill_md(p)
+
+      refute md =~ "## Workflow"
+      refute md =~ "## Patterns"
     end
   end
 
@@ -171,6 +222,32 @@ defmodule Faber.ProposeTest do
       assert md =~ "name: #{p.name}"
       assert md =~ "## Iron Laws"
       assert md =~ "## References"
+    end
+
+    test "the real faber-elixir template presence-gates Workflow/Patterns" do
+      {:ok, adapter} = Adapter.load("adapters/faber-elixir")
+      {:ok, base} = Propose.propose(result(), adapter)
+
+      # Absent → the headers must not appear (the bug dogfooding caught: dangling empty sections).
+      bare = Propose.render_skill_md(%{base | workflow: [], patterns: []}, adapter)
+      refute bare =~ "## Workflow"
+      refute bare =~ "## Patterns"
+
+      # Present → numbered steps + bold do/don't bullets render through the template path.
+      filled =
+        Propose.render_skill_md(
+          %{
+            base
+            | workflow: ["Read the actual error first"],
+              patterns: ["Runs: focused, not full"]
+          },
+          adapter
+        )
+
+      assert filled =~ "## Workflow"
+      assert filled =~ "1. Read the actual error first"
+      assert filled =~ "## Patterns"
+      assert filled =~ "- **Runs**: focused, not full"
     end
   end
 end

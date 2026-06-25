@@ -30,6 +30,8 @@ defmodule Faber.Propose do
     iron_laws: [type: {:list, :string}, required: true],
     usage: [type: :string],
     example: [type: :string],
+    workflow: [type: {:list, :string}],
+    patterns: [type: {:list, :string}],
     should_trigger: [type: {:list, :string}],
     should_not_trigger: [type: {:list, :string}]
   ]
@@ -92,6 +94,10 @@ defmodule Faber.Propose do
       Add a short "NOT for …" clause when it disambiguates from an adjacent skill.
     - iron_laws: at least 3 non-negotiable, stack-appropriate invariants, imperative voice.
     - usage: how/when the skill fires. example: a concrete command or code snippet.
+    - workflow: 3–6 ordered, imperative steps the agent follows when the skill fires (e.g.
+      "Run the failing test in isolation with `mix test path:line`"). Each is one actionable line.
+    - patterns: 2–4 stack-specific idioms or anti-patterns, each as `Name: do X, not Y` (a concrete
+      do/don't), not vague advice.
     - should_trigger / should_not_trigger: realistic user phrasings for routing tests.
     - Keep it tight: the body should read like ~100 lines of skill, not an essay.
 
@@ -168,7 +174,16 @@ defmodule Faber.Propose do
       "iron_laws" =>
         p.iron_laws
         |> Enum.with_index(1)
-        |> Enum.map(fn {law, i} -> %{"index" => i, "law_statement" => law} end)
+        |> Enum.map(fn {law, i} -> %{"index" => i, "law_statement" => law} end),
+      # Presence flags gate the section header in the template, so an empty workflow/patterns drops
+      # the whole `## Section` (header included) rather than leaving a dangling empty heading.
+      "workflow_present" => p.workflow != [],
+      "steps" =>
+        p.workflow
+        |> Enum.with_index(1)
+        |> Enum.map(fn {step, i} -> %{"step_index" => i, "step_body" => step} end),
+      "patterns_present" => p.patterns != [],
+      "patterns" => Enum.map(p.patterns, fn pat -> %{"pattern_text" => format_pattern(pat)} end)
     }
   end
 
@@ -201,8 +216,7 @@ defmodule Faber.Propose do
     ## Iron Laws — Never Violate These
 
     #{laws}
-
-    ## Examples
+    #{workflow_section(p.workflow)}#{patterns_section(p.patterns)}## Examples
 
     ```bash
     # #{p.usage || "example"}
@@ -213,6 +227,31 @@ defmodule Faber.Propose do
 
     - `${CLAUDE_SKILL_DIR}/references/#{p.name}.md` — supporting detail (stub for now)
     """
+  end
+
+  # Optional body sections — empty list ⇒ "" (no dangling header). Numbered/bold-bulleted lines so
+  # they read as actionable (the clarity matcher's action_density), matching the adapter template.
+  defp workflow_section([]), do: ""
+
+  defp workflow_section(steps) do
+    body = steps |> Enum.with_index(1) |> Enum.map_join("\n", fn {s, i} -> "#{i}. #{s}" end)
+    "\n## Workflow\n\n#{body}\n\n"
+  end
+
+  defp patterns_section([]), do: ""
+
+  defp patterns_section(patterns) do
+    body = Enum.map_join(patterns, "\n", fn p -> "- #{format_pattern(p)}" end)
+    "\n## Patterns\n\n#{body}\n\n"
+  end
+
+  # "Name: guidance" → "**Name**: guidance" (a bold-bulleted, actionable do/don't line); a line with
+  # no colon is bolded whole.
+  defp format_pattern(text) do
+    case String.split(text, ":", parts: 2) do
+      [name, rest] -> "**#{String.trim(name)}**:#{rest}"
+      [only] -> "**#{String.trim(only)}**"
+    end
   end
 
   # ── building the struct from the LLM object ───────────────────────────────
@@ -226,6 +265,8 @@ defmodule Faber.Propose do
       iron_laws: get_list(object, :iron_laws),
       usage: get(object, :usage),
       example: get(object, :example),
+      workflow: get_list(object, :workflow),
+      patterns: get_list(object, :patterns),
       should_trigger: get_list(object, :should_trigger),
       should_not_trigger: get_list(object, :should_not_trigger),
       adapter: adapter.name,

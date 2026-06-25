@@ -22,28 +22,22 @@ allowed-tools: {{allowed_tools}}
 {{usage_examples}}
 ```
 
+{{#workflow_present}}
 ## Workflow
 
 {{#steps}}
-### Step {{step_index}}: {{step_title}}
-
-{{step_body}}
+{{step_index}}. {{step_body}}
 {{/steps}}
 
+{{/workflow_present}}
+{{#patterns_present}}
 ## Patterns
 
 {{#patterns}}
-### {{pattern_name}}
-
-```elixir
-# BAD
-{{bad_example}}
-
-# GOOD
-{{good_example}}
-```
+- {{pattern_text}}
 {{/patterns}}
 
+{{/patterns_present}}
 ## References
 
 - `${CLAUDE_SKILL_DIR}/references/{{skill_name}}.md` — supporting detail for {{skill_title}}.

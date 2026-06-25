@@ -15,6 +15,8 @@ defmodule Faber.Proposal do
           iron_laws: [String.t()],
           usage: String.t() | nil,
           example: String.t() | nil,
+          workflow: [String.t()],
+          patterns: [String.t()],
           should_trigger: [String.t()],
           should_not_trigger: [String.t()],
           adapter: String.t() | nil,
@@ -28,6 +30,10 @@ defmodule Faber.Proposal do
             iron_laws: [],
             usage: nil,
             example: nil,
+            # Ordered imperative steps + idiom/anti-pattern lines. Optional, but populating them is
+            # what gives a skill its actionable density (clarity) — see Faber.Propose.
+            workflow: [],
+            patterns: [],
             should_trigger: [],
             should_not_trigger: [],
             adapter: nil,
