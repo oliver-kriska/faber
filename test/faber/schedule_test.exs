@@ -6,6 +6,23 @@ defmodule Faber.ScheduleTest do
 
   @fixtures [base: "test/fixtures", min_messages: 0]
 
+  # LLM doubles that crash the pipeline run, to exercise the scheduler's isolation guarantees.
+  # They run inside the scheduler's async_nolink Task (run_once → Propose → LLM), so they crash
+  # the Task, not the scheduler.
+  defmodule KillLLM do
+    @behaviour Faber.LLM
+    @impl true
+    # Untrappable kill → bypasses start_job's try/rescue → arrives as a :DOWN at the scheduler.
+    def generate_object(_prompt, _schema, _opts), do: Process.exit(self(), :kill)
+  end
+
+  defmodule RaiseLLM do
+    @behaviour Faber.LLM
+    @impl true
+    # A plain raise → caught by start_job's try/rescue → folded into a clean error summary.
+    def generate_object(_prompt, _schema, _opts), do: raise("boom in the LLM")
+  end
+
   describe "run_once/1 (pure pipeline driver)" do
     test "scans, proposes, and evals the top sessions (hermetic: stub LLM, native eval)" do
       summary = Schedule.run_once(top: 1, scan: @fixtures, adapter_dir: "adapters/faber-elixir")
@@ -89,6 +106,118 @@ defmodule Faber.ScheduleTest do
       assert_receive {:faber_schedule, :run_complete, summary}, 2_000
       assert summary.scanned == 1
       # Disabled: a run_now fires once but does NOT arm a recurring timer.
+      assert Schedule.status(pid).runs == 1
+    end
+
+    test "exposes last_summary and every_ms in status after a run" do
+      pid =
+        start_supervised!(
+          {Schedule,
+           name: nil,
+           enabled: false,
+           notify: self(),
+           every_ms: 123_456,
+           top: 1,
+           scan: @fixtures,
+           adapter_dir: "adapters/faber-elixir"}
+        )
+
+      Schedule.run_now(pid)
+      assert_receive {:faber_schedule, :run_complete, _summary}, 2_000
+
+      status = Schedule.status(pid)
+      assert status.every_ms == 123_456
+      assert status.last_summary.scanned == 1
+    end
+  end
+
+  describe "reliability guarantees" do
+    # The scheduler promises "a run never overlaps the previous one". Force the in-flight flag with
+    # :sys.replace_state (no real job needed) and prove both trigger paths refuse to start a second.
+    test "a tick while a run is in flight is skipped, not overlapped" do
+      pid =
+        start_supervised!({
+          Schedule,
+          # Large delays so the only :tick is the one we send by hand.
+          name: nil,
+          enabled: true,
+          initial_delay_ms: 3_600_000,
+          every_ms: 3_600_000,
+          notify: self(),
+          top: 1,
+          scan: @fixtures,
+          adapter_dir: "adapters/faber-elixir"
+        })
+
+      :sys.replace_state(pid, fn s -> %{s | running: true} end)
+      send(pid, :tick)
+
+      refute_receive {:faber_schedule, :run_complete, _}, 300
+      status = Schedule.status(pid)
+      assert status.running == true
+      assert status.runs == 0
+    end
+
+    test "run_now while a run is in flight is ignored, not overlapped" do
+      pid =
+        start_supervised!(
+          {Schedule,
+           name: nil,
+           enabled: false,
+           notify: self(),
+           top: 1,
+           scan: @fixtures,
+           adapter_dir: "adapters/faber-elixir"}
+        )
+
+      :sys.replace_state(pid, fn s -> %{s | running: true} end)
+      Schedule.run_now(pid)
+
+      refute_receive {:faber_schedule, :run_complete, _}, 300
+      assert Schedule.status(pid).runs == 0
+    end
+
+    # async_nolink isolation: a job that hard-crashes must NOT take down the scheduler — it lands as
+    # a :DOWN, is recorded as a failed run, and the scheduler keeps serving.
+    test "a hard-crashing job is isolated: recorded as :job_crashed, scheduler survives" do
+      pid =
+        start_supervised!(
+          {Schedule,
+           name: nil,
+           enabled: false,
+           notify: self(),
+           top: 1,
+           scan: @fixtures,
+           adapter_dir: "adapters/faber-elixir",
+           llm: KillLLM}
+        )
+
+      Schedule.run_now(pid)
+
+      assert_receive {:faber_schedule, :run_complete, summary}, 2_000
+      assert match?(%{error: {:job_crashed, _}}, summary)
+      assert Process.alive?(pid)
+      assert Schedule.status(pid).runs == 1
+    end
+
+    test "a raising job is caught and folded into a clean error summary" do
+      pid =
+        start_supervised!(
+          {Schedule,
+           name: nil,
+           enabled: false,
+           notify: self(),
+           top: 1,
+           scan: @fixtures,
+           adapter_dir: "adapters/faber-elixir",
+           llm: RaiseLLM}
+        )
+
+      Schedule.run_now(pid)
+
+      assert_receive {:faber_schedule, :run_complete, summary}, 2_000
+      assert is_binary(summary.error) and summary.error =~ "boom"
+      assert Process.alive?(pid)
       assert Schedule.status(pid).runs == 1
     end
   end
