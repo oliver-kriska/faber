@@ -12,8 +12,11 @@ Two commands are defined:
 
 * ``score``    — structural eval of a proposed skill. Ports the plugin's ``lab/eval`` matchers
   (M4). Implemented: stdlib-only, no API key needed.
-* ``optimize`` — wraps GEPA / ``dspy.GEPA`` for the evolve→eval→keep loop. Still a stub: GEPA
-  needs ``dspy`` installed and a provider API key, so it reports ``status: "not_implemented"``.
+* ``optimize`` — ``dspy.GEPA`` optimization of a SKILL.md against the eval matchers
+  (``faber_eval.optimize``). The orchestration (capability gate, eval-matcher metric, budget) is
+  real and tested; the live dspy path needs the ``gepa`` extra + a provider API key, so without
+  them it degrades to ``status: "not_implemented"`` with a precise reason. This common path stays
+  stdlib-only (dspy is imported only when actually optimizing live).
 
 The request may be supplied on stdin (canonical) or via ``--input PATH`` (used by the Elixir
 spine to avoid feeding stdin from a Port).
@@ -22,7 +25,7 @@ spine to avoid feeding stdin from a Port).
 import json
 import sys
 
-from faber_eval import __version__
+from faber_eval import __version__, optimize as optimizer
 from faber_eval.scorer import FULL_EVAL, inject_refs, score_skill
 
 
@@ -55,20 +58,13 @@ def score(request):
 
 
 def optimize(request):
-    """Evolve→eval→keep optimization (GEPA / DSPy).
+    """``dspy.GEPA`` optimization of a SKILL.md against the eval matchers.
 
-    Still a stub: GEPA requires ``dspy`` + a provider API key, which the v1 boundary does not
-    assume. Faber's M5 loop drives the proven deterministic keep/revert/plateau cycle in Elixir
-    (`Faber.Loop`) instead; this command is reserved for a future GEPA-backed optimizer.
+    Delegates to ``faber_eval.optimize.run``. Without the ``gepa`` extra (``dspy``) + a provider API
+    key it degrades to ``status: "not_implemented"`` with a precise reason; the Elixir keyless
+    reflective loop covers v1 self-improvement either way.
     """
-    return {
-        "command": "optimize",
-        "status": "not_implemented",
-        "version": __version__,
-        "reason": "GEPA optimizer not wired (needs dspy + API key); use Faber.Loop for v1",
-        "echo": request,
-        "result": None,
-    }
+    return optimizer.run(request)
 
 
 HANDLERS = {"score": score, "optimize": optimize}

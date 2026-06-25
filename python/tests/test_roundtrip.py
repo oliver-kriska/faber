@@ -9,11 +9,14 @@ spine will invoke it — so it also exercises the entrypoint wiring. Written wit
 """
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+from faber_eval import optimize as optimize_mod  # noqa: E402 — after stdlib imports by intent
 
 PKG_DIR = Path(__file__).resolve().parent.parent
 
@@ -40,13 +43,14 @@ Loaded in tests.
 """
 
 
-def run(command, payload, extra=()):
+def run(command, payload, extra=(), env=None):
     proc = subprocess.run(
         [sys.executable, "-m", "faber_eval", command, *extra],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
         cwd=PKG_DIR,
+        env=env,
     )
     return proc
 
@@ -81,16 +85,22 @@ class RoundTripTest(unittest.TestCase):
         finally:
             Path(path).unlink(missing_ok=True)
 
-    def test_optimize_is_a_documented_stub(self):
-        payload = {"program": "x", "rollouts": 3}
-        proc = run("optimize", payload)
+    def test_optimize_degrades_without_gepa_extra(self):
+        # Without the `gepa` extra (dspy) and/or a provider key, optimize degrades cleanly to
+        # not_implemented. Strip provider keys so the gate is deterministic even on a dev box that
+        # happens to have dspy installed (the base test env never installs the optional extra).
+        env = {k: v for k, v in os.environ.items() if k not in optimize_mod._KEY_ENV_VARS}
+        proc = run("optimize", {"skill_md": MINIMAL_SKILL, "budget": {"rollouts": 3}}, env=env)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         response = json.loads(proc.stdout)
         self.assertEqual(response["command"], "optimize")
         self.assertEqual(response["status"], "not_implemented")
-        self.assertEqual(response["echo"], payload)
+        self.assertTrue(response["reason"])
+        self.assertIsNone(response["result"])
 
     def test_empty_stdin_is_treated_as_empty_object(self):
+        # Empty stdin parses to {}, which `optimize` then rejects for the missing skill_md — proving
+        # the empty-object handling path (not a JSON crash).
         proc = subprocess.run(
             [sys.executable, "-m", "faber_eval", "optimize"],
             input="",
@@ -99,7 +109,9 @@ class RoundTripTest(unittest.TestCase):
             cwd=PKG_DIR,
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(json.loads(proc.stdout)["echo"], {})
+        response = json.loads(proc.stdout)
+        self.assertEqual(response["status"], "error")
+        self.assertIn("skill_md", response["error"])
 
     def test_unknown_command_exits_2(self):
         proc = run("nope", {})

@@ -51,7 +51,7 @@ defmodule Faber.OptimizeTest do
   end
 
   describe "run/2" do
-    test "reports not_implemented (the v1 reality: GEPA is a stub)" do
+    test "maps a not_implemented sidecar response to {:error, {:not_implemented, reason}}" do
       assert {:error, {:not_implemented, reason}} =
                Optimize.run("# skill\n", sidecar: NotImplStub)
 
@@ -97,6 +97,24 @@ defmodule Faber.OptimizeTest do
       # absent by default — put_present omits nil keys
       assert {:ok, %{"best" => bare}} = Optimize.run("# skill\n", sidecar: OkStub)
       refute Map.has_key?(bare, "budget")
+    end
+  end
+
+  describe "run/2 against the real python sidecar" do
+    @describetag :sidecar
+
+    # End-to-end over the real subprocess (python -m faber_eval optimize) — validates the live
+    # boundary without stubs. The base sidecar never installs the optional `dspy` (`gepa` extra), so
+    # the capability gate trips and this returns not_implemented — FREE: no key, no provider call,
+    # no token spend. Wiring GEPA live is then a Python-side change only; the seam is proven here.
+    test "degrades to not_implemented without the gepa extra (no spend)" do
+      assert {:error, {:not_implemented, reason}} =
+               Optimize.run("# skill\n",
+                 eval: %{"mode" => "vendored"},
+                 budget: %{"rollouts" => 3}
+               )
+
+      assert reason =~ "dspy" or reason =~ "API key"
     end
   end
 end

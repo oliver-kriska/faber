@@ -5,9 +5,9 @@ description = "Faber's Python eval sidecar — eval matchers (ported from the pl
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-# No third-party deps yet. The eval matchers (M4) and GEPA wrapper will add
-# `gepa` / `dspy` here. The v1 boundary is pure stdlib so the spine can shell
-# out with nothing installed beyond CPython.
+# The v1 boundary is pure stdlib so the spine can shell out with nothing installed beyond CPython.
+# The `score` command and the `optimize` orchestration are stdlib-only; the heavy `dspy.GEPA` engine
+# is an OPTIONAL extra (`gepa`), imported only when actually optimizing live — see the [gepa] group.
 dependencies = []
 
 [project.scripts]
@@ -15,6 +15,9 @@ faber-eval = "faber_eval.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+# Heavy, optional, post-v1: the GEPA optimizer (`optimize` command). dspy pulls a provider client,
+# and a provider API key is also required at runtime. Install: `uv pip install -e 'python/[gepa]'`.
+gepa = ["dspy>=2.5"]
 
 [build-system]
 requires = ["hatchling"]

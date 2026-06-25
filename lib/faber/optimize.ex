@@ -11,13 +11,16 @@ defmodule Faber.Optimize do
   API key. See `.claude/research/2026-06-23-gepa-reflective-loop-decision.md` for the design and why
   we did **not** take a `dspy` dependency.
 
-  ## `run/2` — `dspy.GEPA` sidecar seam (future heavy engine, still a stub)
+  ## `run/2` — `dspy.GEPA` sidecar seam (heavy engine, capability-gated)
 
-  The Elixir call-path to the Python sidecar's `optimize` command. `dspy.GEPA` needs `dspy`
-  installed *and* a provider API key, neither of which the v1 sidecar contract assumes (the boundary
-  is stdlib-only), so the sidecar reports `status: "not_implemented"` and this surfaces it as
-  `{:error, {:not_implemented, reason}}`. The seam exists so wiring GEPA later is a Python-side
-  change only — the request shape and response handling are already in place.
+  The Elixir call-path to the Python sidecar's `optimize` command (`python/faber_eval/optimize.py`).
+  The sidecar's orchestration — the eval-matcher metric, the cost (rollout) guardrail, and result
+  shaping — is implemented and unit-tested; the live `dspy.GEPA` engine is an **optional extra**
+  (`gepa`) that needs `dspy` installed *and* a provider API key. Without them the sidecar degrades to
+  `status: "not_implemented"` and this surfaces it as `{:error, {:not_implemented, reason}}` (the
+  keyless reflective loop above covers v1). Enabling GEPA live is then a Python-side concern only —
+  the request shape and response handling here are stable. The live path is unvalidated until you
+  opt in to spend; the `:sidecar` test in `optimize_test.exs` covers the (free) boundary check.
   """
 
   alias Faber.{Adapter, Loop, Propose, Proposal, Scan, Sidecar}

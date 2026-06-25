@@ -63,8 +63,12 @@ Elixir** (no `python3` on the hot path). Opt into the network path with
 `config :faber, :eval_engine, :sidecar`.
 
 **Known runtime gaps** (wired + tested with stubs; live use needs the runtime): the GEPA
-`optimize` command is a documented stub (needs `dspy` + a key — the M5 loop covers v1
-self-improvement instead); trigger-accuracy eval (the plugin shells to `claude`) is deferred.
+`optimize` command is implemented as a capability-gated seam — its orchestration (the eval-matcher
+metric, budget guardrail, result shaping) is unit-tested and the real subprocess boundary is
+covered, but the live `dspy.GEPA` path needs the optional `gepa` extra + a provider key and is
+**unvalidated until you opt in to spend** (without them it degrades to `not_implemented`; the
+keyless reflective loop covers v1 self-improvement). Trigger-accuracy eval (the plugin shells to
+`claude`) is deferred.
 
 ## Development
 
