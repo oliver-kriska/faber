@@ -1,0 +1,132 @@
+{
+  "sessionId": "session-gemini-001",
+  "projectHash": "a1b2c3d4e5",
+  "startTime": "2026-06-26T10:00:00Z",
+  "messages": [
+    {
+      "role": "user",
+      "parts": [{ "text": "fix the failing parser test in lib/parser.ex" }]
+    },
+    {
+      "role": "model",
+      "parts": [
+        { "text": "I'll run the test suite to see the failure." },
+        {
+          "functionCall": {
+            "id": "fc_1",
+            "name": "run_shell_command",
+            "args": { "command": "mix test test/parser_test.exs" }
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "id": "fc_1",
+            "name": "run_shell_command",
+            "response": { "error": "1 test, 1 failure — FunctionClauseError in Parser.parse/1" }
+          }
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [
+        { "text": "Let me re-run to confirm it's deterministic." },
+        {
+          "functionCall": {
+            "id": "fc_2",
+            "name": "run_shell_command",
+            "args": { "command": "mix test test/parser_test.exs" }
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "id": "fc_2",
+            "name": "run_shell_command",
+            "response": { "error": "1 test, 1 failure — same FunctionClauseError" }
+          }
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [
+        { "text": "The parser needs a guard for empty input. Patching it." },
+        {
+          "functionCall": {
+            "id": "fc_3",
+            "name": "read_file",
+            "args": { "absolute_path": "lib/parser.ex" }
+          }
+        },
+        {
+          "functionCall": {
+            "id": "fc_4",
+            "name": "replace",
+            "args": {
+              "file_path": "lib/parser.ex",
+              "old_string": "def parse(x)",
+              "new_string": "def parse(\"\"), do: {:error, :empty}\n  def parse(x)"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "id": "fc_3",
+            "name": "read_file",
+            "response": { "output": "def parse(x) do ... end" }
+          }
+        },
+        {
+          "functionResponse": {
+            "id": "fc_4",
+            "name": "replace",
+            "response": { "output": "edit applied" }
+          }
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [
+        {
+          "functionCall": {
+            "id": "fc_5",
+            "name": "run_shell_command",
+            "args": { "command": "mix test test/parser_test.exs" }
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "id": "fc_5",
+            "name": "run_shell_command",
+            "response": { "output": "1 test, 0 failures" }
+          }
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [{ "text": "Fixed — the parser now guards empty input and the test passes." }]
+    }
+  ]
+}

@@ -6,8 +6,10 @@ defmodule Faber.Ingest.Format do
 
   Formats that ship today: `Faber.Ingest.Format.Claude` (Claude Code's
   `~/.claude/projects/**/*.jsonl`), `Faber.Ingest.Format.Codex` (OpenAI Codex's
-  `~/.codex/sessions/**/rollout-*.jsonl`), and `Faber.Ingest.Format.Cline` (the
-  `saoudrizwan.claude-dev` VS Code extension's `**/tasks/*/api_conversation_history.json`).
+  `~/.codex/sessions/**/rollout-*.jsonl`), `Faber.Ingest.Format.Cline` (the
+  `saoudrizwan.claude-dev` VS Code extension's `**/tasks/*/api_conversation_history.json`), and
+  `Faber.Ingest.Format.Gemini` (Google's `gemini-cli` — and, identically, Qwen Code —
+  `~/.gemini/tmp/*/chats/session-*.json`).
   OpenCode and Pi are **not yet implemented**: each needs a real transcript spec (file layout +
   per-record shape) before a faithful format module can be written, so they are deliberately absent
   rather than guessed. Adding one is a single new module implementing this behaviour plus a `format`
@@ -35,7 +37,8 @@ defmodule Faber.Ingest.Format do
   @aliases %{
     claude: Faber.Ingest.Format.Claude,
     codex: Faber.Ingest.Format.Codex,
-    cline: Faber.Ingest.Format.Cline
+    cline: Faber.Ingest.Format.Cline,
+    gemini: Faber.Ingest.Format.Gemini
   }
 
   @doc """
