@@ -54,6 +54,22 @@ Why this is a strong result:
 - The `correction-ledger` skill is itself a genuinely useful workflow fix for *this* user (this very
   session had multiple compactions) — a candidate to actually adopt, independent of Faber.
 
+## Loop (M5) + install — confirmed ceiling on real data
+
+`Faber.Loop.refine(rank1, adapter, strategy: :reflect, trigger: true, target: 0.95)` →
+`status=complete, iterations=1, best_composite=1.0, candidates_tried=1`. The reflective loop
+**stopped immediately with no refinement**: the seed already met target (composite 1.0 ≥ 0.95), so
+there was no gradient. This empirically reconfirms the GEPA-deferral / zero-headroom finding
+(`2026-06-23-gepa-reflective-loop-decision.md`) on real data — the behavioral `trigger` fold opens
+no headroom because the rank-1 seed cleared all three behavioral thresholds (acc≥0.75, prec≥0.80,
+recall≥0.60) so `behavioral` = 1.0. **To make the loop push raw trigger accuracy higher, the eval
+must reward accuracy continuously, not as a 0.75 pass/fail step** — i.e. a stochastic/continuous
+objective, exactly GEPA's regime.
+
+Installed the winner to `~/.claude/skills/correction-ledger/SKILL.md` with a `.faber.json`
+provenance marker (`installed_by:faber`, adapter, source_session, fingerprint). The loop closed
+end-to-end: the skill became loadable in the same session whose friction produced it.
+
 ## Repro
 
 ```sh
