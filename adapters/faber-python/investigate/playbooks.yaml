@@ -1,0 +1,72 @@
+# Investigation playbooks — HAND-CURATED Python debugging recipes.
+#
+# Unlike faber-elixir (mapped from the plugin's investigation skills), these come from common
+# Python failure modes and the stdlib/tooling docs (traceback, pdb, importlib, venv, pytest,
+# ruff, mypy). Bulk form per ADAPTER_CONTRACT.md §5.1. Each entry: id, symptoms (for
+# retrieval), source (the knowledge origin), body (the playbook). No host-language code.
+
+playbooks:
+  - id: read-traceback-bottom-up
+    source: "Python docs: traceback; common practice"
+    symptoms: ["Traceback (most recent call last)", "exception", "stack trace", "crash"]
+    body: >-
+      Read the traceback BOTTOM-UP: the last line is the actual exception type + message; the
+      frames above are the call chain, innermost-last. Start at the bottom, find the first frame
+      in YOUR code (skip library frames), and read the exact exception. Don't guess from the top.
+      Reproduce with the smallest input that triggers it before changing anything.
+
+  - id: importerror-modulenotfound
+    source: "Python docs: import system; venv"
+    symptoms: ["ImportError", "ModuleNotFoundError", "No module named", "cannot import name", "circular import"]
+    body: >-
+      1) ModuleNotFoundError → the package isn't installed in the ACTIVE interpreter, or the cwd
+      isn't on sys.path. Check `which python` / `python -c "import sys; print(sys.path)"` and
+      that the venv is activated. 2) "cannot import name X" → a circular import or a typo; break
+      the cycle by moving the import inside the function or splitting the module. 3) Confirm the
+      package name vs import name differ (e.g. `pip install PyYAML`, `import yaml`).
+
+  - id: venv-interpreter-mismatch
+    source: "Python docs: venv; pip"
+    symptoms: ["works in one shell not another", "pip installed but import fails", "wrong python version", "command not found after pip install"]
+    body: >-
+      Suspect an interpreter/venv mismatch whenever "I installed it but it's not found". Verify
+      `which python` and `which pip` point INTO the same venv. Prefer `python -m pip install ...`
+      (installs into the interpreter you're running) over bare `pip`. Check `python --version`
+      matches the project's target. Re-create the venv if it's stale.
+
+  - id: pytest-isolate-and-pdb
+    source: "pytest docs"
+    symptoms: ["test failure", "flaky test", "assertion error", "test passes alone fails together"]
+    body: >-
+      1) ISOLATE: run the single failing test — `pytest path/to/test.py::test_name -x` (stop on
+      first failure). 2) INSPECT: add `-vv` for full assert diffs, `-s` to see prints/logs,
+      `--pdb` to drop into the debugger at the failure. 3) "passes alone, fails together" → shared
+      mutable state or test-ordering dependence; look for module-level globals, fixtures with the
+      wrong scope, or unclosed resources. Use `-p no:randomly`/`--lf` to bisect.
+
+  - id: ruff-mypy-triage
+    source: "ruff docs; mypy docs"
+    symptoms: ["lint errors", "type errors", "ruff", "mypy", "too many warnings"]
+    body: >-
+      Triage static findings before runtime debugging — they're cheap and often the root cause.
+      `ruff check .` first (fast; auto-fixable with `--fix`). Then `mypy` for type errors: read
+      the FIRST error, fix it, re-run — later errors are frequently cascades of the first. Don't
+      blanket-`# type: ignore`; narrow it (`# type: ignore[arg-type]`) and only when justified.
+
+  - id: performance-profile-first
+    source: "Python docs: cProfile, timeit"
+    symptoms: ["slow", "high memory", "timeout", "hot loop", "performance"]
+    body: >-
+      MEASURE BEFORE OPTIMIZING. Profile with `cProfile` (`python -m cProfile -s cumtime`) or
+      `timeit` for micro-benchmarks — never optimize on a hunch. Common wins: replace O(n) `in`
+      checks on lists with sets/dicts; avoid building large intermediate lists (use generators);
+      hoist invariant work out of loops; batch I/O. One change at a time, re-measure each.
+
+  - id: encoding-and-bytes-vs-str
+    source: "Python docs: unicode HOWTO"
+    symptoms: ["UnicodeDecodeError", "UnicodeEncodeError", "bytes vs str", "TypeError: a bytes-like object is required"]
+    body: >-
+      Keep a clear bytes↔str boundary: decode bytes to str at input, encode str to bytes at
+      output, work in str internally. Always pass `encoding="utf-8"` explicitly to `open()` and
+      `.decode()` — relying on the platform default causes "works on my machine" bugs. A
+      UnicodeDecodeError means you're treating non-UTF-8 bytes as text; find where they enter.

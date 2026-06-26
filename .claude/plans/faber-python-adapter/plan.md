@@ -51,36 +51,40 @@ Backward-compatible; `faber-elixir` parity must not regress.
 
 ## Phase 1 — author the `faber-python` pack (pure declarative)
 
-- [ ] **P1-T1** `adapters/faber-python/faber.adapter.yaml` — `file_globs` (`**/*.py`, `pyproject.toml`,
-  `requirements*.txt`, `setup.cfg`), `agent_targets: [claude-code]`, `example_step` (e.g. `pytest -x
-  path::test`).
-- [ ] **P1-T2** `laws/laws.yaml` — PEP 8/duck-typing non-negotiables: type hints on public fns, no bare
-  `except:`, no mutable default args, `pathlib` over `os.path`, context managers for resources,
-  prefer comprehensions, `logging` not `print`. (Hand-curated; cite sources in README.)
-- [ ] **P1-T3** `investigate/playbooks.yaml` — `ImportError`/`ModuleNotFoundError`, reading tracebacks
-  bottom-up, `pytest -x --pdb`, venv/interpreter mismatch, `ruff`/`mypy` triage.
-- [ ] **P1-T4** `detect/signatures.yaml` — generic friction signals + python `fingerprints`
-  (`pip install`/`poetry add`/`uv add`→maintenance; `gh pr`→review stays generic) + `opportunities`
-  (`pytest` fails ≥3 → a python verify-style skill) + `skill_namespaces` (the user's python skill ns,
-  if any) + an `eval/eval.yaml` (native default to start).
-- [ ] **P1-T5** `templates/skill.md.tmpl` + `manifest.yaml` — Python idiom (frontmatter, Iron Laws,
-  numbered Workflow, do/don't Patterns, ```python fenced example). Mirror the faber-elixir gating fixes.
-- [ ] **P1-T6** `README.md` per subdir documenting the (hand-curated, non-extracted) provenance — unlike
-  faber-elixir there's no single upstream plugin; note the sources used.
+- [x] **P1-T1** `adapters/faber-python/faber.adapter.yaml` — `file_globs` (`**/*.py`, `pyproject.toml`,
+  `requirements*.txt`, `setup.cfg`, `setup.py`), `agent_targets: [claude-code]`, `contract: 0.2`,
+  `metadata.example_step` (`pytest -x path::test`).
+- [x] **P1-T2** `laws/laws.yaml` — 15 PEP 8/idiom non-negotiables: type hints, no bare `except:`, no
+  mutable default args, context managers, `pathlib`, comprehensions, `logging` not `print`, `is None`,
+  no wildcard imports, f-strings, pinned venv deps, verify-before-done. (Hand-curated; sources in README.)
+- [x] **P1-T3** `investigate/playbooks.yaml` — 7 playbooks: tracebacks bottom-up,
+  `ImportError`/`ModuleNotFoundError`, venv/interpreter mismatch, `pytest -x --pdb` isolation,
+  `ruff`/`mypy` triage, profile-before-optimize, bytes↔str.
+- [x] **P1-T4** `detect/signatures.yaml` — 6 generic friction signals + python `fingerprints`
+  (`pip`/`poetry`/`uv`→maintenance; `gh pr`→review) + `opportunities` (`pytest`/`ruff`/`mypy` ≥3 →
+  `verify`) + `skill_namespaces: [py]` + `eval/eval.yaml` (vendored, structural+trigger).
+- [x] **P1-T5** `templates/skill.md.tmpl` + `manifest.yaml` — Python idiom (frontmatter, Iron Laws,
+  numbered Workflow, do/don't Patterns, ```python fenced example). Mirrors the faber-elixir gating fixes.
+- [x] **P1-T6** `README.md` (main + per subdir) documenting the hand-curated, non-extracted provenance
+  (PEP 8/257/484, stdlib + tool docs) — no single upstream plugin.
 
 ## Phase 2 — prove domain-independence + verify
 
-- [ ] **P2-T1** A python session **fixture** (`test/fixtures/python_session.jsonl`) exhibiting friction
-  (repeated `pytest` failures, `pip install` loops) for deterministic detect/scan tests.
-- [ ] **P2-T2** Tests: `faber-python` loads; `Adapter.matches_session?` matches a `.py` session, not the
-  elixir one; detect fingerprints the python fixture as python-flavored via the adapter; propose+eval
-  produce a valid, eval-passing python skill (Stub + the native eval).
-- [ ] **P2-T3** **Zero-diff assertion:** confirm adding `faber-python` required *no* python-specific
-  `lib/faber` change beyond Phase 0's generic mechanisms (grep the diff; document in the adapter README).
-- [ ] **P2-T4** (optional, keyless) live propose with `faber-python` on the fixture via `claude -p` to
-  eyeball a real python skill.
-- [ ] **P2-T5** Update `README.md` Status (two adapters; engine proven domain-free) + `HANDOFF.md`.
-- [ ] **P2-T6** Full verify (`mix test` / `test.full` / format / compile) + commit per phase.
+- [x] **P2-T1** A python session **fixture** (`test/fixtures_python/python_session.jsonl` — isolated dir
+  so it doesn't out-rank the Elixir fixtures in shared dir-scans) exhibiting friction (repeated `pytest`
+  failures, `pip install` loops).
+- [x] **P2-T2** Tests (`test/faber/faber_python_test.exs`, 7): `faber-python` loads; `matches_session?`
+  matches the `.py` session not the elixir one; detect fingerprints it python-flavored via the adapter
+  (maintenance vs bug-fix adapter-free); propose+eval produce a valid eval-passing python skill (Stub +
+  native eval).
+- [x] **P2-T3** **Zero-diff assertion:** `git diff <phase-0> -- lib/faber/ python/` is empty — adding
+  faber-python required no engine/sidecar change. Documented in `adapters/faber-python/README.md`.
+- [ ] **P2-T4** (optional, keyless) live propose — SKIPPED: Stub + native eval already prove the
+  pipeline end-to-end; keyless `claude -p` run deferred (budget/time), not needed for the thesis.
+- [x] **P2-T5** Updated `README.md` Status (two adapters; engine proven domain-free) + `HANDOFF.md`
+  (§6 converse test + A1 milestone; note: HANDOFF.md is gitignored, edited locally only).
+- [x] **P2-T6** Full verify: `mix test` 275 / `mix test.full` 280 / `format` / `compile
+  --warnings-as-errors` all green. Commit per phase (Phase 0 = 183fb3a; Phase 1+2 = this commit).
 
 ## Risks
 

@@ -1,0 +1,134 @@
+# Iron Laws — the Python stack's non-negotiables.
+#
+# HAND-CURATED (not extracted from a single upstream, unlike faber-elixir). Sources: PEP 8
+# (style), PEP 257 (docstrings), PEP 484 (type hints), the Python stdlib docs, and widely
+# accepted idioms ("Effective Python", the Hitchhiker's Guide to Python). These are the rules
+# a senior Python reviewer treats as non-negotiable, not stylistic preferences.
+#
+# Bulk form per ADAPTER_CONTRACT.md §5.1. Each entry: id, category, severity, statement, and
+# an optional `check`. Most laws need *semantic* enforcement (no vendored matchers yet), so
+# only the few reducible to a token pattern carry a regex `check`, as illustration.
+
+laws:
+  - id: typing-hint-public-functions
+    category: typing
+    severity: high
+    statement: >-
+      TYPE-HINT every public function (PEP 484): annotate parameters and the return type.
+      Hints are the contract callers and tools (mypy/pyright) rely on; an unhinted public API
+      is undocumented behavior.
+
+  - id: exceptions-no-bare-except
+    category: exceptions
+    severity: high
+    statement: >-
+      NEVER write a bare `except:` (or `except Exception` used as a catch-all). It swallows
+      KeyboardInterrupt and SystemExit and hides real bugs. Catch the narrowest exception type
+      you can actually handle.
+    check:
+      kind: regex
+      pattern: "except\\s*:"
+
+  - id: exceptions-no-silent-pass
+    category: exceptions
+    severity: high
+    statement: >-
+      NEVER silence an exception with `except ...: pass`. At minimum log it; re-raise unless you
+      can genuinely recover. Silent excepts are how production bugs go invisible.
+
+  - id: mutable-default-arguments
+    category: correctness
+    severity: high
+    statement: >-
+      NO mutable default arguments (`def f(x=[])` / `={}`). The default is evaluated once and
+      shared across calls, accumulating state. Use `None` and create the container inside the
+      body.
+    check:
+      kind: regex
+      pattern: "def \\w+\\([^)]*=\\s*(\\[\\]|\\{\\})"
+
+  - id: resources-use-context-managers
+    category: resources
+    severity: high
+    statement: >-
+      ALWAYS manage resources (files, sockets, locks, DB connections) with a `with` statement.
+      A bare `open()` without `with` leaks the handle on an exception path. Never rely on the
+      GC to close resources.
+
+  - id: paths-prefer-pathlib
+    category: idiom
+    severity: medium
+    statement: >-
+      PREFER `pathlib.Path` over `os.path` string munging for filesystem paths. It is
+      cross-platform, composable (`/` operator), and avoids fragile `os.path.join` chains.
+
+  - id: logging-not-print
+    category: observability
+    severity: medium
+    statement: >-
+      USE the `logging` module, not `print`, in library/application code. `print` cannot be
+      levelled, filtered, routed, or disabled in production. Reserve `print` for CLIs and
+      throwaway scripts.
+
+  - id: comprehensions-over-manual-loops
+    category: idiom
+    severity: low
+    statement: >-
+      PREFER a comprehension (or generator expression) over a manual `for`-append loop when
+      building a list/dict/set. It is clearer and faster — but stop when the logic needs
+      multiple statements or nested conditionals; readability wins.
+
+  - id: equality-none-is-not-eq
+    category: correctness
+    severity: high
+    statement: >-
+      COMPARE to `None` with `is` / `is not`, never `==`. `==` can be overridden and misfires on
+      objects with custom `__eq__`; identity is what you mean. Same for `True`/`False` in
+      boolean tests — test truthiness directly.
+    check:
+      kind: regex
+      pattern: "==\\s*None|None\\s*=="
+
+  - id: imports-no-wildcard
+    category: imports
+    severity: medium
+    statement: >-
+      NO wildcard imports (`from module import *`) outside the REPL. They pollute the namespace,
+      shadow names silently, and defeat static analysis. Import the names you use explicitly.
+
+  - id: strings-fstrings-not-concat
+    category: idiom
+    severity: low
+    statement: >-
+      USE f-strings for interpolation, not `+` concatenation or `%`. f-strings are readable and
+      fast. For the `logging` module, pass args (`log.info("x=%s", x)`) so formatting is lazy.
+
+  - id: deps-pin-and-virtualenv
+    category: packaging
+    severity: medium
+    statement: >-
+      ISOLATE dependencies in a virtual environment and PIN them (pyproject.toml /
+      requirements.txt with versions). Never install into the system interpreter; never rely on
+      "whatever is installed" — reproducible envs or it doesn't ship.
+
+  - id: testing-verify-before-claiming-done
+    category: verification
+    severity: high
+    statement: >-
+      VERIFY BEFORE CLAIMING DONE. Never say "should work"; run the relevant tests
+      (`pytest -x`) and the linters (`ruff check`, `mypy`) and show the result, or state
+      explicitly what remains unverified.
+
+  - id: mutation-no-modify-while-iterating
+    category: correctness
+    severity: high
+    statement: >-
+      NEVER mutate a list/dict/set while iterating over it — it raises RuntimeError or skips
+      elements. Iterate over a copy (`list(d)`) or build a new collection.
+
+  - id: dataclasses-over-adhoc-tuples
+    category: idiom
+    severity: low
+    statement: >-
+      PREFER a `@dataclass` (or `NamedTuple`) over passing around bare tuples/dicts for
+      structured data. Named fields beat positional indexing and document intent.

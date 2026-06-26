@@ -1,0 +1,39 @@
+# Faber adapter manifest — see docs/ADAPTER_CONTRACT.md for the full schema.
+#
+# faber-python is the SECOND adapter, and the proof that Faber's engine is domain-free:
+# unlike faber-elixir (extracted by reference from a single upstream plugin), this pack is
+# HAND-CURATED from general Python/PEP-8 knowledge — yet it required ZERO stack-specific
+# `lib/faber` changes to stand up (only the generic, adapter-aware mechanisms added in the
+# faber-python Phase 0). See README.md for provenance.
+
+name: faber-python
+version: 0.1.0
+
+# This pack targets the contract's v0.2 detection-vocab keys (detect/signatures.yaml §4.1).
+contract: "0.2"
+
+# Which coding agents this adapter's knowledge targets.
+agent_targets:
+  - claude-code
+
+# Globs (relative to a target project root) that mark a project as "this stack".
+# Presence of these is how Faber decides this adapter applies (and refuses to draft a Python
+# skill for, say, an Elixir or Next.js session).
+file_globs:
+  - "**/*.py"
+  - "pyproject.toml"
+  - "requirements*.txt"
+  - "setup.cfg"
+  - "setup.py"
+
+metadata:
+  display_name: "Python"
+  description: >-
+    Adapter for Python projects. Supplies the stack's Iron Laws (PEP 8 / idiomatic Python),
+    investigation playbooks (tracebacks, imports, venv, pytest, ruff/mypy), friction
+    signatures, and detection vocab. Hand-curated — see README.md for sources.
+  # A stack-idiomatic worked example for the proposer's `workflow:` instruction (contract §3).
+  example_step: "Run the failing test in isolation with `pytest -x path/to/test.py::test_name`"
+  maintainers:
+    - "Oliver Kriška <oliver@ideax.sk>"
+  license: "MIT"

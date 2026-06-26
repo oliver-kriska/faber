@@ -1,0 +1,92 @@
+# Friction signatures + detection vocab for Python sessions.
+#
+# The `signatures:` list documents the engine's GENERIC friction model (retry loops, user
+# corrections, error ratio, approach changes, compactions, interrupts) — these are agent-level
+# signals, identical across stacks, restated here with Python-flavored examples. The native
+# weight is restated per the contract (native / 3.0 normalized to 0.0–1.0).
+#
+# The §4.1 keys below (`fingerprints`, `opportunities`, `skill_namespaces`) are what make the
+# engine's fingerprint/opportunity output PYTHON-flavored instead of Elixir-flavored — proving
+# the engine is domain-free. Bulk form per ADAPTER_CONTRACT.md §5.1.
+
+signatures:
+  - id: retry-loops
+    severity: high
+    weight: 1.0            # native 3.0
+    body: >-
+      The same Bash command prefix run 3+ times consecutively with a failure among them — e.g.
+      `pytest` rerun on the same failing test, or repeated `pip install` attempts. The strongest
+      friction signal (native weight 3.0): the agent is stuck repeating an action without progress.
+
+  - id: user-corrections
+    severity: high
+    weight: 0.83           # native 2.5
+    body: >-
+      User messages that correct or redirect the agent (native weight 2.5), detected on the first
+      500 chars with the engine's correction regex (no/wrong/instead/actually/revert/...).
+
+  - id: error-tool-ratio
+    severity: medium
+    weight: 0.67           # native 2.0
+    body: >-
+      Ratio of errored tool results to total tool calls (native weight 2.0). High in Python
+      sessions thrashing on tracebacks, ImportError, or failing assertions.
+
+  - id: approach-changes
+    severity: medium
+    weight: 0.67           # native 2.0
+    body: >-
+      Dominant-tool shifts across the 4 session quarters (native weight 2.0) — thrashing between
+      reading, editing, and running, e.g. flipping between edit and `pytest` without converging.
+
+  - id: context-compactions
+    severity: medium
+    weight: 0.5            # native 1.5
+    body: >-
+      System messages indicating context compaction (native weight 1.5). Long, grinding sessions
+      that exhaust the context window.
+
+  - id: interrupted-requests
+    severity: low
+    weight: 0.33           # native 1.0
+    body: >-
+      Occurrences of "[Request interrupted by user]" (native weight 1.0). The user aborted the
+      agent mid-action — a mild friction signal.
+
+# ── Detection vocab (contract §4.1) ──────────────────────────────────────────
+# These replace the engine's Elixir/plugin defaults with Python vocabulary when this adapter
+# is selected. Hand-curated from Python tooling conventions.
+
+# Command → session-type bonus. Python dependency tools → maintenance; gh pr/issue → review.
+fingerprints:
+  - type: maintenance
+    commands: ["pip install", "poetry add", "uv add", "pip-compile", "pipenv install", "pip uninstall"]
+    bonus: 3.0
+  - type: review
+    commands: ["gh pr", "gh issue"]
+    bonus: 3.0
+
+# Missed-automation → suggested skill, in report order. Mirrors the engine defaults but with
+# Python test/lint commands driving the `verify` suggestion.
+opportunities:
+  - skill: investigate
+    when: retry_loops
+    unless_used: false          # suggest investigate even when already used
+  - skill: plan
+    when: tool_count
+    threshold: 50
+  - skill: verify
+    when: commands
+    commands: ["pytest", "ruff check", "mypy", "python -m pytest"]
+    threshold: 3
+  - skill: pr-review
+    when: commands
+    commands: ["gh pr"]
+    threshold: 2
+  - skill: review
+    when: edit_count
+    threshold: 10
+
+# Namespace prefix for a Python skill collection, scanned as `(?:py):skill` in session text.
+# Placeholder for a `py:`-namespaced skill pack; differs from faber-elixir's phx|ecto|lv.
+skill_namespaces: ["py"]

@@ -1,0 +1,14 @@
+# Template manifest — names each scaffold and the artifact type it produces
+# (ADAPTER_CONTRACT.md §6.5). The scaffold matches Claude Code SKILL.md conventions with a
+# Python idiom: the worked example sits in a ```python fence.
+
+templates:
+  - file: skill.md.tmpl
+    produces: skill
+    description: >-
+      SKILL.md scaffold for Python skills: frontmatter (name, description, effort,
+      argument-hint, allowed-tools), an "Iron Laws — Never Violate These" section, a Usage block
+      carrying a >=2-line worked example in a ```python fence (usage comment + concrete snippet),
+      numbered Workflow steps, and do/don't Patterns bullets. Workflow and Patterns are
+      presence-gated, so an empty list drops the whole section. Placeholders use {{tokens}};
+      {{#section}}…{{/section}} marks a repeated/conditional block.

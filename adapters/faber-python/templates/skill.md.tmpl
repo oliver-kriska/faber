@@ -1,0 +1,43 @@
+---
+name: {{skill_name}}
+description: "{{description}}"
+effort: {{effort}}
+argument-hint: "{{argument_hint}}"
+allowed-tools: {{allowed_tools}}
+---
+
+# {{skill_title}}
+
+{{one_line_purpose}}
+
+## Iron Laws - Never Violate These
+
+{{#iron_laws}}
+{{index}}. **{{law_statement}}**
+{{/iron_laws}}
+
+## Usage
+
+```python
+{{usage_examples}}
+```
+
+{{#workflow_present}}
+## Workflow
+
+{{#steps}}
+{{step_index}}. {{step_body}}
+{{/steps}}
+
+{{/workflow_present}}
+{{#patterns_present}}
+## Patterns
+
+{{#patterns}}
+- {{pattern_text}}
+{{/patterns}}
+
+{{/patterns_present}}
+## References
+
+- `${CLAUDE_SKILL_DIR}/references/{{skill_name}}.md` — supporting detail for {{skill_title}}.

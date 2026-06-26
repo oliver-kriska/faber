@@ -52,9 +52,16 @@ ingest sessions → detect friction → propose skill (adapter-informed)
 | M6 | LiveView friction dashboard (Bandit, no build step) | `FaberWeb.DashboardLive` |
 | +  | Read-only MCP server (Anubis) — friction/skills as live tools for coding agents | `Faber.MCP.Server`, `Faber.MCP.Tools.*` |
 | +  | Cross-agent skill install + provenance-tracked pointer sync (`faber sync`) | `Faber.Install` (`.faber.json` marker) |
+| +  | **Second adapter (`faber-python`) — engine proven domain-free** (zero `lib/faber` diffs) | `adapters/faber-python/` + contract v0.2 detection vocab |
+
+Two adapters ship today: [`faber-elixir`](adapters/faber-elixir/) (the reference, extracted by
+reference from the `claude-elixir-phoenix` plugin) and [`faber-python`](adapters/faber-python/)
+(hand-curated). The second one is the proof the engine is **domain-free** — it stood up with
+zero `lib/faber` diffs, driving Python-flavored detection/generation purely from declarative
+pack data (contract v0.2 §4.1).
 
 See [`HANDOFF.md`](HANDOFF.md) for the full thesis and architecture rationale,
-[`docs/ADAPTER_CONTRACT.md`](docs/ADAPTER_CONTRACT.md) for the adapter pack spec, and
+[`docs/ADAPTER_CONTRACT.md`](docs/ADAPTER_CONTRACT.md) for the adapter pack spec (v0.2), and
 [`.claude/research/`](.claude/research/) for the calibration and source-study notes.
 
 **Defaults are local-first & keyless:** the LLM backend defaults to the Claude Code CLI

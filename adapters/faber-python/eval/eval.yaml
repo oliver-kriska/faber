@@ -1,0 +1,20 @@
+# Eval reference — vendored mode (ADAPTER_CONTRACT.md §7.0).
+#
+# faber-python has no upstream eval framework to reference (unlike faber-elixir, which runs the
+# plugin's lab/eval in exec-in-place mode). It relies on Faber's GENERIC eval for v1:
+#
+#   * structural scoring — `Faber.Eval.Native` (hermetic, no python3): frontmatter, Iron-Laws
+#     section, description triggering quality, action density, worked example, references.
+#   * trigger-accuracy — the behavioral dimension over the proposal's should_trigger /
+#     should_not_trigger fixtures (opt-in, one LLM call per fixture).
+#
+# `mode: vendored` with NO matcher files means this pack contributes no Python-specific domain
+# matchers yet — a proposed skill is gated on structure + triggering only. Adding Python domain
+# matchers (e.g. "the example imports what it uses", "type hints present") is a future step:
+# drop matcher modules under eval/ and reference them from laws/*.check.ref.
+
+mode: vendored
+
+notes: >-
+  Starter eval: structural + trigger only. No vendored Python matchers yet. The native engine
+  guarantees the skill is well-formed for this stack's conventions; domain matchers come later.
