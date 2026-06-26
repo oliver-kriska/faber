@@ -8,11 +8,14 @@ defmodule Faber.MCP.Server do
   2.1, Horde) this drops all of that. It is started only when the web endpoint is (dev / `faber
   serve`), never for one-shot CLI commands — see `Faber.Application.web_children/1`.
 
-  Tools (all read-only; the side-effecting `faber_propose_skill` is deliberately deferred):
+  Tools:
 
     * `faber_search_friction` — ranked friction findings (**aggregates only**, never raw transcripts)
     * `faber_list_skills`     — installed skills (name + description)
     * `faber_get_skill`       — a skill's full `SKILL.md` body, by name
+    * `faber_propose_skill`   — propose + gate (+ optionally install) a skill for a ranked finding.
+      The only **side-effecting** tool (it calls an LLM, spending tokens), so it is **opt-in**:
+      disabled unless `config :faber, :mcp_allow_propose` is true. The other three need no opt-in.
 
   Connect a coding agent with:
 
@@ -34,6 +37,7 @@ defmodule Faber.MCP.Server do
   component(Tools.SearchFriction, name: "faber_search_friction")
   component(Tools.ListSkills, name: "faber_list_skills")
   component(Tools.GetSkill, name: "faber_get_skill")
+  component(Tools.ProposeSkill, name: "faber_propose_skill")
 
   @impl true
   def init(_client_info, frame), do: {:ok, frame}

@@ -165,7 +165,7 @@ elixir version"`.
 - [x] Tests: per-tool handler in isolation (params → structured reply); **privacy test** (tool
   output contains only aggregates, no raw transcript substrings); **no-egress** for read-only tools
   (extend the existing BEAM-trace test to the MCP path); session re-init test.
-- [ ] (Phase 2 — not built) `faber_propose_skill` behind opt-in; gate + cost note.
+- [x] (Phase 2) `faber_propose_skill` behind opt-in; gate + cost note. — `Faber.MCP.Tools.ProposeSkill`: opt-in via `config :faber, :mcp_allow_propose` (off by default, returns a structured error explaining the token cost), proposes for a ranked finding (keyless, mirrors the CLI rank + stack gate), scores via `Eval`, installs only on a passing gate, privacy-safe (no raw transcript/path). 6 tests; server registration updated.
 - [x] Docs: `claude mcp add` one-liner in README/HANDOFF.
 
 **Tests:** Hermes test helpers for tool invocation; the privacy + no-egress isolation tests are the

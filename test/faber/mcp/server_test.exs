@@ -5,10 +5,15 @@ defmodule Faber.MCP.ServerTest do
   alias Faber.MCP.Server
 
   describe "component registration" do
-    test "registers exactly the three read-only tools with faber_ names" do
+    test "registers the read-only tools plus the opt-in propose tool, all faber_-namespaced" do
       names = Server.__components__(:tool) |> Enum.map(& &1.name) |> Enum.sort()
 
-      assert names == ["faber_get_skill", "faber_list_skills", "faber_search_friction"]
+      assert names == [
+               "faber_get_skill",
+               "faber_list_skills",
+               "faber_propose_skill",
+               "faber_search_friction"
+             ]
     end
 
     test "every registered component carries a non-empty description and input schema" do
