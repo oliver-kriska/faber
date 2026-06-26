@@ -9,7 +9,7 @@ defmodule Faber.CLI do
   command: one-shot commands print and `System.halt/1`; `serve` prints the URL, opens the browser,
   and leaves the BEAM running.
 
-  Subcommands: `scan`, `propose [--rank N] [--install]`, `serve [--port P] [--no-open]`,
+  Subcommands: `scan`, `propose [--rank N] [--install] [--trigger]`, `serve [--port P] [--no-open]`,
   `help`, `--version`.
   """
 
@@ -59,6 +59,7 @@ defmodule Faber.CLI do
           rank: :integer,
           install: :boolean,
           force: :boolean,
+          trigger: :boolean,
           source: :string,
           db: :string,
           format: :string
@@ -176,11 +177,17 @@ defmodule Faber.CLI do
       |> put_if(:source, normalize_source(opts[:source]))
       |> put_if(:format, normalize_format(opts[:format]))
 
+    # `--trigger` opts into the behavioral trigger-accuracy dimension (one keyless LLM call per
+    # fixture). It's off by default and one-shot only — never wired into the reflective loop, where
+    # optimizing a composite that includes an LLM-judged dimension would let the loop game its own
+    # generated fixtures (see .claude/research/2026-06-26-behavioral-eval-trigger-accuracy.md).
+    trigger? = opts[:trigger] == true
+
     with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
          %Scan.Result{} = result <- Enum.at(Scan.run(scan_opts), rank - 1),
          :ok <- stack_gate(adapter, result, opts[:force]),
          {:ok, proposal} <- Propose.propose(result, adapter),
-         {:ok, eval} <- Eval.score(proposal, adapter: adapter) do
+         {:ok, eval} <- Eval.score(proposal, adapter: adapter, trigger: trigger?) do
       IO.puts(render_proposal(proposal, eval, adapter))
       maybe_install(proposal, adapter, opts[:install])
       0
@@ -395,9 +402,11 @@ defmodule Faber.CLI do
     Usage:
       faber scan [--limit N] [--rank-by raw|rate] [--source S] [--format F] [--db PATH]
                                                     Rank session friction
-      faber propose [--rank N] [--install] [--force] [--source S] [--format F] [--db PATH]
+      faber propose [--rank N] [--install] [--force] [--trigger] [--source S] [--format F] [--db PATH]
                                                     Draft + eval a skill for one session
-                                                    (--force: skip the stack-match gate)
+                                                    (--force: skip the stack-match gate;
+                                                     --trigger: add the behavioral trigger-accuracy
+                                                     dimension — one keyless LLM call per fixture)
       faber serve [--port P] [--no-open]            Start the dashboard UI in your browser
                                                     (also serves the read-only MCP server at /mcp)
       faber sync [--target claude,codex] [--check] [--force] [--dir PATH]

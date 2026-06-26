@@ -20,6 +20,9 @@ defmodule Faber.CLITest do
       assert CLI.parse(["propose", "--rank", "2", "--install"]) ==
                {:propose, [rank: 2, install: true]}
 
+      assert CLI.parse(["propose", "--rank", "1", "--trigger"]) ==
+               {:propose, [rank: 1, trigger: true]}
+
       assert CLI.parse(["serve", "--port", "9000", "--no-open"]) ==
                {:serve, [port: 9000, open: false]}
 
@@ -56,6 +59,15 @@ defmodule Faber.CLITest do
       out = capture_io(fn -> assert CLI.run(:propose, @fixtures ++ [rank: 1]) == 0 end)
       assert out =~ "composite"
       assert out =~ "Iron Laws"
+    end
+
+    test "propose --trigger adds the behavioral dimension without breaking the run" do
+      # The trigger eval degrades gracefully under the stub judge (a non-`triggers` reply counts as
+      # a routing miss, never a crash), so the run still completes and renders the eval.
+      out =
+        capture_io(fn -> assert CLI.run(:propose, @fixtures ++ [rank: 1, trigger: true]) == 0 end)
+
+      assert out =~ "composite"
     end
 
     test "propose --install writes the rendered skill into the skills dir" do
