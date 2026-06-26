@@ -84,3 +84,12 @@ reference adapter source.
   (`Faber.Install` uses a `.faber.json` marker; `list_faber_installed/1` is the filtered view, while
   `list_installed/1` stays the generic primitive). See
   `.claude/solutions/2026-06-25-sync-pointer-over-claim-provenance.md`.
+- **Validate untrusted declarative packs at the `load/1` boundary; fail closed at runtime.** Adapter
+  packs are untrusted input — anything turned into a regex or atom must be validated when the pack
+  loads (`Faber.Adapter.validate/1`), not trusted deep in a scan. Guard with `is_binary/1` before
+  `Regex.escape/1` (it *raises* on non-binaries) and keep a fail-closed runtime guard
+  (`~r/(?!)/` never-match) for an in-memory struct that bypassed validation. And **reproduce a
+  flagged crash vector before "fixing" it** — a plausible security finding can be empirically false
+  for the actual input shape (e.g. `Regex.escape`'d strings don't fail `Regex.compile`); fix the
+  real edge and say so. See
+  `.claude/solutions/2026-06-26-elixir-regex-escape-compile-validate-boundary.md`.
