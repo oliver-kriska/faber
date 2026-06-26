@@ -19,6 +19,17 @@ defmodule Faber.Eval.TriggerTest do
     def generate_object(_prompt, _schema, _opts), do: {:ok, %{triggers: true}}
   end
 
+  # A deliberately noisy router: alternates true/false on successive calls via a shared counter, so
+  # repeated samples of the same fixture disagree — the stochastic objective N-sample pooling targets.
+  defmodule FlakyRouter do
+    @behaviour Faber.LLM
+    @impl true
+    def generate_object(_prompt, _schema, _opts) do
+      n = Agent.get_and_update(__MODULE__, fn c -> {c, c + 1} end)
+      {:ok, %{triggers: rem(n, 2) == 0}}
+    end
+  end
+
   defp proposal(should_trigger, should_not_trigger) do
     %Proposal{
       name: "demo-skill",
@@ -49,6 +60,31 @@ defmodule Faber.Eval.TriggerTest do
 
     test "no fixtures → skipped" do
       assert {:skipped, :no_fixtures} = Trigger.score(proposal([], []), llm: PerfectRouter)
+    end
+  end
+
+  describe "N-sample averaging (trigger_samples)" do
+    test "default (samples=1) keeps the original single-pass shape — no extra keys" do
+      r = Trigger.score(proposal(["GO now"], []), llm: PerfectRouter)
+      refute Map.has_key?(r, :samples)
+      refute Map.has_key?(r, :accuracy_stdev)
+    end
+
+    test "pools N samples of a noisy router into a stable estimate and surfaces the stdev" do
+      start_supervised!(%{
+        id: FlakyRouter,
+        start: {Agent, :start_link, [fn -> 0 end, [name: FlakyRouter]]}
+      })
+
+      # One should-fire fixture; FlakyRouter alternates true/false, so over 4 samples it's right
+      # exactly twice. Pooling keeps correct/total consistent with accuracy, and σ exposes the noise.
+      r = Trigger.score(proposal(["GO now"], []), llm: FlakyRouter, trigger_samples: 4)
+
+      assert r.samples == 4
+      assert r.total == 4
+      assert r.correct == 2
+      assert r.accuracy == 0.5
+      assert r.accuracy_stdev == 0.5
     end
   end
 

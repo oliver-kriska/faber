@@ -22,6 +22,9 @@ defmodule Mix.Tasks.Faber.Propose do
     * `--base PATH`    transcript root (default ~/.claude/projects)
     * `--write DIR`    write the rendered skill to `DIR/<name>/SKILL.md`
     * `--no-eval`      skip the eval step
+    * `--trigger`      add behavioral routing-accuracy eval (one `claude -p` call per fixture)
+    * `--trigger-samples N`  repeat the trigger eval N times and pool for a stable, noise-aware
+      estimate (N× the LLM cost; reports `σ`). Default 1.
   """
 
   use Mix.Task
@@ -35,7 +38,8 @@ defmodule Mix.Tasks.Faber.Propose do
     base: :string,
     write: :string,
     eval: :boolean,
-    trigger: :boolean
+    trigger: :boolean,
+    trigger_samples: :integer
   ]
 
   @impl Mix.Task
@@ -91,8 +95,15 @@ defmodule Mix.Tasks.Faber.Propose do
   end
 
   defp run_eval(proposal, adapter, opts) do
-    # `--trigger` adds behavioral routing accuracy (one keyless `claude -p` call per fixture).
-    case Eval.score(proposal, adapter: adapter, trigger: opts[:trigger]) do
+    # `--trigger` adds behavioral routing accuracy (one keyless `claude -p` call per fixture);
+    # `--trigger-samples N` repeats it N times and pools for a stable, noise-aware estimate.
+    eval_opts =
+      [adapter: adapter, trigger: opts[:trigger]]
+      |> then(fn o ->
+        if n = opts[:trigger_samples], do: Keyword.put(o, :trigger_samples, n), else: o
+      end)
+
+    case Eval.score(proposal, eval_opts) do
       {:ok, r} ->
         verdict = if r.passed, do: "PASS", else: "below threshold"
         Mix.shell().info("Eval: composite #{fmt(r.composite)} (#{verdict} @ #{r.threshold})")
@@ -106,6 +117,12 @@ defmodule Mix.Tasks.Faber.Propose do
 
   defp report_trigger(nil), do: :ok
   defp report_trigger({:skipped, reason}), do: Mix.shell().info("Trigger: skipped (#{reason})")
+
+  defp report_trigger(%{accuracy: acc, correct: c, total: t, samples: n, accuracy_stdev: sd}),
+    do:
+      Mix.shell().info(
+        "Trigger accuracy: #{fmt(acc)} (#{c}/#{t} pooled over #{n} samples, σ=#{fmt(sd)})"
+      )
 
   defp report_trigger(%{accuracy: acc, correct: c, total: t}),
     do: Mix.shell().info("Trigger accuracy: #{fmt(acc)} (#{c}/#{t})")
