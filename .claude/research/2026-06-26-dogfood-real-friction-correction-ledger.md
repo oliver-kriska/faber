@@ -141,3 +141,50 @@ mix faber.scan --format opencode --top 8         # real SQLite store
 mix faber.scan --format codex --top 8            # real rollout JSONL
 mix faber.propose --format codex --rank 1        # cross-agent propose → "Bugfix Retry Tripwire"
 ```
+
+## Run against a real external project — enaia-main (follow-up)
+
+First run against a large, actively-used external Elixir/Phoenix project (Oliver's `enaia`, worktree
+`~/Projects/xuku/enaia-main`, 271 recorded Claude sessions) rather than Faber's own history. Scanned
+that project's session dir directly (`--base ~/.claude/projects/-Users-oliverkriska-Projects-xuku-enaia-main`):
+**259 non-trivial sessions, 231 tier-2**, top sessions genuinely huge (1030–3089 messages). Dominant
+signals across the top 15: `context_compactions` (7×), `retry_loops` (5×), `user_corrections` (3×) —
+the same recurring pain, at scale.
+
+Proposed for three different friction types (keyless), all gate-passing:
+
+| Rank | Signal | Skill | Composite | Triggering |
+|------|--------|-------|-----------|------------|
+| 1 | context_compactions | Bugfix Context Ledger | 1.00 | 1.00 |
+| 3 | retry_loops | Break Retry Loop | 0.93 | 0.67 |
+| 4 | user_corrections | Bugfix Correction Ledger | 1.00 | 1.00 |
+
+Findings:
+- **Signal-differentiated generation.** Each skill attacks its own dominant signal (compaction →
+  read-offload to `Explore`/`deep-bug-investigator` subagents + post-compact ledger re-read;
+  retry_loops → reproduce→isolate→one-hypothesis→`dbg/2`; user_corrections → verbatim capture, never
+  re-apply a REJECTED approach). Not one generic template.
+- **Convergent root cause within one project.** All three independently prescribe a *disk-backed
+  ledger surviving autocompaction* — which is exactly enaia's #1 friction. Three entry points, one
+  real fix (cf. the cross-session convergence on `correction-ledger` earlier).
+- **Project-aware non-duplication.** Each proposal reasoned about skills the *session actually used*
+  (read from the transcript) and positioned itself as complementary ("distinct from the generic
+  correction-ledger and compound", "does not duplicate the already-used review/work/connected/example
+  skills") — the proposer reads existing-skill context, not just the adapter's list.
+- **Gate discriminates.** "Break Retry Loop" honestly scored triggering 0.67 (composite 0.93) — its
+  routing description is weaker than the other two's 1.00; not a rubber stamp.
+- **Overlap is real.** Ranks 1 & 4 are both "Bugfix … Ledger" — in practice one consolidated ledger
+  skill beats three competing triggers (a future Faber consolidation step, or a human merge).
+
+Installed all three (user opt-in) into the enaia-main worktree via `Faber.Install.install/2` with
+`dir:` + provenance (`adapter`, `source_session`, `source_project`) → `.claude/skills/<name>/SKILL.md`
++ `.faber.json`. `list_faber_installed/1` returns exactly the 3 (filtered from enaia's ~30 own
+skills); worktree git status showed only the 3 new untracked dirs — non-destructive. Left untracked
+for the user to commit/discard (Faber never commits into the target project).
+
+```sh
+# repro (scan + propose against a real project's sessions):
+mix faber.scan   --base ~/.claude/projects/-Users-oliverkriska-Projects-xuku-enaia-main --top 15
+mix faber.propose --base ~/.claude/projects/-Users-oliverkriska-Projects-xuku-enaia-main --rank 1 --write proposals
+# install into the project worktree: Faber.Install.install({name, md}, dir: "<worktree>/.claude/skills", provenance: %{…})
+```
