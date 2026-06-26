@@ -97,15 +97,18 @@ The Python eval sidecar lives in `python/` (stdlib-only; `python3 -m unittest di
 
 ### MCP server
 
-`faber serve` exposes a **read-only** MCP server at `http://localhost:<port>/mcp` (localhost-bound,
-single-user, no auth). Connect a coding agent with:
+`faber serve` exposes an MCP server at `http://localhost:<port>/mcp` (localhost-bound, single-user,
+no auth). Connect a coding agent with:
 
 ```sh
 claude mcp add --transport http faber http://localhost:4710/mcp
 ```
 
-Tools: `faber_search_friction` (ranked friction findings — **aggregates only, never raw transcript
-text**), `faber_list_skills`, `faber_get_skill`. It starts only under `faber serve` /
+Read-only tools (no opt-in): `faber_search_friction` (ranked friction findings — **aggregates only,
+never raw transcript text**), `faber_list_skills`, `faber_get_skill`. One opt-in, side-effecting
+tool: `faber_propose_skill` — proposes + gates (and optionally installs) a skill for a ranked
+finding; it calls an LLM (spends tokens), so it stays **disabled** unless you set
+`config :faber, :mcp_allow_propose, true`. The server starts only under `faber serve` /
 `mix phx.server` (never for one-shot CLI commands).
 
 ## License
