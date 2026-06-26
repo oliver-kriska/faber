@@ -123,6 +123,83 @@ defmodule Faber.Ingest.Format.GeminiTest do
     end
   end
 
+  describe "alternate (source-derived) shape: type discriminator + toolCalls[] + .jsonl" do
+    test "role is read from `type` (user/gemini) when `role` is absent" do
+      assert %Event{type: :user, role: "user"} =
+               Gemini.normalize(%{"type" => "user", "content" => "hi"})
+
+      assert %Event{type: :assistant, role: "gemini"} =
+               Gemini.normalize(%{"type" => "gemini", "content" => "hello"})
+    end
+
+    test "a message-level toolCalls[] array yields tool_uses + tool_results (status → is_error)" do
+      e =
+        Gemini.normalize(%{
+          "type" => "gemini",
+          "content" => "patching",
+          "toolCalls" => [
+            %{
+              "id" => "t1",
+              "name" => "run_shell_command",
+              "args" => %{"command" => "mix test"},
+              "status" => "error"
+            },
+            %{
+              "id" => "t2",
+              "name" => "replace",
+              "args" => %{"file_path" => "lib/p.ex"},
+              "status" => "success"
+            }
+          ]
+        })
+
+      assert %Event{tool_uses: [%{name: "Bash"}, %{name: "Edit"}], tool_results: results} = e
+
+      assert [%{tool_use_id: "t1", is_error: true}, %{tool_use_id: "t2", is_error: false}] =
+               results
+    end
+
+    test "toolCalls takes precedence over content functionCall parts (no double count)" do
+      e =
+        Gemini.normalize(%{
+          "role" => "model",
+          "parts" => [%{"functionCall" => %{"name" => "read_file", "args" => %{}}}],
+          "toolCalls" => [%{"id" => "t", "name" => "run_shell_command", "args" => %{}}]
+        })
+
+      assert [%{name: "Bash"}] = e.tool_uses
+    end
+
+    test "stream_file! reads a line-delimited .jsonl, last ConversationRecord wins" do
+      jsonl = Path.join(System.tmp_dir!(), "gem-#{System.unique_integer([:positive])}.jsonl")
+
+      File.write!(jsonl, [
+        ~s({"sessionId":"old","messages":[{"type":"user","content":"first draft"}]}),
+        "\n",
+        ~s({"sessionId":"sess-jsonl","messages":[{"type":"user","content":"hi"},{"type":"gemini","content":"yo"}]}),
+        "\n"
+      ])
+
+      on_exit(fn -> File.rm(jsonl) end)
+
+      events = jsonl |> Gemini.stream_file!() |> Enum.map(fn {:ok, e} -> e end)
+      assert length(events) == 2
+      assert Enum.all?(events, &(&1.session_id == "sess-jsonl"))
+      assert [%Event{type: :user, text: "hi"}, %Event{type: :assistant, text: "yo"}] = events
+    end
+
+    test "discover globs .jsonl files too" do
+      dir = Path.join(System.tmp_dir!(), "gem-disc-#{System.unique_integer([:positive])}")
+      chats = Path.join(dir, "hash1/chats")
+      File.mkdir_p!(chats)
+      jsonl = Path.join(chats, "session-x.jsonl")
+      File.write!(jsonl, ~s({"messages":[]}))
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      assert jsonl in Gemini.discover(dir)
+    end
+  end
+
   describe "end-to-end scan" do
     test "a Gemini session scores as friction with canonical signals and file paths" do
       assert [%Scan.Result{} = r | _] = Scan.run(base: @base, format: :gemini, min_messages: 0)
