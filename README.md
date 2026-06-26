@@ -51,6 +51,7 @@ ingest sessions → detect friction → propose skill (adapter-informed)
 | M5 | Self-improving loop — propose→eval→keep with git ratchet + plateau | `Faber.Loop` (+ `Git`, `Journal`, `Server`, `Supervisor`) |
 | M6 | LiveView friction dashboard (Bandit, no build step) | `FaberWeb.DashboardLive` |
 | +  | Read-only MCP server (Anubis) — friction/skills as live tools for coding agents | `Faber.MCP.Server`, `Faber.MCP.Tools.*` |
+| +  | Cross-agent skill install + provenance-tracked pointer sync (`faber sync`) | `Faber.Install` (`.faber.json` marker) |
 
 See [`HANDOFF.md`](HANDOFF.md) for the full thesis and architecture rationale,
 [`docs/ADAPTER_CONTRACT.md`](docs/ADAPTER_CONTRACT.md) for the adapter pack spec, and
@@ -62,20 +63,24 @@ Elixir** (no `python3` on the hot path). Opt into the network path with
 `config :faber, :llm, Faber.LLM.ReqLLM` + a key, and the Python matcher engine with
 `config :faber, :eval_engine, :sidecar`.
 
+Trigger-accuracy eval is implemented as an opt-in **behavioral** dimension (`Eval.score(…,
+trigger: true)`): it runs the proposal's `should_trigger`/`should_not_trigger` fixtures through the
+configured LLM and folds precision/recall into the composite. It's off the structural hot path (one
+LLM call per fixture), and covered by `eval_trigger_test` plus the live tests.
+
 **Known runtime gaps** (wired + tested with stubs; live use needs the runtime): the GEPA
 `optimize` command is implemented as a capability-gated seam — its orchestration (the eval-matcher
 metric, budget guardrail, result shaping) is unit-tested and the real subprocess boundary is
 covered, but the live `dspy.GEPA` path needs the optional `gepa` extra + a provider key and is
 **unvalidated until you opt in to spend** (without them it degrades to `not_implemented`; the
-keyless reflective loop covers v1 self-improvement). Trigger-accuracy eval (the plugin shells to
-`claude`) is deferred.
+keyless reflective loop covers v1 self-improvement).
 
 ## Development
 
 ```sh
 mix deps.get
 mix test                       # hermetic — Elixir suite incl. LiveView, no python3 needed
-mix test.full                  # also runs the @tag :sidecar native↔Python parity tests (needs python3)
+mix test.full                  # also runs @tag :sidecar (native↔Python parity, needs python3) + :ccrider
 mix compile --warnings-as-errors
 mix faber.scan                 # rank your real ~/.claude sessions by friction
 iex -S mix                     # dashboard at http://localhost:4000 (mix phx.server style boot)
