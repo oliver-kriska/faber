@@ -43,6 +43,30 @@ The internal event model (`Faber.Ingest.Event`) has: `type` (`:user/:assistant/:
 | **Adoption / signal value** | **High.** OpenCode is among the top 3 coding-agent CLIs by GitHub stars (2026). Supports Claude, GPT-4o, local models. Full tool-call and error data. Rich friction signal. Shares the AgentSkills spec with Claude Code and Codex — cross-agent skill proposals will directly apply. |
 | **Notes** | Legacy JSON shard path is discoverable but orphaned for incremental upgraders. Safe to target SQLite as primary, fall back to shards for legacy sessions. The `anomalyco/opencode` fork (with 30K+ issues indexed) confirms the SQLite path is active. |
 
+**✅ Verified & shipped (2026-06-26) — `Faber.Ingest.Format.OpenCode`.** Probed a real
+`~/.local/share/opencode/opencode.db` and built the adapter against the confirmed shape:
+
+- **`message.data`** = `{role, time:{created}, agent, model:{providerID, modelID}, summary}`.
+  The role lives here (`$.role`), not on the part.
+- **`part.data` types observed:** `text` (`{text}`), `tool`, `patch`, `reasoning`, `step-start`,
+  `step-finish`. There is **no separate `tool_result` part** (the survey's guess) — a `tool` part
+  is **call + result combined**: `{type:"tool", tool:"bash", callID, state:{status:"completed"|
+  "error", input:{…}, output|error, time}}`. One part → one tool_use **and** one tool_result
+  (`is_error` ⇐ `state.status == "error"`).
+- **Edits arrive as `patch` parts** carrying `{hash, files:[…]}` (absolute paths), not (only) as
+  `edit` tool parts. Mapped each file to a canonical `Edit` so `Detect`'s path/edit signals fire.
+- **Tool names are native lowercase** (`bash`/`read`/`write`/`edit`/`grep`/`glob`/…), confirming the
+  "need mapping table" note. File tools use `input.filePath` (camelCase). `bash` uses `input.command`.
+- **Token usage** is on `step-finish` parts (`tokens:{total,input,output,reasoning,cache:{read,write}}`)
+  — present, but OpenCode records **no inline context window**, so a pressure signal can't be derived
+  without a model→window map. Left unmapped for v1 (documented in the module).
+- **Transport decision — `sqlite3` CLI, NOT `exqlite`/`ecto_sqlite3`.** The survey floated a NIF dep;
+  rejected it to honor this project's "subprocess boundary, no NIF" design (`mix.exs` comment) and to
+  reuse the existing pattern (`Faber.Ingest.Source.Ccrider` already reads SQLite via `sqlite3 -json
+  -readonly`). Missing `sqlite3` degrades gracefully to `{:error, :sqlite3_unavailable}`. DB-reading
+  tests are tagged `:opencode` (hermetic `mix test` excludes them; `mix test.full` includes them);
+  `normalize/1` is pure and tested inline. Legacy JSON shards: not implemented (this install had none).
+
 ---
 
 ### 2.2 Gemini CLI (google-gemini/gemini-cli)

@@ -95,3 +95,33 @@ Three SEPARATE persistence mechanisms — do not conflate. Best parseability of 
 Per the [[cross-agent-format-normalization-boundary]] pattern, each becomes one new `Faber.Ingest`
 format module mapping its native shape onto the engine vocabulary — the scorer/consumer stay
 source-agnostic.
+
+## Verified & shipped (2026-06-26): Cline, Gemini, OpenCode adapters
+
+All three now ship as `Faber.Ingest.Format.{Cline,Gemini,OpenCode}`.
+
+**OpenCode — probed against a real `opencode.db`**, confirming/correcting the above:
+
+- v1 install uses SQLite, no legacy JSON shards present → adapter targets only the DB
+  (`message`/`part` tables, JSON `data` columns). `role` is on `message.data` (`$.role`).
+- **A `tool` part is call + result *combined*** — `{tool, callID, state:{status, input, output|error}}`
+  — there is **no separate `tool_result` part**. One part → one tool_use AND one tool_result
+  (`is_error ⇐ state.status == "error"`). This is the key shape that differs from Claude/Cline/Gemini.
+- Edits arrive as `patch` parts (`{hash, files:[…]}`), not only `edit` tool parts — map each file to
+  a canonical `Edit`. Tool names are native lowercase; file tools use `input.filePath`.
+- Token usage on `step-finish` parts, but no inline context window → no pressure signal without a
+  model→window map; left unmapped.
+
+**Gemini — the two reverse-engineerings disagree, so the adapter handles the union.** The survey
+shape (`session-*.json` object, `{role, content/parts}`, `functionCall`/`functionResponse`) vs the
+source shape (`chatRecordingTypes.ts`: `.jsonl` `ConversationRecord`s, `type` discriminator
+user|gemini, message-level `toolCalls:[{id,name,args,result,status}]`). `normalize/1` reads role from
+`role|type` and tools from `toolCalls|content`; `discover`/`stream` handle both `.json` and `.jsonl`
+(last record wins). Gemini wasn't installed locally to settle it — confirm against a real install.
+
+**Transport lesson (reusable): read SQLite via the `sqlite3` CLI (`-json -readonly`), not a NIF.**
+When a project has a "no NIF / subprocess-boundary" stance (Faber's Python eval sidecar and
+`Faber.Ingest.Source.Ccrider` both shell out), prefer the `sqlite3` CLI over `exqlite`/`ecto_sqlite3`.
+Keeps the single-binary lean, degrades gracefully when `sqlite3` is absent, and the pure
+record→`Event` mapper stays hermetically testable while only the DB-reading tests carry a
+CLI-dependency tag (`@tag :opencode`). See [[cross-agent-format-normalization-boundary]].
