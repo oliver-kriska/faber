@@ -123,6 +123,35 @@ reaches composite ≈ gate (the dogfood run took `clarity` 0.50→1.00 structura
 proposals, there is little headroom left for GEPA to capture and the spend is unjustified. Only a
 *measured material plateau below the gate* makes GEPA worth evaluating.
 
+### Measurement result (2026-06-26) — ceiling reached; zero headroom
+
+Ran `Optimize.reflect/3` keylessly (`claude -p` / sonnet, `target: 1.0`, `max_iterations: 5`,
+`patience: 3`) to convergence on the one substantive fixture finding (`sample_session.jsonl` —
+friction 1.0, `bug-fix`, missed `investigate`+`verify`), 2 independent runs:
+
+| Run | Baseline (seed) composite | Final composite | Trajectory | Final dimensions |
+|-----|---------------------------|-----------------|------------|------------------|
+| 1   | **1.000** | 1.000 | (seed already maxed; loop stopped immediately) | clarity/completeness/conciseness/safety/specificity/triggering all 1.0; passes gate |
+| 2   | 0.933 | **1.000** | `1:1.0K` (one reflective edit kept) | all 1.0; passes gate |
+
+**Summary: baseline avg 0.967 → final avg 1.000; both runs clear the 0.75 gate; headroom to 1.0 = 0.0.**
+
+**Conclusion.** The keyless reflective loop reaches the **maximum deterministic composite (1.0)** —
+in Run 1 the *initial proposal* already maxed it; in Run 2 a single reflective edit closed the gap.
+There is **zero headroom** for a heavier optimizer to capture, which empirically settles the
+decision gate: GEPA cannot improve a score already at ceiling. The binding constraint is the eval's
+**expressiveness**, not the optimizer's power — once the deterministic structural composite is maxed,
+more optimization is pointless. This *strengthens* the deferral and *sharpens* its trigger: GEPA only
+becomes interesting once a harder (likely stochastic) dimension enters the gate and pushes achievable
+scores back below 1.0 (revisit condition #1 below).
+
+**Caveats (kept honest).** (a) Only one fixture carries real signal (the other four are near-empty),
+so this is **n=1 finding × 2 runs** — directional, not a broad benchmark. (b) The composite is a
+deterministic *structural* proxy; the LLM-judged behavioral/trigger dimension that would reintroduce
+variance is off the default gate (native structural scoring was used — the adapter eval fell back to
+native, "exec-in-place / env-bound"). A robust number would need more substantive fixtures (or real
+sessions) and would promote the scratch harness to a `mix` task.
+
 ### Falsifiable conditions to revisit (any one flips the decision)
 
 - A **stochastic dimension enters the default gate** (e.g. LLM-judged trigger/behavioral accuracy
