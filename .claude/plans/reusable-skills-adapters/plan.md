@@ -7,6 +7,12 @@ decides which are worth turning into reusable **Claude Code skills** (SKILL.md) 
 the scriptorium KB; this is about *operationalizing* it (a skill an agent loads, or an adapter Faber
 generates from).
 
+> **STATUS (2026-06-26) — COMPLETE.** S1–S5 authored (`priv/skills/*`) and installed into
+> `~/.claude/skills` with `.faber.json` markers (all 5 confirmed loadable). A1 done via the
+> `faber-python` adapter (zero `lib/faber` diffs). **A2 and A3 deferred by the user** — A2 is the
+> long-game (architectural skills aren't friction-driven, so the proposer won't surface them) and A3
+> is moot now that A1 is proven. Optional `faber sync` pointer into `~/.claude/CLAUDE.md` not run.
+
 ## Assessment
 
 Two distinct kinds of artifact, don't conflate them:
@@ -53,8 +59,8 @@ installed via `Faber.Install`.
 - [x] **S5** Author `eval-gate-for-generated-artifacts` SKILL.md (deterministic matchers + the structural-guarantee rule). — `priv/skills/eval-gate-for-generated-artifacts/SKILL.md`; matchers→dimensions→composite→gate + raise-the-floor-vs-never-shim rule.
 - [x] **S-install** Install the authored skills via `Faber.Install` into `~/.claude/skills` (gets the provenance marker); optionally `faber sync` the pointer. — all 5 installed to `~/.claude/skills/<name>/` with `.faber.json` markers; confirmed via `list_faber_installed/1` and they appear as loadable skills. Pointer sync into `~/.claude/CLAUDE.md` left as an optional follow-up (touches the user's global file).
 - [x] **A1** (milestone) Stand up a second adapter to prove engine domain-independence — first pick the stack + a knowledge source; then assemble `manifest.yaml` + laws + playbooks + a skill template; confirm **zero `lib/faber` diffs**. — DONE via the `faber-python` adapter (plan `faber-python-adapter`, commits `183fb3a`/`07c364b`): full pack + contract v0.2 detection vocab, proven zero `lib/faber` diffs by `git diff <phase-0> -- lib/faber/`. Thesis validated.
-- [ ] **A2** Fold S1–S5 into `faber-elixir` playbooks so the proposer can surface them on matching friction.
-- [ ] **A3** (fallback) `faber-generic` skeleton adapter to smoke-test the loader on a 2nd pack.
+- [~] **A2** Fold S1–S5 into `faber-elixir` playbooks so the proposer can surface them on matching friction. — DEFERRED by user (2026-06-26): long-game with uncertain payoff (these skills are architectural, not friction-driven, so the proposer won't trigger them).
+- [~] **A3** (fallback) `faber-generic` skeleton adapter to smoke-test the loader on a 2nd pack. — DROPPED: moot now that A1 is proven by `faber-python`.
 
 ## Decision needed
 
