@@ -19,6 +19,12 @@ defmodule Faber.Eval.TriggerTest do
     def generate_object(_prompt, _schema, _opts), do: {:ok, %{triggers: true}}
   end
 
+  defmodule AlwaysNo do
+    @behaviour Faber.LLM
+    @impl true
+    def generate_object(_prompt, _schema, _opts), do: {:ok, %{triggers: false}}
+  end
+
   # A deliberately noisy router: alternates true/false on successive calls via a shared counter, so
   # repeated samples of the same fixture disagree — the stochastic objective N-sample pooling targets.
   defmodule FlakyRouter do
@@ -60,6 +66,27 @@ defmodule Faber.Eval.TriggerTest do
 
     test "no fixtures → skipped" do
       assert {:skipped, :no_fixtures} = Trigger.score(proposal([], []), llm: PerfectRouter)
+    end
+
+    test "a never-fires skill with should_trigger fixtures gets precision 0.0, not a vacuous 1.0" do
+      # It caught NONE of the things it should have (fn > 0, no positive predictions) → precision is
+      # ill-defined and penalized to 0.0 (sklearn zero_division=0), so its behavioral score isn't
+      # inflated by an undeserved precision credit.
+      r = Trigger.score(proposal(["please GO now", "do it"], ["stay quiet"]), llm: AlwaysNo)
+      assert r.tp == 0 and r.fp == 0 and r.fn == 2
+      assert r.precision == 0.0
+      assert r.recall == 0.0
+      assert_in_delta r.accuracy, 1 / 3, 0.0001
+    end
+
+    test "correctly staying quiet with no should_trigger fixtures is vacuously perfect" do
+      # No positives exist at all (fn == 0) → there was nothing to get wrong, so precision/recall
+      # are legitimately vacuous 1.0 (distinct from the never-fires-but-should case above).
+      r = Trigger.score(proposal([], ["stay quiet", "be calm"]), llm: AlwaysNo)
+      assert r.tp == 0 and r.fp == 0 and r.fn == 0 and r.tn == 2
+      assert r.precision == 1.0
+      assert r.recall == 1.0
+      assert r.accuracy == 1.0
     end
   end
 

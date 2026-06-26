@@ -83,7 +83,7 @@ defmodule Faber.Eval.Trigger do
 
     %{
       accuracy: correct / total,
-      precision: ratio(tp, tp + fp),
+      precision: precision(tp, fp, fn_),
       recall: ratio(tp, tp + fn_),
       correct: correct,
       total: total,
@@ -125,7 +125,7 @@ defmodule Faber.Eval.Trigger do
 
     %{
       accuracy: correct / total,
-      precision: ratio(tp, tp + fp),
+      precision: precision(tp, fp, fn_),
       recall: ratio(tp, tp + fn_),
       correct: correct,
       total: total,
@@ -137,8 +137,18 @@ defmodule Faber.Eval.Trigger do
     }
   end
 
-  # No positive predictions / no positive truths → vacuously perfect (matches the reference's 1.0
-  # default when the denominator is empty).
+  # Precision with the sklearn `zero_division=0` convention, NOT a blanket vacuous 1.0. With no
+  # positive *predictions* (`tp + fp == 0`):
+  #   * if positives existed (`fn > 0`) the skill caught none of what it should have → 0.0, not 1.0.
+  #     (A blanket 1.0 here inflates a never-fires skill's behavioral score by ~+0.33 — empirically
+  #     reproduced; see .claude/research/2026-06-26-dogfood-real-friction-*.md.)
+  #   * if no positives existed at all (`fn == 0`) there was nothing to get wrong → vacuously 1.0.
+  defp precision(tp, fp, _fn) when tp + fp > 0, do: tp / (tp + fp)
+  defp precision(_tp, _fp, fn_) when fn_ > 0, do: 0.0
+  defp precision(_tp, _fp, _fn), do: 1.0
+
+  # Recall denominator is 0 only when there are no positive truths (no should_trigger fixtures) →
+  # vacuously perfect (nothing to recall). Matches the reference's empty-denominator default.
   defp ratio(_num, 0), do: 1.0
   defp ratio(num, den), do: num / den
 
