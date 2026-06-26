@@ -46,13 +46,13 @@ installed via `Faber.Install`.
 
 ## Tasks
 
-- [ ] **S1** Author `elixir-no-egress-test` SKILL.md (trigger, Iron Laws, the BEAM-trace recipe, a worked example from `no_egress_test`). Decide install target.
-- [ ] **S2** Author `keyless-llm-claude-cli` SKILL.md (the behaviour seam, `claude -p` stdin `/dev/null`, JSON parse, ReqLLM fallback, when to use).
+- [x] **S1** Author `elixir-no-egress-test` SKILL.md (trigger, Iron Laws, the BEAM-trace recipe, a worked example from `no_egress_test`). Decide install target. — authored at `priv/skills/elixir-no-egress-test/SKILL.md`; install target `~/.claude/skills` via `Faber.Install` (S-install).
+- [x] **S2** Author `keyless-llm-claude-cli` SKILL.md (the behaviour seam, `claude -p` stdin `/dev/null`, JSON parse, ReqLLM fallback, when to use). — authored at `priv/skills/keyless-llm-claude-cli/SKILL.md`; injection-safe env-passing + `:live`/timeout laws.
 - [ ] **S3** Author `anubis-mcp-readonly-phoenix` SKILL.md (read-only tools, localhost bind, serve-gating, privacy projection).
 - [ ] **S4** Author `managed-block-config-write` SKILL.md (digest guard, provenance marker, never-clobber-user-text).
 - [ ] **S5** Author `eval-gate-for-generated-artifacts` SKILL.md (deterministic matchers + the structural-guarantee rule).
 - [ ] **S-install** Install the authored skills via `Faber.Install` into `~/.claude/skills` (gets the provenance marker); optionally `faber sync` the pointer.
-- [ ] **A1** (milestone) Stand up a second adapter to prove engine domain-independence — first pick the stack + a knowledge source; then assemble `manifest.yaml` + laws + playbooks + a skill template; confirm **zero `lib/faber` diffs**.
+- [x] **A1** (milestone) Stand up a second adapter to prove engine domain-independence — first pick the stack + a knowledge source; then assemble `manifest.yaml` + laws + playbooks + a skill template; confirm **zero `lib/faber` diffs**. — DONE via the `faber-python` adapter (plan `faber-python-adapter`, commits `183fb3a`/`07c364b`): full pack + contract v0.2 detection vocab, proven zero `lib/faber` diffs by `git diff <phase-0> -- lib/faber/`. Thesis validated.
 - [ ] **A2** Fold S1–S5 into `faber-elixir` playbooks so the proposer can surface them on matching friction.
 - [ ] **A3** (fallback) `faber-generic` skeleton adapter to smoke-test the loader on a 2nd pack.
 
