@@ -270,7 +270,14 @@ defmodule Faber.Eval do
 
     passed = Enum.count(checks, fn {ok, _} -> ok end)
     total = length(checks)
-    score = passed / total
+
+    # The dimension SCORE is **continuous** — the mean of the raw metrics — not the fraction of
+    # thresholds met. A boolean step-function (`passed / total`) gives the reflective loop no gradient
+    # once the bars are cleared: composite pins at the ceiling and the loop can't push raw accuracy
+    # higher (confirmed empirically — see .claude/research/2026-06-26-dogfood-real-friction-*.md). A
+    # continuous reward keeps a gradient toward better routing. The threshold `checks` above are kept
+    # as human-readable evidence (which bars were cleared); they no longer drive the score.
+    score = (trigger.accuracy + trigger.precision + trigger.recall) / 3
 
     dimension = %{
       "dimension" => "behavioral",
@@ -278,6 +285,11 @@ defmodule Faber.Eval do
       "passed" => passed,
       "failed" => total - passed,
       "total" => total,
+      "metrics" => %{
+        "accuracy" => Float.round(trigger.accuracy, 4),
+        "precision" => Float.round(trigger.precision, 4),
+        "recall" => Float.round(trigger.recall, 4)
+      },
       "assertions" =>
         Enum.with_index(checks, fn {ok, evidence}, i ->
           %{

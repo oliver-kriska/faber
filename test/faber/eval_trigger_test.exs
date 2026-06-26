@@ -69,9 +69,24 @@ defmodule Faber.Eval.TriggerTest do
       {:ok, clean} = Faber.Eval.score(p, llm: PerfectRouter, trigger: true)
       {:ok, mis} = Faber.Eval.score(p, llm: AlwaysYes, trigger: true)
 
-      # AlwaysYes fails precision (0.5 < 0.80) → behavioral 2/3 → lower composite than perfect routing.
+      # AlwaysYes: accuracy 0.5, precision 0.5, recall 1.0 → continuous mean 0.667 < perfect's 1.0.
       assert mis.dimensions["behavioral"]["score"] < clean.dimensions["behavioral"]["score"]
       assert mis.composite < clean.composite
+    end
+
+    test "behavioral score is continuous: clears every threshold yet scores < 1.0 (loop gradient)" do
+      # PerfectRouter fires iff "GO": 2/3 should-fire hit (one FN), 3/3 should-not held.
+      # → accuracy 0.833, precision 1.0, recall 0.667 — all three thresholds (0.75/0.80/0.60)
+      # cleared, so the OLD `passed/total` score was a flat 1.0 with no gradient. The continuous
+      # mean is 0.833, so the composite sits below the ceiling and the reflective loop can climb.
+      p = proposal(["GO a", "GO b", "do c"], ["quiet x", "quiet y", "quiet z"])
+      {:ok, r} = Faber.Eval.score(p, llm: PerfectRouter, trigger: true)
+
+      b = r.dimensions["behavioral"]
+      assert b["passed"] == 3 and b["failed"] == 0
+      assert_in_delta b["score"], 0.8333, 0.001
+      assert b["score"] < 1.0
+      assert b["metrics"]["precision"] == 1.0
     end
 
     test "omits trigger unless requested" do
