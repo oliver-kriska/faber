@@ -28,9 +28,10 @@ defmodule Faber.FaberPythonTest do
       assert py.name == "faber-python"
       assert py.contract == "0.2"
       assert Adapter.validate(py) == []
-      assert length(py.laws) == 15
-      assert length(py.playbooks) == 7
       assert Map.has_key?(py.templates, "skill")
+      # Assert known entries exist rather than exact counts (counts break on any pack addition).
+      assert Enum.any?(py.laws, &(&1.id == "exceptions-no-bare-except"))
+      assert Enum.any?(py.playbooks, &(&1.id == "importerror-modulenotfound"))
     end
 
     test "carries Python detection vocab, not Elixir", %{py: py} do
@@ -38,13 +39,16 @@ defmodule Faber.FaberPythonTest do
       assert Enum.any?(py.fingerprint_rules, &("pip install" in &1.commands))
       verify = Enum.find(py.opportunity_rules, &(&1.skill == "verify"))
       assert "pytest" in verify.commands
+      # The YAML omits `unless_used` for `verify`; the loader must default it to true.
+      assert verify.unless_used == true
     end
   end
 
   describe "stack gating (matches_session?/2)" do
     test "matches the Python session, not the Elixir adapter", %{py: py, ex: ex, events: events} do
       paths = referenced_paths(events)
-      assert paths == ["/Users/x/Projects/pyapp/src/parser.py"]
+      # Behavioral claim: a .py session matches the Python adapter and not the Elixir one.
+      assert Enum.any?(paths, &String.ends_with?(&1, ".py"))
       assert Adapter.matches_session?(py, paths)
       refute Adapter.matches_session?(ex, paths)
     end

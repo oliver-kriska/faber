@@ -262,6 +262,16 @@ defmodule Faber.DetectTest do
       events = [user("let me run /phx:verify and /py:lint")]
       assert %{used: []} = Detect.opportunity(events, adapter)
     end
+
+    test "a junk (non-binary) namespace entry degrades gracefully, never crashes the scan" do
+      # An in-memory adapter that bypassed `Adapter.validate/1` — the regex build must not raise:
+      # non-binary entries are filtered, valid ones still match.
+      adapter = %Adapter{skill_namespaces: ["py", 42]}
+
+      events = [user("ran /py:lint earlier")]
+      assert %{used: used} = Detect.opportunity(events, adapter)
+      assert "lint" in used
+    end
   end
 
   # P0-T5: the faber-elixir adapter migrates the engine's historical Elixir/plugin defaults into
@@ -314,6 +324,14 @@ defmodule Faber.DetectTest do
         assert Detect.fingerprint(events, a) == Detect.fingerprint(events)
         assert Detect.opportunity(events, a) == Detect.opportunity(events)
       end
+
+      # Absolute snapshots so a JOINT regression (both paths breaking identically) can't pass the
+      # equality checks above — anchor at least one probe to its known result.
+      mix_deps = Enum.at(probes, 2)
+      assert %{type: "maintenance"} = Detect.fingerprint(mix_deps, a)
+
+      verify_loop = Enum.at(probes, 4)
+      assert %{missed: ["verify"]} = Detect.opportunity(verify_loop, a)
     end
   end
 

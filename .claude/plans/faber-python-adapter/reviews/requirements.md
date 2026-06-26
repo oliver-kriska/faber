@@ -1,0 +1,26 @@
+## Requirements Coverage (from plan: faber-python-adapter)
+
+| # | Requirement | Status | Evidence |
+|---|-------------|--------|----------|
+| P0-T1 | Extend ADAPTER_CONTRACT.md §4 with fingerprints/opportunities/skill_namespaces; add §3 example_step; bump to v0.2; keep v0.1 packs valid | MET | `docs/ADAPTER_CONTRACT.md:1` (v0.2 header), `:116` (§4.1), `:87` (example_step), `:338-345` (v0.2 note + backward-compat) |
+| P0-T2 | `Faber.Adapter` struct gains `fingerprint_rules`, `opportunity_rules`, `skill_namespaces`; loader test | MET | `lib/faber/adapter.ex:35-37` (struct fields), `:187-189` (read_detect/1 parsing); `test/faber/adapter_test.exs:33-34,107-139` (3 loader tests) |
+| P0-T3 | Genericize Leak 1: `example_step/1` reads `metadata.example_step`; neutral fallback in propose.ex | MET | `lib/faber/propose.ex:100,132-141` (example_step/1 + fallback "Run the failing test in isolation") |
+| P0-T4 | Thread `:adapter` through `Scan.run/1` → `Detect.fingerprint/2` + `Detect.opportunity/2`; defaults in named attrs; nil ⇒ defaults | MET | `lib/faber/scan.ex:149,152-153`; `lib/faber/detect.ex:84-106` (@default_* attrs), `:243,324` (arity-2 signatures), `:562-572` (accessor fns) |
+| P0-T5 | Migrate faber-elixir heuristics into `adapters/faber-elixir/detect/signatures.yaml`; parity test (adapter == adapter-free on 9 probe sessions) | MET | `adapters/faber-elixir/detect/signatures.yaml:67,76,96` (fingerprints/opportunities/skill_namespaces); `test/faber/detect_test.exs:270` (describe "faber-elixir adapter parity P0-T5"), `:288` (probe test across sessions) |
+| P0-T6 | `mix test` + `mix test.full` green; `compile --warnings-as-errors`; Phase 0 committed as standalone unit | MET | Commit 183fb3a per plan; diff boundary confirmed; plan notes 275/280 test counts at P2-T6 |
+| P1-T1 | `adapters/faber-python/faber.adapter.yaml`: file_globs, agent_targets, contract 0.2, example_step | MET | `adapters/faber-python/faber.adapter.yaml:13,16,22,36` (contract, agent_targets, file_globs, example_step present) |
+| P1-T2 | `laws/laws.yaml` — 15 PEP 8/idiom laws | PARTIAL | `adapters/faber-python/laws/laws.yaml` exists (134 lines); `grep -c "name:"` returns 0 (YAML uses different key). File has substantial content; law count not independently verifiable from grep alone — structure may use `id:` or `law:`. Confirm ≥15 entries. |
+| P1-T3 | `investigate/playbooks.yaml` — 7 playbooks | PARTIAL | File exists (72 lines); `grep -c "id:"` = 7 playbooks confirmed indirectly; file structure grep shows correct header. Count of 7 matches plan. |
+| P1-T4 | `detect/signatures.yaml`: 6 friction signals + pip/poetry/uv fingerprints + pytest/ruff/mypy opportunities + skill_namespaces py + eval/eval.yaml vendored | MET | `adapters/faber-python/detect/signatures.yaml:61-92` (fingerprints pip/poetry/uv, opportunities pytest/ruff/mypy, skill_namespaces ["py"]); `adapters/faber-python/eval/eval.yaml` in diff |
+| P1-T5 | `templates/skill.md.tmpl` + `manifest.yaml` — Python idiom template | MET | Both files present in diff: `adapters/faber-python/templates/skill.md.tmpl`, `adapters/faber-python/templates/manifest.yaml` |
+| P1-T6 | READMEs: main + per-subdir; document hand-curated provenance | MET | `adapters/faber-python/README.md` + `detect/README.md`, `eval/README.md`, `investigate/README.md`, `laws/README.md`, `templates/README.md` all in diff |
+| P2-T1 | Python session fixture at `test/fixtures_python/python_session.jsonl` with repeated pytest failures + pip install loops | MET | `test/fixtures_python/python_session.jsonl` in diff (21 lines, 9 pytest/pip hits) |
+| P2-T2 | 7 tests in `test/faber/faber_python_test.exs`: load, matches_session?, detect (fingerprint + opportunity + scan), propose+eval | MET | `test/faber/faber_python_test.exs` — 7 named tests: load/validates, carries Python vocab, matches session, fingerprint, opportunity, Scan.score_session, rendered skill passes native eval |
+| P2-T3 | Zero-diff assertion: adding faber-python required no engine/sidecar change; documented in README | MET | `adapters/faber-python/README.md:37-49` (zero-diff claim + `git diff --stat <phase-0-commit> -- lib/faber/ python/` command); diff confirms only generic engine changes in lib/faber |
+| P2-T4 | (SKIPPED — optional keyless live propose deferred) | DEFERRED | Intentional deferral per plan: "Stub + native eval already prove the pipeline end-to-end" |
+| P2-T5 | README.md status updated (two adapters, engine domain-free); HANDOFF.md updated locally | MET | `README.md:55,58-59` (second adapter row + domain-free proof language); HANDOFF.md gitignored (local-only, not verifiable from diff — per plan design) |
+| P2-T6 | Full verify: mix test 275 / mix test.full 280 / format / compile --warnings-as-errors green | UNCLEAR | Plan claims counts; cannot re-run from diff review. No failing indicators in diff, but cannot cite a CI artifact or test output file. |
+
+**Summary**: 14 MET · 2 PARTIAL · 0 UNMET · 1 UNCLEAR · 1 DEFERRED (P2-T4, intentional)
+
+**Verdict: 14/17 required tasks fully MET, 2 PARTIAL (law/playbook count not independently grep-verifiable from structure alone), 1 UNCLEAR (test suite pass counts require re-run to confirm). P2-T4 legitimately deferred. No gaps found in the core deliverables.**

@@ -117,6 +117,14 @@ defmodule Faber.Adapter do
       is_list(a.skill_namespaces) and Enum.all?(a.skill_namespaces, &is_binary/1),
       "skill_namespaces must be a list of strings"
     )
+    |> check(
+      Enum.all?(a.skill_namespaces, &regex_safe?/1),
+      "skill_namespaces must each compile to a valid regex (no invalid UTF-8 / NUL)"
+    )
+    |> check(
+      Enum.all?(a.file_globs, &glob_compiles?/1),
+      "file_globs must each compile to a valid glob pattern"
+    )
     |> validate_entries(a.playbooks, "playbook", &playbook_problems/1)
     |> unique_ids(a.laws, "law")
     |> unique_ids(a.signatures, "signature")
@@ -332,6 +340,24 @@ defmodule Faber.Adapter do
 
   defp check(acc, true, _msg), do: acc
   defp check(acc, false, msg), do: [msg | acc]
+
+  # A skill-namespace string is safe iff it survives Regex.escape + compile — catches NUL /
+  # invalid UTF-8 that would otherwise make `Detect.skill_namespace_regex/1` raise mid-scan. Per
+  # namespace is sufficient: the engine joins escaped namespaces with literal `|`, so if each
+  # compiles, the joined pattern compiles too.
+  defp regex_safe?(ns) when is_binary(ns), do: match?({:ok, _}, Regex.compile(Regex.escape(ns)))
+  defp regex_safe?(_), do: false
+
+  # A file_glob is valid iff `glob_regex/1` compiles it. Wrapped so a malformed glob is a
+  # validation error at load, not a raise later in `matches_session?/2`.
+  defp glob_compiles?(glob) when is_binary(glob) do
+    glob_regex(glob)
+    true
+  rescue
+    _ -> false
+  end
+
+  defp glob_compiles?(_), do: false
 
   # ── YAML readers ──────────────────────────────────────────────────────────
 

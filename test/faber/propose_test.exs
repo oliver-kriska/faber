@@ -3,6 +3,8 @@ defmodule Faber.ProposeTest do
 
   alias Faber.{Adapter, Propose, Proposal, Scan}
 
+  @reference_adapter Path.expand("../../adapters/faber-elixir", __DIR__)
+
   # Namespaced module-level double (not defined inside a test body — that pollutes the global atom
   # table and can collide across async runs).
   defmodule FailingLLM do
@@ -294,7 +296,7 @@ defmodule Faber.ProposeTest do
     end
 
     test "the real faber-elixir template produces a complete, eval-passing skill" do
-      {:ok, adapter} = Adapter.load("adapters/faber-elixir")
+      {:ok, adapter} = Adapter.load(@reference_adapter)
       {:ok, p} = Propose.propose(result(), adapter)
       md = Propose.render_skill_md(p, adapter)
 
@@ -308,7 +310,7 @@ defmodule Faber.ProposeTest do
     end
 
     test "the real faber-elixir template presence-gates Workflow/Patterns" do
-      {:ok, adapter} = Adapter.load("adapters/faber-elixir")
+      {:ok, adapter} = Adapter.load(@reference_adapter)
       {:ok, base} = Propose.propose(result(), adapter)
 
       # Absent → the headers must not appear (the bug dogfooding caught: dangling empty sections).
@@ -334,7 +336,7 @@ defmodule Faber.ProposeTest do
     end
 
     test "the real faber-elixir template's Usage fence passes has_examples" do
-      {:ok, adapter} = Adapter.load("adapters/faber-elixir")
+      {:ok, adapter} = Adapter.load(@reference_adapter)
       {:ok, p} = Propose.propose(result(), adapter)
       md = Propose.render_skill_md(p, adapter)
 

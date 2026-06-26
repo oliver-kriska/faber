@@ -70,6 +70,24 @@ defmodule Faber.AdapterTest do
       assert Enum.any?(problems, &(&1 =~ "severity"))
       assert Enum.any?(problems, &(&1 =~ "duplicate law ids"))
     end
+
+    test "rejects file_globs / skill_namespaces that can't compile to a regex" do
+      bad = %Adapter{
+        name: "x",
+        version: "1.0.0",
+        agent_targets: ["claude-code"],
+        # A non-string glob can't compile; a non-string namespace can't be escaped — both must be
+        # caught at load (validate/1), not raise later in matches_session?/2 or a scan.
+        file_globs: [123],
+        skill_namespaces: [456],
+        metadata: %{},
+        dir: "/tmp/x"
+      }
+
+      problems = Adapter.validate(bad)
+      assert Enum.any?(problems, &(&1 =~ "file_globs must each compile"))
+      assert Enum.any?(problems, &(&1 =~ "skill_namespaces must each compile"))
+    end
   end
 
   describe "load/1 errors" do

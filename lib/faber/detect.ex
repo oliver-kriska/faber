@@ -31,6 +31,7 @@ defmodule Faber.Detect do
   | `interrupted_requests` | 1.0 | `[Request interrupted by user]` occurrences |
   """
 
+  alias Faber.Adapter
   alias Faber.Ingest.Event
 
   @sigmoid_k 3.0
@@ -565,20 +566,38 @@ defmodule Faber.Detect do
   # owns its detection vocab verbatim — including an empty list, which means "none for this
   # stack" (e.g. a stack with no skill namespaces). The reference adapter restates the defaults.
   defp fingerprint_rules(nil), do: @default_fingerprint_rules
-  defp fingerprint_rules(adapter), do: Map.get(adapter, :fingerprint_rules) || []
+  defp fingerprint_rules(%Adapter{fingerprint_rules: rules}), do: rules
 
   defp opportunity_rules(nil), do: @default_opportunity_rules
-  defp opportunity_rules(adapter), do: Map.get(adapter, :opportunity_rules) || []
+  defp opportunity_rules(%Adapter{opportunity_rules: rules}), do: rules
 
   defp skill_namespaces(nil), do: @default_skill_namespaces
-  defp skill_namespaces(adapter), do: Map.get(adapter, :skill_namespaces) || []
+  defp skill_namespaces(%Adapter{skill_namespaces: namespaces}), do: namespaces
 
   # Build the `(?:ns1|ns2):skill` extraction regex from a namespace list. Namespaces are escaped
   # so they're matched literally. For the default `~w(phx ecto lv)` this is byte-identical to the
   # original literal `~r/(?:phx|ecto|lv):([a-z][a-z0-9_-]*)/i`.
+  #
+  # Fails CLOSED: a malformed adapter pack can't crash a scan — it degrades to a never-match
+  # regex. `Adapter.validate/1` rejects such packs at load, so this is defense in depth for an
+  # adapter built in-memory rather than via `load/1`. Non-binary entries are filtered (so
+  # `Regex.escape` can't raise); an all-junk / empty alternation and any compile failure both
+  # collapse to never-match.
+  #
+  # The alternation shape (`(?:a|b):…`) has no nested quantifier, so it is not ReDoS-catastrophic;
+  # packs are local, trusted repo files today. If adapters ever arrive over a network, add a
+  # length cap on `skill_namespaces` in `Adapter.validate/1`.
   defp skill_namespace_regex(namespaces) do
-    alt = Enum.map_join(namespaces, "|", &Regex.escape/1)
-    Regex.compile!("(?:#{alt}):([a-z][a-z0-9_-]*)", "i")
+    case namespaces |> Enum.filter(&is_binary/1) |> Enum.map_join("|", &Regex.escape/1) do
+      "" ->
+        ~r/(?!)/
+
+      alt ->
+        case Regex.compile("(?:#{alt}):([a-z][a-z0-9_-]*)", "i") do
+          {:ok, re} -> re
+          {:error, _} -> ~r/(?!)/
+        end
+    end
   end
 
   defp count(counts, key), do: Map.get(counts, key, 0)
