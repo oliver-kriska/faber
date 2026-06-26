@@ -54,7 +54,7 @@ defmodule Faber.Ingest.Format.OpenCode do
   @query "SELECT m.id AS id, m.session_id AS session_id, " <>
            "json_extract(m.data,'$.role') AS role, p.data AS part " <>
            "FROM message m LEFT JOIN part p ON p.message_id = m.id " <>
-           "ORDER BY m.time_created, p.time_created"
+           "ORDER BY m.time_created, m.id, p.time_created"
 
   @impl true
   def default_base, do: @default_base
@@ -121,10 +121,21 @@ defmodule Faber.Ingest.Format.OpenCode do
     logical = %{"role" => first["role"], "parts" => parts}
     {:ok, %{normalize(logical) | session_id: sid}}
   rescue
-    e -> {:error, %{line: rows, reason: Exception.message(e)}}
+    # `rows` is the function parameter (non-empty per the head pattern) — identify the failing
+    # message by its id, not by embedding the whole row group in the error payload.
+    e -> {:error, %{line: hd(rows)["id"], reason: Exception.message(e)}}
   end
 
-  defp decode_part(json) when is_binary(json), do: Jason.decode!(json, keys: :strings)
+  # A malformed part is skipped (decodes to `%{}`, which has no `"type"` so every extractor ignores
+  # it) rather than failing the whole message — one corrupt part shouldn't drop a turn's signal.
+  defp decode_part(json) when is_binary(json) do
+    case Jason.decode(json, keys: :strings) do
+      {:ok, decoded} -> decoded
+      {:error, _} -> %{}
+    end
+  end
+
+  defp decode_part(_), do: %{}
 
   @doc """
   Normalize one logical OpenCode message (`%{"role" => role, "parts" => [part, …]}`, string keys)
@@ -198,7 +209,8 @@ defmodule Faber.Ingest.Format.OpenCode do
   defp map_tool("grep", input, id), do: %{name: "Grep", input: input, id: id}
   defp map_tool("glob", input, id), do: %{name: "Glob", input: input, id: id}
 
-  defp map_tool(name, input, id), do: %{name: name || "UnknownTool", input: input, id: id}
+  defp map_tool(name, input, id) when is_binary(name), do: %{name: name, input: input, id: id}
+  defp map_tool(_name, input, id), do: %{name: "UnknownTool", input: input, id: id}
 
   # OpenCode's file tools use `filePath`; accept a couple of fallbacks defensively.
   defp file_arg(input), do: input["filePath"] || input["file_path"] || input["path"]

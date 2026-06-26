@@ -198,6 +198,18 @@ defmodule Faber.Ingest.Format.GeminiTest do
 
       assert jsonl in Gemini.discover(dir)
     end
+
+    test "a .jsonl file with no embedded id derives the session id WITHOUT the extension" do
+      # session_id falls back to the filename; basename/2 with ".json" would leave a ".jsonl" id
+      # like "gem-path-…jsonl" — rootname must strip the full extension.
+      jsonl = Path.join(System.tmp_dir!(), "gem-path-#{System.unique_integer([:positive])}.jsonl")
+      File.write!(jsonl, ~s({"messages":[{"type":"user","content":"hi"}]}))
+      on_exit(fn -> File.rm(jsonl) end)
+
+      [{:ok, %Event{session_id: sid}}] = jsonl |> Gemini.stream_file!() |> Enum.to_list()
+      assert sid == Path.basename(jsonl, ".jsonl")
+      refute sid =~ ~r/\.jsonl?$/
+    end
   end
 
   describe "end-to-end scan" do

@@ -141,7 +141,9 @@ defmodule Faber.Ingest.Format.Gemini do
   defp decode_message(map, sid) when is_map(map), do: {:ok, %{normalize(map) | session_id: sid}}
   defp decode_message(other, _sid), do: {:error, %{line: other, reason: {:not_an_object, other}}}
 
-  defp session_id_from_path(path), do: path |> Path.basename(".json")
+  # Strip the trailing extension whether the file is `.json` or `.jsonl` (basename/2 with ".json"
+  # would leave a `.jsonl` file's id as "foo.jsonl"); rootname drops the last extension either way.
+  defp session_id_from_path(path), do: path |> Path.basename() |> Path.rootname()
 
   @doc """
   Normalize one decoded Gemini message (string keys) into an `Event`.
@@ -262,7 +264,8 @@ defmodule Faber.Ingest.Format.Gemini do
   defp map_tool("glob", args, id), do: %{name: "Glob", input: args, id: id}
   defp map_tool("search_file_content", args, id), do: %{name: "Grep", input: args, id: id}
 
-  defp map_tool(name, args, id), do: %{name: name || "UnknownTool", input: args, id: id}
+  defp map_tool(name, args, id) when is_binary(name), do: %{name: name, input: args, id: id}
+  defp map_tool(_name, args, id), do: %{name: "UnknownTool", input: args, id: id}
 
   # Gemini's file tools use varied path keys across tools/versions.
   defp file_arg(args), do: args["file_path"] || args["absolute_path"] || args["path"]

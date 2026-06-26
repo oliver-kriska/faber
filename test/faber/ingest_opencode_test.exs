@@ -80,6 +80,13 @@ defmodule Faber.Ingest.Format.OpenCodeTest do
       assert %{name: "webfetch"} = tu
     end
 
+    test "a non-binary tool name (corrupt record) coerces to UnknownTool, not a non-string name" do
+      # The `tool` field should be a string; a corrupt record could carry a number. The canonical
+      # name must stay a String.t() (the tool_use contract) rather than passing the raw value through.
+      [tu] = OpenCode.normalize(m("assistant", [tool(123, %{}, "completed")])).tool_uses
+      assert %{name: "UnknownTool"} = tu
+    end
+
     test "a record without a role/parts degrades to an inert event (raw preserved)" do
       assert %Event{raw: %{"foo" => 1}} = OpenCode.normalize(%{"foo" => 1})
     end

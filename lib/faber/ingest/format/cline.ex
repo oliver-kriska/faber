@@ -178,7 +178,8 @@ defmodule Faber.Ingest.Format.Cline do
 
   # Unknown / non-friction tools (list_files, ask_followup_question, attempt_completion,
   # use_mcp_tool, browser_action, …) keep their name so they still count toward tool_count.
-  defp map_tool(name, input, id), do: %{name: name || "UnknownTool", input: input, id: id}
+  defp map_tool(name, input, id) when is_binary(name), do: %{name: name, input: input, id: id}
+  defp map_tool(_name, input, id), do: %{name: "UnknownTool", input: input, id: id}
 
   # ── shared helpers ───────────────────────────────────────────────────────────────────────────
 
