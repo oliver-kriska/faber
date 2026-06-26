@@ -76,3 +76,61 @@ optimize against, which the loop does not yet carry.
 - KB: `research/gepa.md`, `patterns/bounded-factor-level-prompt-optimization.md`
   (`Hand-Rolled Bundle Prompt Optimization Pattern (Elixir)`, `Constrained Multi-Objective Prompt
   Selection` are the linked next-step patterns).
+
+---
+
+## Decision-gate resolution (2026-06-26): defer GEPA — do NOT wire `dspy.GEPA` now
+
+Revisiting the post-v1 open step *"Compare GEPA vs reflective on a fixture: is the extra cost worth
+it?"* before writing any dspy code. **Resolution: keep GEPA as the capability-gated `not_implemented`
+seam it already is. Do not implement `_run_gepa_live` or the `:live_api` integration yet.** The
+deferral is reaffirmed, now with explicit, falsifiable revisit conditions.
+
+### Why (the decision rests on regime, not effort)
+
+1. **Regime mismatch is the whole argument.** GEPA's measured edge (6–19pp over GRPO, ~35× fewer
+   rollouts) and its KB-recommended use (`tools/dspy.md`: enaia's factorized CFG-constrained
+   *extraction*) live in the **stochastic-evaluator, multi-objective, dataset-driven** regime.
+   Faber's skill eval is **deterministic + single-document**. Per
+   `[[deterministic-eval-sidesteps-variance]]`: deterministic evaluator ⇒ a greedy strict-improvement
+   reflective loop "is fine and cheap"; the variance machinery GEPA brings solves a problem Faber
+   does not have.
+
+2. **The keyless loop already has GEPA's mechanism that matters here.** `Optimize.reflect/3` does
+   credit-assignment from the eval (weakest dimension + failed checks → targeted feedback) → a
+   factor-level reflective edit → strict-improvement git ratchet. What it lacks vs GEPA — a Pareto
+   front over *instances* and accumulated cross-candidate lessons — has no payoff on a single
+   deterministically-scored document (the loop carries one finding, not a dataset).
+
+3. **Cross-project precedent says optimization is a cleanup pass, not the main loop.** enaia's
+   waterbed analysis (7-iter loop, **14% success**, fixing one field regressed others) and its
+   decision — *"prompt optimization should become a cleanup pass that earns the last stability
+   points where the signal is real, not the main optimization loop"* — are the cautionary prior.
+   That waterbed/regression is precisely the multi-objective stochastic pain GEPA's Pareto front
+   addresses; Faber's deterministic composite + revert ratchet already sidesteps it.
+
+4. **Cost & boundary.** Live GEPA breaks the stdlib-only keyless sidecar contract (needs `dspy` + a
+   paid key) and spends real tokens per rollout for an exploratory, post-v1 engine. The
+   `_run_gepa_live` surface also carries a **known dspy API-drift risk** (the `max_metric_calls`
+   vs `auto`/`max_full_evals` budget kwarg and a likely-required `reflection_lm=`), so enabling it
+   is non-trivial *and* unvalidated.
+
+### The cheap test that should precede any GEPA build
+
+The "is it worth it?" gate cannot be answered by building GEPA blindly. The cheap, in-regime proxy:
+**measure the keyless reflective loop's ceiling on real skills.** If `Optimize.reflect/3` already
+reaches composite ≈ gate (the dogfood run took `clarity` 0.50→1.00 structurally) on representative
+proposals, there is little headroom left for GEPA to capture and the spend is unjustified. Only a
+*measured material plateau below the gate* makes GEPA worth evaluating.
+
+### Falsifiable conditions to revisit (any one flips the decision)
+
+- A **stochastic dimension enters the default gate** (e.g. LLM-judged trigger/behavioral accuracy
+  stops being opt-in) → variance returns → GEPA's machinery starts to earn its cost.
+- The loop optimizes against a **set of findings at once** (multi-instance) → a Pareto front over
+  instances becomes meaningful (today the loop carries a single finding).
+- The reflective loop is **measured to plateau materially below the eval gate** on real skills →
+  real headroom exists for a heavier optimizer.
+
+Until one of these holds, the v1 posture stands: keyless reflective loop is the optimizer; GEPA stays
+a documented, tested-at-the-boundary, `not_implemented` seam.

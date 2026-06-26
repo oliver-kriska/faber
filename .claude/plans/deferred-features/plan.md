@@ -208,9 +208,9 @@ gated, degrading to `not_implemented` when absent (the current behavior).
 - [x] Decide cost guardrails (budget/rollouts cap; this spends real tokens). — `clamp_rollouts` default 8 / max 40.
 - [x] Optional `gepa` extra; `optimize` returns `not_implemented` unless dspy + key present.
 - [x] Python unit tests (mock LM) for the orchestration (metric/budget/gate/shape).
-- [ ] Implement the live `dspy.GEPA` program with the eval matchers as the metric. **(open, post-v1)**
-- [ ] Elixir: `:live_api` integration through `Optimize.run/2`. **(open, post-v1)**
-- [ ] Compare GEPA vs reflective on a fixture: is the extra cost worth it? (decision gate) **(open, post-v1)**
+- [~] Implement the live `dspy.GEPA` program with the eval matchers as the metric. **(DEFERRED — gated by the decision below)**
+- [~] Elixir: `:live_api` integration through `Optimize.run/2`. **(DEFERRED — gated by the decision below)**
+- [x] Compare GEPA vs reflective on a fixture: is the extra cost worth it? (decision gate) — **RESOLVED 2026-06-26: DEFER GEPA.** Regime mismatch (Faber's eval is deterministic + single-document; GEPA's edge is in the stochastic / multi-objective / dataset regime, per the enaia precedent), the keyless reflective loop already carries the credit-assignment mechanism that matters, and live GEPA breaks the keyless boundary + spends tokens for uncertain headroom. Cheap pre-req before any build: measure the reflective loop's ceiling on real skills. Falsifiable revisit conditions in `.claude/research/2026-06-23-gepa-reflective-loop-decision.md`.
 
 **Tests:** Python optimizer with a mocked LM (deterministic); gated live run; Elixir parity for the
 request/response.
