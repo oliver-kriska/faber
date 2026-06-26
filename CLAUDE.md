@@ -94,3 +94,14 @@ reference adapter source.
   for the actual input shape (e.g. `Regex.escape`'d strings don't fail `Regex.compile`); fix the
   real edge and say so. See
   `.claude/solutions/2026-06-26-elixir-regex-escape-compile-validate-boundary.md`.
+- **A behavioral eval dimension must reward continuously, and pool over a stochastic objective.**
+  Trigger-accuracy (`Faber.Eval.Trigger`) routes fixtures through a real LLM — a *noisy* classifier
+  (same skill scored 0.75 then 1.0 across runs). Two consequences the loop depends on: (1) score it
+  as a **continuous** mean of accuracy/precision/recall, not `passed/total` over pass/fail thresholds
+  — a step-function pins at 1.0 and leaves the reflective loop no gradient; (2) use precision's
+  sklearn `zero_division=0` convention so a never-fires skill isn't handed a vacuous 1.0 that inflates
+  its behavioral score (~+0.33, empirically reproduced). Because one call is a single Bernoulli draw,
+  optimize a **pooled** estimate (`trigger_samples: N` micro-averages N runs + reports `σ`), never one
+  draw — a greedy keep/revert over a single sample banks lucky noise. Behavioral weight stays `0.10`
+  so it never sinks a structurally-sound skill. See
+  `.claude/research/2026-06-26-dogfood-real-friction-correction-ledger.md`.

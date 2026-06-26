@@ -73,8 +73,12 @@ Elixir** (no `python3` on the hot path). Opt into the network path with
 
 Trigger-accuracy eval is implemented as an opt-in **behavioral** dimension (`Eval.score(…,
 trigger: true)`): it runs the proposal's `should_trigger`/`should_not_trigger` fixtures through the
-configured LLM and folds precision/recall into the composite. It's off the structural hot path (one
-LLM call per fixture), and covered by `eval_trigger_test` plus the live tests.
+configured LLM and folds a **continuous** score — the mean of accuracy/precision/recall — into the
+composite (weight `0.10`, so it never sinks a structurally-sound skill; precision uses the sklearn
+`zero_division=0` convention so a never-fires skill isn't rewarded). Because routing is stochastic,
+`trigger_samples: N` (`mix faber.propose --trigger-samples N`) repeats the eval N times and **pools**
+the result into a stable estimate with a reported `σ`. It's off the structural hot path (one LLM call
+per fixture per sample), and covered by `eval_trigger_test` plus the live tests.
 
 **Known runtime gaps** (wired + tested with stubs; live use needs the runtime): the GEPA
 `optimize` command is implemented as a capability-gated seam — its orchestration (the eval-matcher
