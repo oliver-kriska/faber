@@ -22,6 +22,8 @@ metadata:
   description: >-
     Reference adapter for Elixir/Phoenix projects. Supplies the stack's Iron Laws,
     investigation playbooks, friction signatures, and stack-specific eval criteria.
+  # A stack-idiomatic worked example for the proposer's `workflow:` instruction (contract §3).
+  example_step: "Run the failing test in isolation with `mix test path:line`"
   homepage: "https://github.com/your-org/elixir-live-claude-engineer"
   # Provenance: the upstream this adapter is extracted from by reference (read-only).
   source_repo: "/Users/oliverkriska/Projects/elixir-live-claude-engineer"

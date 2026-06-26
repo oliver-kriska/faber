@@ -56,3 +56,41 @@ signatures:
     body: >-
       Occurrences of "[Request interrupted by user]" (native weight 1.0). The user aborted
       the agent mid-action — a mild friction signal.
+
+# ── Detection vocab (contract §4.1) ──────────────────────────────────────────
+# Extracted BY REFERENCE from the plugin's compute-metrics.py (compute_fingerprint /
+# compute_plugin_opportunity) and the plugin's `phx|ecto|lv` skill namespaces. These restate
+# the engine's historical Elixir/plugin defaults as adapter data, so the engine itself stays
+# domain-free while faber-elixir's behavior is unchanged (proven by the parity test).
+
+# Command → session-type bonus (compute_fingerprint's mix-deps/hex and gh-pr/issue bonuses).
+fingerprints:
+  - type: maintenance
+    commands: ["mix deps", "mix hex"]
+    bonus: 3.0
+  - type: review
+    commands: ["gh pr", "gh issue"]
+    bonus: 3.0
+
+# Missed-automation → plugin skill (compute_plugin_opportunity). Order is the reported order.
+opportunities:
+  - skill: investigate
+    when: retry_loops
+    unless_used: false          # the source suggests investigate even when already used
+  - skill: plan
+    when: tool_count
+    threshold: 50
+  - skill: verify
+    when: commands
+    commands: ["mix test", "mix compile"]
+    threshold: 3
+  - skill: pr-review
+    when: commands
+    commands: ["gh pr"]
+    threshold: 2
+  - skill: review
+    when: edit_count
+    threshold: 10
+
+# The plugin's skill-command namespaces, scanned as `(?:phx|ecto|lv):skill` in session text.
+skill_namespaces: ["phx", "ecto", "lv"]

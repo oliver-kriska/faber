@@ -84,6 +84,9 @@ defmodule Faber.Scan do
     * `:dedupe` — collapse rows sharing a `session_id` to the richest one (default `true`)
     * `:rank_by` — `:raw` (total friction, favors long sessions; default) or `:rate`
       (`raw / message_count`, surfaces *concentrated* friction)
+    * `:adapter` — an optional `%Faber.Adapter{}` whose detection vocab (contract §4.1) drives
+      fingerprint command-bonuses, opportunity→skill rules, and skill-namespace extraction.
+      Absent ⇒ the engine's generic defaults (adapter-free behavior, unchanged).
   """
   @spec run(keyword()) :: [Result.t()]
   def run(opts \\ []) do
@@ -143,10 +146,11 @@ defmodule Faber.Scan do
   @spec score_session(Source.handle(), keyword()) :: Result.t()
   def score_session(handle, opts \\ []) do
     source = Source.resolve(opts)
+    adapter = opts[:adapter]
     {events, parse_errors} = source.parse(handle, opts)
     f = Detect.friction(events)
-    fp = Detect.fingerprint(events)
-    op = Detect.opportunity(events)
+    fp = Detect.fingerprint(events, adapter)
+    op = Detect.opportunity(events, adapter)
     ctx = Detect.context(events)
 
     %Result{

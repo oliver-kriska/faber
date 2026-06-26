@@ -32,6 +32,9 @@ defmodule Faber.Adapter do
           metadata: map(),
           laws: [map()],
           signatures: [map()],
+          fingerprint_rules: [map()],
+          opportunity_rules: [map()],
+          skill_namespaces: [String.t()],
           playbooks: [map()],
           eval: map() | nil,
           templates: %{optional(String.t()) => String.t()},
@@ -46,6 +49,12 @@ defmodule Faber.Adapter do
             metadata: %{},
             laws: [],
             signatures: [],
+            # Detection vocab (contract §4.1): stack-specific fingerprint command-bonuses,
+            # opportunity→skill rules, and skill namespaces. Empty ⇒ engine defaults apply
+            # only when this adapter isn't selected (see `Faber.Detect`).
+            fingerprint_rules: [],
+            opportunity_rules: [],
+            skill_namespaces: [],
             playbooks: [],
             eval: nil,
             templates: %{},
@@ -61,11 +70,11 @@ defmodule Faber.Adapter do
   def load(dir) do
     with {:ok, manifest} <- read_yaml(Path.join(dir, "faber.adapter.yaml")),
          laws <- read_list(Path.join(dir, "laws/laws.yaml"), "laws"),
-         signatures <- read_list(Path.join(dir, "detect/signatures.yaml"), "signatures"),
+         detect <- read_detect(Path.join(dir, "detect/signatures.yaml")),
          playbooks <- read_list(Path.join(dir, "investigate/playbooks.yaml"), "playbooks"),
          eval <- read_optional_yaml(Path.join(dir, "eval/eval.yaml")),
          templates <- read_templates(Path.join(dir, "templates")),
-         adapter <- build(dir, manifest, laws, signatures, playbooks, eval, templates),
+         adapter <- build(dir, manifest, detect, laws, playbooks, eval, templates),
          [] <- validate(adapter) do
       {:ok, adapter}
     else
@@ -102,6 +111,12 @@ defmodule Faber.Adapter do
     )
     |> validate_entries(a.laws, "law", &law_problems/1)
     |> validate_entries(a.signatures, "signature", &signature_problems/1)
+    |> validate_entries(a.fingerprint_rules, "fingerprint", &fingerprint_problems/1)
+    |> validate_entries(a.opportunity_rules, "opportunity", &opportunity_problems/1)
+    |> check(
+      is_list(a.skill_namespaces) and Enum.all?(a.skill_namespaces, &is_binary/1),
+      "skill_namespaces must be a list of strings"
+    )
     |> validate_entries(a.playbooks, "playbook", &playbook_problems/1)
     |> unique_ids(a.laws, "law")
     |> unique_ids(a.signatures, "signature")
@@ -159,7 +174,7 @@ defmodule Faber.Adapter do
 
   # ── building ──────────────────────────────────────────────────────────────
 
-  defp build(dir, manifest, laws, signatures, playbooks, eval, templates) do
+  defp build(dir, manifest, detect, laws, playbooks, eval, templates) do
     %Adapter{
       name: manifest["name"],
       version: manifest["version"],
@@ -168,7 +183,10 @@ defmodule Faber.Adapter do
       contract: manifest["contract"],
       metadata: manifest["metadata"] || %{},
       laws: Enum.map(laws, &law/1),
-      signatures: Enum.map(signatures, &signature/1),
+      signatures: Enum.map(detect.signatures, &signature/1),
+      fingerprint_rules: Enum.map(detect.fingerprints, &fingerprint_rule/1),
+      opportunity_rules: Enum.map(detect.opportunities, &opportunity_rule/1),
+      skill_namespaces: detect.skill_namespaces,
       playbooks: Enum.map(playbooks, &playbook/1),
       eval: eval,
       templates: templates,
@@ -206,6 +224,30 @@ defmodule Faber.Adapter do
     %{id: m["id"], severity: m["severity"], weight: m["weight"], body: m["body"]}
   end
 
+  # A fingerprint command-bonus rule (contract §4.1): when any `commands` substring appears in
+  # the session's Bash calls, add `bonus` to `type`'s fingerprint score.
+  defp fingerprint_rule(m) when is_map(m) do
+    %{type: m["type"], commands: m["commands"] || [], bonus: m["bonus"]}
+  end
+
+  # An opportunity→skill rule (contract §4.1). `when` is mapped to a closed set of atoms the
+  # engine dispatches on; anything else stays a string so validation can flag it.
+  defp opportunity_rule(m) when is_map(m) do
+    %{
+      skill: m["skill"],
+      when: atomize_when(m["when"]),
+      commands: m["commands"] || [],
+      threshold: m["threshold"],
+      unless_used: Map.get(m, "unless_used", true)
+    }
+  end
+
+  defp atomize_when("retry_loops"), do: :retry_loops
+  defp atomize_when("tool_count"), do: :tool_count
+  defp atomize_when("edit_count"), do: :edit_count
+  defp atomize_when("commands"), do: :commands
+  defp atomize_when(other), do: other
+
   defp playbook(m) when is_map(m) do
     %{id: m["id"], source: m["source"], symptoms: m["symptoms"] || [], body: m["body"]}
   end
@@ -236,6 +278,31 @@ defmodule Faber.Adapter do
     []
     |> req(id, "playbook missing id")
     |> check(is_list(sym), "playbook #{id || "?"} symptoms must be a list")
+  end
+
+  defp fingerprint_problems(%{type: type, bonus: bonus}) do
+    []
+    |> req(type, "fingerprint rule missing type")
+    |> check(is_number(bonus), "fingerprint rule #{type || "?"} bonus must be a number")
+  end
+
+  @opportunity_whens [:retry_loops, :tool_count, :edit_count, :commands]
+
+  defp opportunity_problems(%{skill: skill, when: w} = rule) do
+    []
+    |> req(skill, "opportunity rule missing skill")
+    |> check(
+      w in @opportunity_whens,
+      "opportunity rule #{skill || "?"} 'when' must be one of #{inspect(@opportunity_whens)}"
+    )
+    |> check(
+      w not in [:tool_count, :edit_count, :commands] or is_integer(rule[:threshold]),
+      "opportunity rule #{skill || "?"} requires an integer threshold for when: #{inspect(w)}"
+    )
+    |> check(
+      w != :commands or (is_list(rule[:commands]) and rule[:commands] != []),
+      "opportunity rule #{skill || "?"} with when: commands requires a non-empty commands list"
+    )
   end
 
   defp validate_entries(acc, entries, _label, fun) do
@@ -285,11 +352,32 @@ defmodule Faber.Adapter do
     end
   end
 
-  # Bulk list file (laws.yaml / signatures.yaml / playbooks.yaml). Absent → []. Returns the
-  # top-level list under `key`, or [] if the file or key is missing.
+  # Bulk list file (laws.yaml / playbooks.yaml / templates manifest.yaml). Absent → []. Returns
+  # the top-level list under `key`, or [] if the file or key is missing.
   defp read_list(path, key) do
     case read_optional_yaml(path) do
       %{^key => list} when is_list(list) -> list
+      _ -> []
+    end
+  end
+
+  # `detect/signatures.yaml` carries several sibling top-level keys (contract §4: `signatures`;
+  # §4.1: `fingerprints`, `opportunities`, `skill_namespaces`). Read the file once and project
+  # each. Absent file → all empty (engine-default behavior, see `Faber.Detect`).
+  defp read_detect(path) do
+    yaml = read_optional_yaml(path) || %{}
+
+    %{
+      signatures: list_under(yaml, "signatures"),
+      fingerprints: list_under(yaml, "fingerprints"),
+      opportunities: list_under(yaml, "opportunities"),
+      skill_namespaces: list_under(yaml, "skill_namespaces")
+    }
+  end
+
+  defp list_under(map, key) do
+    case Map.get(map, key) do
+      list when is_list(list) -> list
       _ -> []
     end
   end

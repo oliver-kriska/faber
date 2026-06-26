@@ -1,4 +1,4 @@
-# Faber Adapter Contract (v0.1)
+# Faber Adapter Contract (v0.2)
 
 > The specification for a **Faber adapter pack** — the declarative bundle that teaches the
 > domain-free Faber engine how a specific stack thinks. This document is precise enough to
@@ -84,6 +84,7 @@ metadata:                    # REQUIRED (object; fields below optional unless no
 | `metadata.source_repo` | string | – | Provenance: the upstream this adapter references (path or URL). Read-only (§1). |
 | `metadata.maintainers` | string[] | – | `Name <email>` entries. |
 | `metadata.license` | string | – | SPDX identifier. |
+| `metadata.example_step` | string | – | A stack-idiomatic example of one actionable workflow step (e.g. `"Run the failing test in isolation with \`mix test path:line\`"`). The proposer injects it as the worked example when instructing the LLM to write `workflow:` steps. Omitted → the engine uses a stack-neutral fallback. |
 
 The manifest **must** parse as a single YAML mapping. Unknown **top-level** keys are a
 validation **warning** (likely a typo); unknown keys **under `metadata`** are allowed.
@@ -111,6 +112,72 @@ A signature **must** have a unique `id` within the adapter. No host-language cod
 **Bulk form.** Instead of one file per signature, a `detect/` may provide a single
 `detect/signatures.yaml` holding a top-level `signatures:` list whose entries carry the
 same fields plus a `body` (the prose). See §5.1 for the general bulk-form rule.
+
+### 4.1 Detection vocab (`detect/signatures.yaml` sibling keys) — *new in v0.2*
+
+The friction *signatures* above tune the friction **score** (how painful a session was).
+Three further, **optional** top-level keys in `detect/signatures.yaml` make the engine's
+**fingerprint** (what kind of work the session was) and **opportunity** (which skills could
+have helped) outputs stack-aware too. Without them the engine uses its built-in,
+agent-generic defaults — so v0.1 packs are unaffected. The reference adapter (`faber-elixir`)
+migrates its Elixir/plugin command vocabulary into these keys.
+
+```yaml
+# detect/signatures.yaml — alongside the `signatures:` list
+
+# fingerprints: command → session-type bonus. Each rule adds `bonus` to a fingerprint
+# type's score when ANY of its `commands` appears (substring match) in the session's Bash
+# calls. Layers on top of the engine's generic tool-ratio/keyword fingerprinting.
+fingerprints:
+  - type: maintenance          # the session-type this bonus credits (free-form string)
+    commands: ["mix deps", "mix hex"]
+    bonus: 3.0                  # number; added to that type's running score
+  - type: review
+    commands: ["gh pr", "gh issue"]
+    bonus: 3.0
+
+# opportunities: a missed-automation rule → a suggested skill name. Order is preserved in
+# the reported `missed` list. Each rule fires on ONE `when` condition (below) and, unless
+# `unless_used: false`, only when the session did not already use `skill`.
+opportunities:
+  - skill: investigate
+    when: retry_loops          # 3+ consecutive same-prefix Bash commands
+    unless_used: false         # suggest even if `investigate` was already used (default: true)
+  - skill: plan
+    when: tool_count           # total tool calls  >  threshold
+    threshold: 50
+  - skill: verify
+    when: commands             # count of Bash calls matching ANY `commands`  >=  threshold
+    commands: ["mix test", "mix compile"]
+    threshold: 3
+  - skill: review
+    when: edit_count           # Edit/Write calls  >  threshold
+    threshold: 10
+
+# skill_namespaces: the `ns:` prefixes the engine scans session text for to detect which
+# skills were already used (e.g. `/phx:verify` → `verify`). Replaces a hardcoded regex.
+skill_namespaces: ["phx", "ecto", "lv"]
+```
+
+**`fingerprints[]`** — `type` (string, required), `commands` (string[], required, substring
+matched against Bash command text), `bonus` (number, required). A `type` need not be one of
+the engine's built-in types; novel types are scored and selectable.
+
+**`opportunities[]`** — `skill` (string, required, the suggested skill name) and `when` (one
+of `retry_loops` | `tool_count` | `edit_count` | `commands`, required). `tool_count` and
+`edit_count` require an integer `threshold` and fire on **strictly greater than**.
+`commands` requires a non-empty `commands` list **and** an integer `threshold` and fires on
+**count ≥ threshold**. `retry_loops` takes no threshold. `unless_used` (bool, default
+`true`) suppresses the suggestion when the skill is already in the session's used set.
+
+**`skill_namespaces`** — string[]. The namespace prefixes matched as `(?:ns1|ns2):skill` in
+session text. Absent (no adapter) → the engine default; an adapter that supplies the key
+owns it (an empty list means "this stack has no skill namespaces").
+
+All three keys are **optional**. An adapter may supply any subset; each absent key falls back
+to engine defaults only when **no adapter** is in play. When an adapter *is* selected it owns
+its detection vocab — so the reference adapter must restate the defaults it wants to keep
+(see `adapters/faber-elixir/detect/signatures.yaml`).
 
 ## 5. `laws/` — the stack's non-negotiables
 
@@ -268,6 +335,12 @@ upstream.
 
 ## 9. Versioning this contract
 
-This document is **v0.1** and will change before 1.0. Adapters declare the engine
-contract version they target via an optional top-level `contract: "0.1"` key in the
+This document is **v0.2** and will change before 1.0. Adapters declare the engine
+contract version they target via an optional top-level `contract: "0.2"` key in the
 manifest; if omitted, the engine assumes the latest it supports and may warn.
+
+**v0.1 → v0.2.** Added the optional detection-vocab keys to `detect/signatures.yaml`
+(§4.1: `fingerprints`, `opportunities`, `skill_namespaces`) and the optional
+`metadata.example_step` generation hint (§3). All additions are **optional** and
+backward-compatible — a v0.1 pack is a valid v0.2 pack, and an engine running adapter-free
+behaves exactly as before.

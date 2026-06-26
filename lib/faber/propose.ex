@@ -97,7 +97,7 @@ defmodule Faber.Propose do
     - example: a concrete, runnable snippet of AT LEAST TWO lines — e.g. the command plus the
       check that confirms it worked, or a 2-step invocation — never a bare one-liner.
     - workflow: 3–6 ordered, imperative steps the agent follows when the skill fires (e.g.
-      "Run the failing test in isolation with `mix test path:line`"). Each is one actionable line.
+      "#{example_step(adapter)}"). Each is one actionable line.
     - patterns: 2–4 stack-specific idioms or anti-patterns, each as `Name: do X, not Y` (a concrete
       do/don't), not vague advice.
     - should_trigger / should_not_trigger: realistic user phrasings for routing tests.
@@ -127,6 +127,18 @@ defmodule Faber.Propose do
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n\n")
   end
+
+  # The worked example for the `workflow:` instruction. An adapter supplies a stack-idiomatic
+  # one via `metadata.example_step` (contract §3); otherwise fall back to stack-neutral phrasing
+  # so the engine never leaks a specific stack's command (e.g. `mix test`) into other adapters.
+  defp example_step(%Adapter{metadata: metadata}) when is_map(metadata) do
+    case metadata["example_step"] do
+      step when is_binary(step) and step != "" -> step
+      _ -> "Run the failing test in isolation"
+    end
+  end
+
+  defp example_step(_adapter), do: "Run the failing test in isolation"
 
   defp user_prompt(%Scan.Result{} = r, %Adapter{name: name, version: version}) do
     signals =

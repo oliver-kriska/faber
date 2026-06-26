@@ -1,9 +1,10 @@
 defmodule Faber.DetectTest do
   use ExUnit.Case, async: true
 
-  alias Faber.{Detect, Ingest}
+  alias Faber.{Adapter, Detect, Ingest}
 
   @fixtures Path.expand("../fixtures", __DIR__)
+  @reference_adapter Path.expand("../../adapters/faber-elixir", __DIR__)
 
   defp load(name) do
     {events, []} = Ingest.parse_file(Path.join(@fixtures, name))
@@ -176,6 +177,143 @@ defmodule Faber.DetectTest do
     test "no opportunities yields zero" do
       assert %{score: score, missed: []} = Detect.opportunity([])
       assert score == 0.0
+    end
+  end
+
+  # P0-T4: with an adapter, the detection vocab comes from the adapter (contract §4.1), not the
+  # engine's built-in Elixir/plugin defaults. The default (arity-1) path is covered above.
+  describe "adapter-driven detection vocab (contract §4.1)" do
+    test "fingerprint command-bonuses come from the adapter, not the engine default" do
+      adapter = %Adapter{
+        fingerprint_rules: [%{type: "maintenance", commands: ["pip install"], bonus: 3.0}]
+      }
+
+      # `pip install` (python) fires the adapter's maintenance bonus...
+      events = [user("proceed"), asst([{"Bash", %{"command" => "pip install requests"}}])]
+      assert %{type: "maintenance"} = Detect.fingerprint(events, adapter)
+
+      # ...and the engine's default `mix deps → maintenance` rule is NOT in play under this
+      # adapter: adapter-free it classifies as maintenance, but the python adapter has no such
+      # rule, so only the generic bash-heavy `bug-fix` bonus remains.
+      mix = [user("proceed"), asst([{"Bash", %{"command" => "mix deps.get"}}])]
+      assert %{type: "maintenance"} = Detect.fingerprint(mix)
+      assert %{type: "bug-fix"} = Detect.fingerprint(mix, adapter)
+    end
+
+    test "fingerprint can select an adapter-introduced novel type" do
+      adapter = %Adapter{
+        fingerprint_rules: [%{type: "data-migration", commands: ["alembic"], bonus: 5.0}]
+      }
+
+      events = [user("proceed"), asst([{"Bash", %{"command" => "alembic upgrade head"}}])]
+      assert %{type: "data-migration", confidence: c} = Detect.fingerprint(events, adapter)
+      assert c > 0.0
+    end
+
+    test "opportunity rules come from the adapter, not the engine default" do
+      adapter = %Adapter{
+        opportunity_rules: [
+          %{skill: "py-verify", when: :commands, commands: ["pytest"], threshold: 3}
+        ]
+      }
+
+      pytest = [asst(List.duplicate({"Bash", %{"command" => "pytest -x"}}, 3))]
+      assert %{missed: missed} = Detect.opportunity(pytest, adapter)
+      assert "py-verify" in missed
+
+      # The engine's default `mix test → verify` rule does NOT fire under this adapter.
+      mix = [asst(List.duplicate({"Bash", %{"command" => "mix test"}}, 3))]
+      assert %{missed: []} = Detect.opportunity(mix, adapter)
+    end
+
+    test "unless_used guard is honored per-rule" do
+      adapter = %Adapter{
+        opportunity_rules: [
+          %{
+            skill: "py-verify",
+            when: :commands,
+            commands: ["pytest"],
+            threshold: 1,
+            unless_used: true
+          }
+        ],
+        skill_namespaces: ["py"]
+      }
+
+      events = [user("run /py:py-verify first"), asst([{"Bash", %{"command" => "pytest"}}])]
+      assert %{missed: missed, used: used} = Detect.opportunity(events, adapter)
+      assert "py-verify" in used
+      refute "py-verify" in missed
+    end
+
+    test "skill namespaces come from the adapter" do
+      adapter = %Adapter{skill_namespaces: ["py"]}
+
+      events = [user("let me run /py:lint and also /phx:verify")]
+      assert %{used: used} = Detect.opportunity(events, adapter)
+      assert "lint" in used
+      # `phx:` is the engine default — NOT this adapter's namespace, so it's not extracted.
+      refute "verify" in used
+    end
+
+    test "an empty skill_namespaces list skips text extraction" do
+      adapter = %Adapter{skill_namespaces: []}
+
+      events = [user("let me run /phx:verify and /py:lint")]
+      assert %{used: []} = Detect.opportunity(events, adapter)
+    end
+  end
+
+  # P0-T5: the faber-elixir adapter migrates the engine's historical Elixir/plugin defaults into
+  # detect/signatures.yaml. Running WITH it must reproduce the adapter-free path byte-for-byte —
+  # this is the guard that the migration didn't regress detection.
+  describe "faber-elixir adapter parity (P0-T5)" do
+    setup do
+      assert {:ok, adapter} = Adapter.load(@reference_adapter)
+      %{adapter: adapter}
+    end
+
+    test "the migrated detection vocab loaded onto the struct", %{adapter: a} do
+      assert a.fingerprint_rules == [
+               %{type: "maintenance", commands: ["mix deps", "mix hex"], bonus: 3.0},
+               %{type: "review", commands: ["gh pr", "gh issue"], bonus: 3.0}
+             ]
+
+      assert Enum.map(a.opportunity_rules, & &1.skill) ==
+               ["investigate", "plan", "verify", "pr-review", "review"]
+
+      assert a.skill_namespaces == ["phx", "ecto", "lv"]
+    end
+
+    test "fingerprint + opportunity match the adapter-free defaults on every probe session",
+         %{adapter: a} do
+      # One probe per leaked rule, plus the file fixtures — each must score identically with and
+      # without the adapter (the adapter restates exactly the engine defaults).
+      probes = [
+        load("sample_session.jsonl"),
+        load("smooth_session.jsonl"),
+        [user("update the deps"), asst([{"Bash", %{"command" => "mix deps.get"}}])],
+        [user("check the PR"), asst([{"Bash", %{"command" => "gh pr view 42"}}])],
+        [
+          asst([
+            {"Bash", %{"command" => "mix test"}},
+            {"Bash", %{"command" => "mix compile"}},
+            {"Bash", %{"command" => "mix test"}}
+          ])
+        ],
+        [asst(List.duplicate({"Bash", %{"command" => "gh pr view"}}, 2))],
+        [asst(List.duplicate({"Read", %{}}, 51))],
+        [asst(for i <- 1..11, do: {"Edit", %{"file_path" => "/f#{i}.ex"}})],
+        [
+          user("ran /phx:verify already"),
+          asst(List.duplicate({"Bash", %{"command" => "git x"}}, 3))
+        ]
+      ]
+
+      for events <- probes do
+        assert Detect.fingerprint(events, a) == Detect.fingerprint(events)
+        assert Detect.opportunity(events, a) == Detect.opportunity(events)
+      end
     end
   end
 

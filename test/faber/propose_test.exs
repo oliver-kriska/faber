@@ -88,6 +88,18 @@ defmodule Faber.ProposeTest do
       assert system =~ "workflow:"
       assert system =~ "patterns:"
     end
+
+    test "injects the adapter's example_step, with a stack-neutral fallback" do
+      # No metadata.example_step → neutral phrasing, no leaked stack command (e.g. `mix test`).
+      {neutral, _} = Propose.build_prompt(result(), adapter())
+      assert neutral =~ "Run the failing test in isolation"
+      refute neutral =~ "mix test path:line"
+
+      # An adapter that supplies metadata.example_step gets it verbatim.
+      stacked = %{adapter() | metadata: %{"example_step" => "Run `pytest -x path::test`"}}
+      {system, _} = Propose.build_prompt(result(), stacked)
+      assert system =~ "Run `pytest -x path::test`"
+    end
   end
 
   describe "schema/0" do

@@ -29,6 +29,13 @@ defmodule Faber.AdapterTest do
       assert law.check["kind"] == "regex"
     end
 
+    test "loads the migrated detection vocab (contract §4.1)", %{adapter: a} do
+      assert length(a.fingerprint_rules) == 2
+      assert length(a.opportunity_rules) == 5
+      assert a.skill_namespaces == ["phx", "ecto", "lv"]
+      assert "example_step" in Map.keys(a.metadata)
+    end
+
     test "reads the exec-in-place eval reference", %{adapter: a} do
       assert a.eval["mode"] == "exec-in-place"
       assert a.eval["entrypoints"]["score"] =~ "lab.eval.scorer"
@@ -68,6 +75,94 @@ defmodule Faber.AdapterTest do
   describe "load/1 errors" do
     test "missing manifest returns an error tuple" do
       assert {:error, {:yaml_error, _path, _reason}} = Adapter.load("/nonexistent/adapter")
+    end
+  end
+
+  describe "load/1 detection vocab (contract §4.1)" do
+    test "parses fingerprints, opportunities, and skill_namespaces into the struct" do
+      detect = """
+      signatures: []
+      fingerprints:
+        - type: maintenance
+          commands: ["pip install", "uv add"]
+          bonus: 3.0
+      opportunities:
+        - skill: investigate
+          when: retry_loops
+          unless_used: false
+        - skill: verify
+          when: commands
+          commands: ["pytest"]
+          threshold: 3
+        - skill: review
+          when: edit_count
+          threshold: 10
+      skill_namespaces: ["py", "ruff"]
+      """
+
+      dir = write_adapter("faber-fixture", detect)
+      assert {:ok, a} = Adapter.load(dir)
+      assert Adapter.validate(a) == []
+
+      assert a.fingerprint_rules == [
+               %{type: "maintenance", commands: ["pip install", "uv add"], bonus: 3.0}
+             ]
+
+      assert [investigate, verify, review] = a.opportunity_rules
+
+      assert investigate == %{
+               skill: "investigate",
+               when: :retry_loops,
+               commands: [],
+               threshold: nil,
+               unless_used: false
+             }
+
+      assert verify.when == :commands and verify.commands == ["pytest"] and verify.threshold == 3
+      assert verify.unless_used == true
+
+      assert review == %{
+               skill: "review",
+               when: :edit_count,
+               commands: [],
+               threshold: 10,
+               unless_used: true
+             }
+
+      assert a.skill_namespaces == ["py", "ruff"]
+    end
+
+    test "absent detection-vocab keys default to empty (v0.1 pack stays valid)" do
+      dir = write_adapter("faber-fixture", "signatures: []\n")
+      assert {:ok, a} = Adapter.load(dir)
+      assert a.fingerprint_rules == []
+      assert a.opportunity_rules == []
+      assert a.skill_namespaces == []
+      assert Adapter.validate(a) == []
+    end
+
+    test "validates malformed fingerprint/opportunity/namespace entries" do
+      detect = """
+      signatures: []
+      fingerprints:
+        - commands: ["x"]
+          bonus: "high"
+      opportunities:
+        - skill: plan
+          when: tool_count
+        - skill: bad
+          when: nonsense
+      skill_namespaces: ["ok", 42]
+      """
+
+      dir = write_adapter("faber-fixture", detect)
+      assert {:error, {:invalid_adapter, problems}} = Adapter.load(dir)
+
+      assert Enum.any?(problems, &(&1 =~ "fingerprint rule missing type"))
+      assert Enum.any?(problems, &(&1 =~ "bonus must be a number"))
+      assert Enum.any?(problems, &(&1 =~ "requires an integer threshold"))
+      assert Enum.any?(problems, &(&1 =~ "'when' must be one of"))
+      assert Enum.any?(problems, &(&1 =~ "skill_namespaces must be a list of strings"))
     end
   end
 
@@ -124,5 +219,31 @@ defmodule Faber.AdapterTest do
       assert Regex.match?(re, "/x/config/runtime.exs")
       refute Regex.match?(re, "/x/config/sub/runtime.exs")
     end
+  end
+
+  # Write a minimal valid adapter pack into a unique tmp dir (name == dir basename, as the
+  # contract requires) with the given `detect/signatures.yaml` body. Auto-removed on exit.
+  defp write_adapter(name, detect_yaml) do
+    base =
+      Path.join(System.tmp_dir!(), "faber-adapter-test-#{System.unique_integer([:positive])}")
+
+    dir = Path.join(base, name)
+    File.mkdir_p!(Path.join(dir, "detect"))
+
+    manifest = """
+    name: #{name}
+    version: 0.1.0
+    agent_targets:
+      - claude-code
+    file_globs:
+      - "**/*.py"
+    metadata:
+      description: "fixture"
+    """
+
+    File.write!(Path.join(dir, "faber.adapter.yaml"), manifest)
+    File.write!(Path.join(dir, "detect/signatures.yaml"), detect_yaml)
+    on_exit(fn -> File.rm_rf!(base) end)
+    dir
   end
 end

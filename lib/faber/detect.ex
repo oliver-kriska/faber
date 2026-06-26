@@ -71,6 +71,40 @@ defmodule Faber.Detect do
   # (the reference's `max(scores, key=...)` returns the first-inserted key on ties).
   @fingerprint_order ~w(bug-fix feature exploration maintenance review refactoring)
 
+  # ── adapter-overridable detection vocab (contract §4.1) ─────────────────────
+  #
+  # These three module attributes are the engine's **generic defaults** — what the original
+  # plugin port hardcoded. They apply ONLY when `Scan` runs adapter-free (the byte-for-byte
+  # parity path). When an adapter is selected it supplies its own vocab via `detect/signatures.yaml`
+  # (`fingerprint_rules` / `opportunity_rules` / `skill_namespaces` on the `Faber.Adapter`), so the
+  # engine itself stays domain-free. The reference adapter `faber-elixir` restates these.
+
+  # Command → session-type bonus. When ANY listed command is a substring of a Bash call, add
+  # `bonus` to that fingerprint type. (Elixir/plugin-specific — `mix deps`/`mix hex`, `gh pr`/`issue`.)
+  @default_fingerprint_rules [
+    %{type: "maintenance", commands: ["mix deps", "mix hex"], bonus: 3.0},
+    %{type: "review", commands: ["gh pr", "gh issue"], bonus: 3.0}
+  ]
+
+  # Missed-automation → suggested skill rules, in report order. See `rule_triggered?/2` for the
+  # `when` semantics. `unless_used: false` (investigate) suggests even when already used.
+  @default_opportunity_rules [
+    %{skill: "investigate", when: :retry_loops, commands: [], threshold: nil, unless_used: false},
+    %{skill: "plan", when: :tool_count, commands: [], threshold: 50, unless_used: true},
+    %{
+      skill: "verify",
+      when: :commands,
+      commands: ["mix test", "mix compile"],
+      threshold: 3,
+      unless_used: true
+    },
+    %{skill: "pr-review", when: :commands, commands: ["gh pr"], threshold: 2, unless_used: true},
+    %{skill: "review", when: :edit_count, commands: [], threshold: 10, unless_used: true}
+  ]
+
+  # Namespace prefixes scanned as `(?:ns):skill` in session text to detect skills already used.
+  @default_skill_namespaces ~w(phx ecto lv)
+
   # Context-window sizes by model — ported from compute-metrics.py MODEL_CONTEXT_WINDOWS and
   # EXTENDED to current models (the reference map predates opus-4-8). `[1m]` variants use the 1M
   # beta window. Unknown models → nil window → no context-pressure signal (conservative).
@@ -198,11 +232,15 @@ defmodule Faber.Detect do
   `review` / `refactoring` (or `unknown`) — with a confidence in 0.0–1.0.
 
   Port of `compute_fingerprint`: keyword matches over the first 10 human messages (×2.0
-  each) plus tool-profile, files-edited, Tidewave, `mix deps`/`hex`, and `gh pr`/`issue`
-  bonuses. Confidence = winning score / total score.
+  each) plus tool-profile, files-edited, Tidewave, and **command-bonus rules**. Confidence =
+  winning score / total score.
+
+  `adapter` (a `Faber.Adapter` or `nil`) supplies the command-bonus rules. When `nil`, the
+  engine uses its generic defaults (`mix deps`/`hex` → maintenance, `gh pr`/`issue` → review),
+  keeping the adapter-free path byte-identical to the original port.
   """
-  @spec fingerprint(Enumerable.t()) :: fingerprint()
-  def fingerprint(events) do
+  @spec fingerprint(Enumerable.t(), Faber.Adapter.t() | nil) :: fingerprint()
+  def fingerprint(events, adapter \\ nil) do
     events = Enum.to_list(events)
 
     user_text =
@@ -227,28 +265,42 @@ defmodule Faber.Detect do
     scores =
       @fingerprint_keywords
       |> Map.new(fn {type, re} -> {type, length(Regex.scan(re, user_text)) * 2.0} end)
+      # Generic, engine-side bonuses (tool-ratio / files / Tidewave) — never stack-specific.
       |> bonus("exploration", read_pct > 0.5 and edit_pct < 0.1, 3.0)
       |> bonus("feature", edit_pct > 0.3, 2.0)
       |> bonus("bug-fix", bash_pct > 0.3, 2.0)
       |> bonus("refactoring", length(files) > 10, 2.0)
       |> bonus("feature", length(files) > 5, 1.0)
       |> bonus("bug-fix", tidewave?, 1.5)
-      |> bonus("maintenance", any_cmd?(bash_cmds, ["mix deps", "mix hex"]), 3.0)
-      |> bonus("review", any_cmd?(bash_cmds, ["gh pr", "gh issue"]), 3.0)
+      # Stack-specific command bonuses — from the adapter, or the generic defaults when adapter-free.
+      |> apply_fingerprint_rules(bash_cmds, fingerprint_rules(adapter))
 
     total_score = scores |> Map.values() |> Enum.sum()
 
     if total_score <= 0.0 do
       %{type: "unknown", confidence: 0.0}
     else
-      # Pick the max score, ties broken by @fingerprint_order (deterministic + parity-matching).
+      # Pick the max score, ties broken by @fingerprint_order, then any adapter-introduced novel
+      # types (sorted, for determinism). With only built-in types `extra` is empty, so this is
+      # byte-identical to the original `@fingerprint_order`-only selection.
+      extra = (Map.keys(scores) -- @fingerprint_order) |> Enum.sort()
+
       {best, best_score} =
-        @fingerprint_order
+        (@fingerprint_order ++ extra)
         |> Enum.map(fn t -> {t, Map.get(scores, t, 0.0)} end)
         |> Enum.max_by(fn {_t, score} -> score end)
 
       %{type: best, confidence: Float.round(best_score / total_score, 2)}
     end
+  end
+
+  # Apply each command-bonus rule: when any of its `commands` appears in the session's Bash calls,
+  # add `bonus` to its `type`. `Map.update/4` (not `update!`) so adapter-introduced novel types are
+  # created on first hit rather than crashing.
+  defp apply_fingerprint_rules(scores, bash_cmds, rules) do
+    Enum.reduce(rules, scores, fn %{type: type, commands: cmds, bonus: amount}, acc ->
+      if any_cmd?(bash_cmds, cmds), do: Map.update(acc, type, amount, &(&1 + amount)), else: acc
+    end)
   end
 
   @type opportunity :: %{score: float(), missed: [String.t()], used: [String.t()]}
@@ -257,34 +309,35 @@ defmodule Faber.Detect do
   Score missed automation opportunities (0.0–1.0) and list the skills that could have
   helped but weren't used.
 
-  Port of `compute_plugin_opportunity`: retry loops → `investigate`; >50 tools without
-  `plan` → `plan`; 3+ `mix test`/`compile` without `verify` → `verify`; 2+ `gh pr` without
-  `pr-review` → `pr-review`; >10 edits without `review` → `review`. score = min(n×0.2, 1.0).
-  Skills already used (Skill calls, `attributionSkill`, `/ns:cmd` in text) are excluded.
+  Port of `compute_plugin_opportunity`, generalized to **rules**: each rule maps a friction
+  condition (`when`) to a suggested skill. The generic defaults reproduce the original port —
+  retry loops → `investigate`; >50 tools without `plan` → `plan`; 3+ `mix test`/`compile`
+  without `verify` → `verify`; 2+ `gh pr` without `pr-review` → `pr-review`; >10 edits without
+  `review` → `review`. score = min(n×0.2, 1.0).
+
+  `adapter` (a `Faber.Adapter` or `nil`) supplies the rules and the skill namespaces used to
+  detect already-used skills. When `nil`, the engine uses its generic defaults, keeping the
+  adapter-free path byte-identical. Skills already used (Skill calls, `attributionSkill`,
+  `/ns:cmd` in text) are excluded unless a rule sets `unless_used: false`.
   """
-  @spec opportunity(Enumerable.t()) :: opportunity()
-  def opportunity(events) do
+  @spec opportunity(Enumerable.t(), Faber.Adapter.t() | nil) :: opportunity()
+  def opportunity(events, adapter \\ nil) do
     events = Enum.to_list(events)
     tool_uses = Enum.flat_map(events, & &1.tool_uses)
     names = Enum.map(tool_uses, & &1.name)
     tool_count = length(names)
     bash_cmds = bash_commands(tool_uses)
-    used = used_skills(events)
+    used = used_skills(events, skill_namespaces(adapter))
     edit_count = Enum.count(names, &(&1 in ["Edit", "Write"]))
 
+    ctx = %{bash_cmds: bash_cmds, tool_count: tool_count, edit_count: edit_count}
+
     missed =
-      []
-      |> add_if(investigate_opportunity?(bash_cmds), "investigate")
-      |> add_if(tool_count > 50 and not used?(used, "plan"), "plan")
-      |> add_if(
-        count_cmds(bash_cmds, ["mix test", "mix compile"]) >= 3 and not used?(used, "verify"),
-        "verify"
-      )
-      |> add_if(
-        count_cmds(bash_cmds, ["gh pr"]) >= 2 and not used?(used, "pr-review"),
-        "pr-review"
-      )
-      |> add_if(edit_count > 10 and not used?(used, "review"), "review")
+      adapter
+      |> opportunity_rules()
+      |> Enum.reduce([], fn rule, acc ->
+        if opportunity_match?(rule, used, ctx), do: [rule.skill | acc], else: acc
+      end)
       |> Enum.reverse()
 
     %{
@@ -293,6 +346,28 @@ defmodule Faber.Detect do
       used: Enum.sort(MapSet.to_list(used))
     }
   end
+
+  # A rule fires when its trigger condition holds AND (unless `unless_used: false`) the skill
+  # was not already used. `and` is commutative over booleans, so this matches the original
+  # `trigger and not used?(...)` ordering exactly.
+  defp opportunity_match?(%{skill: skill} = rule, used, ctx) do
+    guard_ok = not (Map.get(rule, :unless_used, true) and used?(used, skill))
+    guard_ok and rule_triggered?(rule, ctx)
+  end
+
+  # The `when` semantics (faithful to the original comparison operators):
+  #   :retry_loops → 3+ consecutive same-prefix Bash commands
+  #   :tool_count  → total tool calls   STRICTLY GREATER than threshold
+  #   :edit_count  → Edit/Write calls   STRICTLY GREATER than threshold
+  #   :commands    → count of Bash calls matching ANY command  >=  threshold
+  defp rule_triggered?(%{when: :retry_loops}, ctx), do: investigate_opportunity?(ctx.bash_cmds)
+  defp rule_triggered?(%{when: :tool_count, threshold: t}, ctx), do: ctx.tool_count > t
+  defp rule_triggered?(%{when: :edit_count, threshold: t}, ctx), do: ctx.edit_count > t
+
+  defp rule_triggered?(%{when: :commands, commands: cmds, threshold: t}, ctx),
+    do: count_cmds(ctx.bash_cmds, cmds) >= t
+
+  defp rule_triggered?(_rule, _ctx), do: false
 
   @type context :: %{max_ctx_pct: float() | nil, primary_model: String.t() | nil}
 
@@ -418,9 +493,6 @@ defmodule Faber.Detect do
       end)
   end
 
-  defp add_if(list, true, item), do: [item | list]
-  defp add_if(list, false, _item), do: list
-
   defp used?(used, name), do: MapSet.member?(used, name)
 
   defp count_cmds(bash_cmds, needles) do
@@ -447,14 +519,20 @@ defmodule Faber.Detect do
   end
 
   # Skills the session already used: Skill tool calls, attributionSkill, and /ns:cmd in text.
-  defp used_skills(events) do
+  # `namespaces` are the `ns:` prefixes matched in text (adapter-supplied, or the generic
+  # defaults). An empty list means this stack has no skill namespaces → skip text extraction.
+  defp used_skills(events, namespaces) do
     from_text =
-      events
-      |> Enum.filter(&is_binary(&1.text))
-      |> Enum.flat_map(fn e ->
-        Regex.scan(~r/(?:phx|ecto|lv):([a-z][a-z0-9_-]*)/i, e.text, capture: :all_but_first)
-      end)
-      |> List.flatten()
+      if namespaces == [] do
+        []
+      else
+        re = skill_namespace_regex(namespaces)
+
+        events
+        |> Enum.filter(&is_binary(&1.text))
+        |> Enum.flat_map(fn e -> Regex.scan(re, e.text, capture: :all_but_first) end)
+        |> List.flatten()
+      end
 
     from_attribution =
       events |> Enum.map(& &1.raw["attributionSkill"]) |> Enum.map(&skill_short_name/1)
@@ -480,6 +558,28 @@ defmodule Faber.Detect do
 
   defp bonus(scores, type, true, amount), do: Map.update!(scores, type, &(&1 + amount))
   defp bonus(scores, _type, false, _amount), do: scores
+
+  # ── adapter vocab accessors ─────────────────────────────────────────────────
+  #
+  # `nil` adapter ⇒ engine defaults (the adapter-free parity path). An adapter that IS selected
+  # owns its detection vocab verbatim — including an empty list, which means "none for this
+  # stack" (e.g. a stack with no skill namespaces). The reference adapter restates the defaults.
+  defp fingerprint_rules(nil), do: @default_fingerprint_rules
+  defp fingerprint_rules(adapter), do: Map.get(adapter, :fingerprint_rules) || []
+
+  defp opportunity_rules(nil), do: @default_opportunity_rules
+  defp opportunity_rules(adapter), do: Map.get(adapter, :opportunity_rules) || []
+
+  defp skill_namespaces(nil), do: @default_skill_namespaces
+  defp skill_namespaces(adapter), do: Map.get(adapter, :skill_namespaces) || []
+
+  # Build the `(?:ns1|ns2):skill` extraction regex from a namespace list. Namespaces are escaped
+  # so they're matched literally. For the default `~w(phx ecto lv)` this is byte-identical to the
+  # original literal `~r/(?:phx|ecto|lv):([a-z][a-z0-9_-]*)/i`.
+  defp skill_namespace_regex(namespaces) do
+    alt = Enum.map_join(namespaces, "|", &Regex.escape/1)
+    Regex.compile!("(?:#{alt}):([a-z][a-z0-9_-]*)", "i")
+  end
 
   defp count(counts, key), do: Map.get(counts, key, 0)
 

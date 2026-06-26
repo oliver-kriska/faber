@@ -27,22 +27,26 @@ Backward-compatible; `faber-elixir` parity must not regress.
 
 ## Phase 0 — contract + generic engine (NO python yet)
 
-- [ ] **P0-T1** Extend `docs/ADAPTER_CONTRACT.md` §4 `detect/`: add `fingerprints` (command/keyword →
+- [x] **P0-T1** Extend `docs/ADAPTER_CONTRACT.md` §4 `detect/`: add `fingerprints` (command/keyword →
   type + weight) and `opportunities` (command-pattern + threshold → suggested skill name) sub-schemas,
   and a `skill_namespaces` list (replaces the `phx|ecto|lv` regex). Bump contract to v0.2 (§9), keep
-  v0.1 packs valid (all new keys optional).
-- [ ] **P0-T2** `Faber.Adapter`: parse the new `detect/` sub-sections into the struct
-  (`fingerprint_rules`, `opportunity_rules`, `skill_namespaces`); default `[]`. Loader test.
-- [ ] **P0-T3** Genericize **Leak 1**: add optional manifest field (e.g. `example_step`) the proposer
-  injects; fall back to a stack-neutral phrasing ("Run the failing test in isolation"). `propose.ex`.
-- [ ] **P0-T4** Make detection adapter-driven (**Leak 2**): thread an optional `:adapter` through
+  v0.1 packs valid (all new keys optional). — Added §4.1 + `metadata.example_step` (§3) + v0.2 note (§9).
+- [x] **P0-T2** `Faber.Adapter`: parse the new `detect/` sub-sections into the struct
+  (`fingerprint_rules`, `opportunity_rules`, `skill_namespaces`); default `[]`. Loader test. — `read_detect/1`
+  reads the file once; `fingerprint_rule`/`opportunity_rule` parsers + light validation; 3 loader tests.
+- [x] **P0-T3** Genericize **Leak 1**: add optional manifest field (e.g. `example_step`) the proposer
+  injects; fall back to a stack-neutral phrasing ("Run the failing test in isolation"). `propose.ex`. —
+  `example_step/1` reads `metadata.example_step`; faber-elixir manifest restates the `mix test path:line` example.
+- [x] **P0-T4** Make detection adapter-driven (**Leak 2**): thread an optional `:adapter` through
   `Scan.run/1` → `Detect.fingerprint/2` + `Detect.opportunity/2`. When present, drive command-bonuses,
   opportunity rules, and skill-namespace extraction from the adapter; when absent, use the current
-  hardcoded lists verbatim (extract them into named module attrs = the generic default).
-- [ ] **P0-T5** Migrate `faber-elixir`'s heuristics INTO `adapters/faber-elixir/detect/signatures.yaml`
+  hardcoded lists verbatim (extract them into named module attrs = the generic default). — Defaults in
+  `@default_fingerprint_rules`/`@default_opportunity_rules`/`@default_skill_namespaces`; nil ⇒ defaults, adapter ⇒ its vocab.
+- [x] **P0-T5** Migrate `faber-elixir`'s heuristics INTO `adapters/faber-elixir/detect/signatures.yaml`
   (mix/gh commands, the 5 opportunity→skill rules, `phx|ecto|lv` namespaces). Prove **parity**: the
-  m2 native↔sidecar parity tests + scan ranking on the fixtures are unchanged.
-- [ ] **P0-T6** `mix test` + `mix test.full` green; `compile --warnings-as-errors`. Commit Phase 0
+  m2 native↔sidecar parity tests + scan ranking on the fixtures are unchanged. — Parity test asserts
+  `fingerprint/opportunity(events, adapter) == (events)` across 9 probe sessions; `mix test.full` green.
+- [x] **P0-T6** `mix test` + `mix test.full` green; `compile --warnings-as-errors`. Commit Phase 0
   (generic engine + contract v0.2) as its own unit — it stands alone, no python.
 
 ## Phase 1 — author the `faber-python` pack (pure declarative)
