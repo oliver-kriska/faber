@@ -1,0 +1,63 @@
+# Dogfood run: Faber on real cross-agent sessions (2026-06-26)
+
+**What:** Ran Faber's full pipeline end-to-end on real local sessions, keyless (`Faber.LLM.ClaudeCLI`
+→ `claude -p`, no API key), during a free-token window. Scan → pick top friction → propose skill →
+eval gate → behavioral trigger eval. This is the first real-data (non-fixture) exercise of the whole
+M2→M4 path.
+
+## Scan (M2) — works at scale
+
+`mix faber.scan` over `~/.claude/projects`: **1446 non-trivial sessions in 5.6s**, 1235 tier-2
+eligible, ranked by weighted friction. Dominant signals across the top 20 were `user_corrections`,
+`context_compactions`, and `retry_loops` — i.e. real, recognizable pain, not noise. Fingerprints
+(maintenance / bug-fix / feature / review) and opportunity scores populated sensibly.
+
+## Propose + eval (M3/M4) — convergent, gate-passing skill
+
+Two **independent** real sessions, proposed separately:
+
+| Rank | Session | Friction | Dominant | Composite | Trigger acc |
+|------|---------|----------|----------|-----------|-------------|
+| 1 | faber (this project) | 137 (maintenance) | user_corrections (29) + compactions (29) | **1.00 PASS @ 0.75** | 0.75 (6/8) |
+| 9 | xuku-enaia bug-fix | 59.5 (bug-fix) | user_corrections (11) + compactions (12) + interrupts (4) | **1.00 PASS @ 0.75** | 0.80 (8/10) |
+
+**Headline: both converged on the same novel skill — `correction-ledger`.** Diagnosis (identical
+across the two, reached independently): in long sessions the agent re-violates directives the user
+already gave, because each **context compaction wipes the corrections from context**, forcing the
+user to re-issue them. Proposed fix: pin every correction to a durable in-repo file
+(`.claude/ledger/<branch>.md` / `.claude/corrections.md`), re-read after each compaction, cite the
+governing entry before an edit, resolve (not delete) satisfied entries.
+
+Why this is a strong result:
+
+- **Convergent validity.** Two unrelated codebases/sessions → same diagnosed friction → same skill.
+  The detector is finding a *recurring* pattern, not over-fitting one transcript.
+- **Novelty + non-duplication.** The proposer explicitly reasoned that `correction-ledger` is
+  distinct from already-used skills (`learn-from-fix`/`compound` write post-hoc solution docs;
+  `context-budget` hoards investigation output) — it read the adapter's skill conventions and avoided
+  proposing a dupe.
+- **Adapter-grounded specificity.** Iron Laws cite real Elixir conventions (`:decimal` for money,
+  streams >100 items, authorize every `handle_event`, `connected?/1` before PubSub) — the
+  faber-elixir adapter's knowledge flowed into a domain-correct artifact.
+- **Gate held honestly.** Native structural eval = 1.00 across all 7 dimensions; behavioral trigger
+  eval (real `claude -p` per fixture) = 0.75–0.80, i.e. the proposal's own should/shouldn't-trigger
+  fixtures are mostly but not perfectly routed — a believable, non-gamed number.
+
+## Notes / caveats
+
+- Adapter eval ran as native default (log: "adapter eval is exec-in-place; using default native
+  scoring … referenced scorer integration is env-bound — ADAPTER_CONTRACT §7"). The vendored-dims /
+  exec-in-place adapter scorer path was not exercised here; structural+behavioral default was.
+- Artifact written to `proposals/correction-ledger/SKILL.md` (untracked; not committed — it's an
+  output). **Not installed** to `~/.claude/skills` (that writes the user's shared dir → needs
+  explicit opt-in via `--install` / the Install provenance path).
+- The `correction-ledger` skill is itself a genuinely useful workflow fix for *this* user (this very
+  session had multiple compactions) — a candidate to actually adopt, independent of Faber.
+
+## Repro
+
+```sh
+mix faber.scan                                   # rank real sessions
+mix faber.propose --rank 1 --write proposals --trigger   # keyless full pipeline + behavioral eval
+mix faber.propose --rank 9 --write proposals --trigger
+```

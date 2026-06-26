@@ -43,3 +43,6 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+# Faber proposal outputs (mix faber.propose --write)
+/proposals/
