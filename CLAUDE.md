@@ -64,3 +64,21 @@ reference adapter source.
   report, not a change to make.
 - The Python sidecar boundary is **JSON over stdin/stdout** for v1. Keep the contract
   stable; embedded CPython (Pythonx) is a later evaluation, not a v1 dependency.
+
+## Generators & eval gates (learned from dogfooding)
+
+- **Eval proxies are renderer guarantees, not prompt wishes.** When the deterministic eval
+  (`Faber.Eval.Native`) gates a generated skill, make the **renderer** satisfy each check by
+  construction (presence-gate optional sections, guarantee a ≥2-line example block, etc.) — don't
+  rely on the LLM happening to comply. Conversely, **never clamp/truncate to force a proxy green**
+  when the content is genuinely good (e.g. an over-length but well-structured description): that
+  games the metric against its intent. Tighten the renderer (raise the floor) or let the reflective
+  loop optimize the content; do not degrade the artifact. See
+  `.claude/solutions/2026-06-25-eval-clarity-proposer-renderer-gap.md`.
+- **Probe matchers against the *rendered* artifact, not a fixture** — the built-in and
+  adapter-template render paths can diverge on exactly these checks.
+- **Treat the user's dirs as shared.** Anything that writes into `~/.claude` (skills, `CLAUDE.md`,
+  hooks) must track *provenance* for what Faber created and never enumerate-and-claim the whole dir
+  (`Faber.Install` uses a `.faber.json` marker; `list_faber_installed/1` is the filtered view, while
+  `list_installed/1` stays the generic primitive). See
+  `.claude/solutions/2026-06-25-sync-pointer-over-claim-provenance.md`.
