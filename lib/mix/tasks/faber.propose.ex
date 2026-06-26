@@ -10,6 +10,7 @@ defmodule Mix.Tasks.Faber.Propose do
       mix faber.propose --adapter adapters/faber-elixir
       mix faber.propose --limit 200          # cap sessions scored
       mix faber.propose --write proposals    # also write SKILL.md under proposals/<name>/
+      mix faber.propose --format codex       # propose from another agent's sessions
 
   With the dev default (`Faber.LLM.ClaudeCLI`) this needs **no API key** — it drives your local
   `claude -p`. The eval step needs `python3` (the sidecar is stdlib-only).
@@ -19,7 +20,8 @@ defmodule Mix.Tasks.Faber.Propose do
     * `--rank N`       which ranked session to use (1 = highest friction; default 1)
     * `--adapter DIR`  adapter pack dir (default `adapters/faber-elixir`)
     * `--limit N`      cap sessions scored — an even sample across the corpus (default: all)
-    * `--base PATH`    transcript root (default ~/.claude/projects)
+    * `--base PATH`    transcript root (default: the format's own default)
+    * `--format AGENT` ingest format: claude (default), codex, cline, gemini, opencode
     * `--write DIR`    write the rendered skill to `DIR/<name>/SKILL.md`
     * `--no-eval`      skip the eval step
     * `--trigger`      add behavioral routing-accuracy eval (one `claude -p` call per fixture)
@@ -36,6 +38,7 @@ defmodule Mix.Tasks.Faber.Propose do
     adapter: :string,
     limit: :integer,
     base: :string,
+    format: :string,
     write: :string,
     eval: :boolean,
     trigger: :boolean,
@@ -66,11 +69,28 @@ defmodule Mix.Tasks.Faber.Propose do
   defp pick_session(opts, rank) do
     # No default :limit — score all sessions so `--rank N` selects from the true friction ranking.
     # (A `:limit`, if passed, now samples an even spread; see Faber.Scan.) `--limit` still works.
-    scan_opts = Keyword.take(opts, [:limit, :base])
+    scan_opts = opts |> Keyword.take([:limit, :base]) |> put_format(opts[:format])
 
     case Faber.Scan.run(scan_opts) |> Enum.at(rank - 1) do
       nil -> {:error, :no_session_at_rank}
       result -> {:ok, result}
+    end
+  end
+
+  # Validate `--format` against the ingest registry; fail loudly on a typo rather than silently
+  # proposing from the default (Claude) format. Absent flag → Scan defaults to Claude.
+  defp put_format(scan_opts, nil), do: scan_opts
+
+  defp put_format(scan_opts, format) do
+    case Faber.Ingest.Format.cast(format) do
+      {:ok, atom} ->
+        Keyword.put(scan_opts, :format, atom)
+
+      :error ->
+        Mix.raise(
+          "unknown --format #{inspect(format)}; known: " <>
+            (Faber.Ingest.Format.known() |> Enum.map_join(", ", &Atom.to_string/1))
+        )
     end
   end
 
