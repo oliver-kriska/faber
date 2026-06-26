@@ -4,12 +4,14 @@ defmodule Faber.Ingest.Format do
   so `Faber.Ingest` stays agent-agnostic: it discovers files and streams normalized
   `Faber.Ingest.Event`s without knowing whose on-disk shape it's reading.
 
-  Two formats ship today: `Faber.Ingest.Format.Claude` (Claude Code's
-  `~/.claude/projects/**/*.jsonl`) and `Faber.Ingest.Format.Codex` (OpenAI Codex's
-  `~/.codex/sessions/**/rollout-*.jsonl`). OpenCode and Pi are **not yet implemented**: each needs
-  a real transcript spec (file layout + per-record shape) before a faithful format module can be
-  written, so they are deliberately absent rather than guessed. Adding one is a single new module
-  implementing this behaviour plus a `format` alias — no engine changes.
+  Formats that ship today: `Faber.Ingest.Format.Claude` (Claude Code's
+  `~/.claude/projects/**/*.jsonl`), `Faber.Ingest.Format.Codex` (OpenAI Codex's
+  `~/.codex/sessions/**/rollout-*.jsonl`), and `Faber.Ingest.Format.Cline` (the
+  `saoudrizwan.claude-dev` VS Code extension's `**/tasks/*/api_conversation_history.json`).
+  OpenCode and Pi are **not yet implemented**: each needs a real transcript spec (file layout +
+  per-record shape) before a faithful format module can be written, so they are deliberately absent
+  rather than guessed. Adding one is a single new module implementing this behaviour plus a `format`
+  alias — no engine changes.
 
   A format owns three things:
 
@@ -30,7 +32,11 @@ defmodule Faber.Ingest.Format do
   @callback stream_file!(path :: Path.t()) :: Enumerable.t()
   @callback normalize(record :: map()) :: Event.t()
 
-  @aliases %{claude: Faber.Ingest.Format.Claude, codex: Faber.Ingest.Format.Codex}
+  @aliases %{
+    claude: Faber.Ingest.Format.Claude,
+    codex: Faber.Ingest.Format.Codex,
+    cline: Faber.Ingest.Format.Cline
+  }
 
   @doc """
   Resolve a format from `opts[:format]` → `config :faber, :ingest_format` → the Claude default.
