@@ -49,7 +49,7 @@ defmodule Faber.MixProject do
   # See CLAUDE.md / README.
   defp aliases do
     [
-      "test.full": ["test --include sidecar --include ccrider"],
+      "test.full": ["test --include sidecar --include ccrider --include opencode"],
       "test.live": ["test --include live"],
       "test.live.api": ["test --include live_api"]
     ]

@@ -9,11 +9,12 @@ defmodule Faber.Ingest.Format do
   `~/.codex/sessions/**/rollout-*.jsonl`), `Faber.Ingest.Format.Cline` (the
   `saoudrizwan.claude-dev` VS Code extension's `**/tasks/*/api_conversation_history.json`), and
   `Faber.Ingest.Format.Gemini` (Google's `gemini-cli` — and, identically, Qwen Code —
-  `~/.gemini/tmp/*/chats/session-*.json`).
-  OpenCode and Pi are **not yet implemented**: each needs a real transcript spec (file layout +
-  per-record shape) before a faithful format module can be written, so they are deliberately absent
-  rather than guessed. Adding one is a single new module implementing this behaviour plus a `format`
-  alias — no engine changes.
+  `~/.gemini/tmp/*/chats/session-*.json`), and `Faber.Ingest.Format.OpenCode` (the `opencode` CLI's
+  SQLite DB at `~/.local/share/opencode/opencode.db`, read via the `sqlite3` CLI).
+  Pi is **not yet implemented**: it needs a real transcript spec (file layout + per-record shape)
+  before a faithful format module can be written, so it is deliberately absent rather than guessed.
+  Adding one is a single new module implementing this behaviour plus a `format` alias — no engine
+  changes.
 
   A format owns three things:
 
@@ -38,7 +39,8 @@ defmodule Faber.Ingest.Format do
     claude: Faber.Ingest.Format.Claude,
     codex: Faber.Ingest.Format.Codex,
     cline: Faber.Ingest.Format.Cline,
-    gemini: Faber.Ingest.Format.Gemini
+    gemini: Faber.Ingest.Format.Gemini,
+    opencode: Faber.Ingest.Format.OpenCode
   }
 
   @doc """
@@ -66,7 +68,7 @@ defmodule Faber.Ingest.Format do
         else
           raise ArgumentError,
                 "unknown ingest format #{inspect(value)}; known: #{inspect(Map.keys(@aliases))} " <>
-                  "(OpenCode/Pi not yet implemented)"
+                  "(Pi not yet implemented)"
         end
     end
   end

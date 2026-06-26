@@ -5,7 +5,7 @@ defmodule Faber.Ingest.FormatTest do
   alias Faber.Ingest.{Event, Format}
 
   # A second format behind the seam — proves Ingest is agent-agnostic without needing a real
-  # Codex/OpenCode spec. Treats each line as a bare "role: text" record.
+  # agent spec (e.g. a not-yet-shipped Pi). Treats each line as a bare "role: text" record.
   defmodule FakeFormat do
     @behaviour Faber.Ingest.Format
 
@@ -38,9 +38,13 @@ defmodule Faber.Ingest.FormatTest do
       assert Format.resolve(format: :codex) == Faber.Ingest.Format.Codex
     end
 
+    test "accepts the shipped :opencode alias" do
+      assert Format.resolve(format: :opencode) == Faber.Ingest.Format.OpenCode
+    end
+
     test "raises on an unknown / not-yet-shipped alias" do
       assert_raise ArgumentError, ~r/unknown ingest format/, fn ->
-        Format.resolve(format: :opencode)
+        Format.resolve(format: :pi)
       end
     end
   end
