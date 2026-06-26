@@ -91,8 +91,15 @@ gradient *when a gap exists*, but the gap appears/disappears with LLM noise. Gre
 keep/revert over a noisy objective is fragile — it'll "keep" a candidate that merely got a lucky
 routing draw. Optimizing a stochastic objective properly needs multi-sample evaluation per candidate
 (average N trigger runs) and/or a dataset-based optimizer (GEPA) — exactly the regime the deferral
-decision reserved GEPA for. Concrete next step if pursuing this: average the trigger eval over N
-samples before folding, so the behavioral score is a stable estimate rather than one Bernoulli draw.
+decision reserved GEPA for.
+
+**Implemented (commit `c455fef`):** opt-in `trigger_samples: N` on `Faber.Eval.Trigger.score/2` (and
+`mix faber.propose --trigger-samples N`) repeats the eval N times and **pools** the results
+(micro-average), so the behavioral score is a stable estimate over N×fixtures with an
+`accuracy_stdev` that quantifies the noise. `samples: 1` is byte-for-byte the original behavior (no
+cost change). This makes the continuous behavioral gradient (`fb1cd7b`) trustworthy — the loop now
+optimizes a stable estimate rather than one Bernoulli draw. GEPA's dataset regime remains the
+heavier option if multi-objective / many-shot optimization is later needed.
 
 ## Repro
 
