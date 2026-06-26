@@ -101,10 +101,43 @@ cost change). This makes the continuous behavioral gradient (`fb1cd7b`) trustwor
 optimizes a stable estimate rather than one Bernoulli draw. GEPA's dataset regime remains the
 heavier option if multi-objective / many-shot optimization is later needed.
 
+## Cross-agent dogfood on real data (follow-up) — engine is agent-agnostic end-to-end
+
+The ingest seam shipped cline/gemini/opencode this session, but **neither CLI surface could select
+them**: `mix faber.scan`/`mix faber.propose` had no `--format` switch (they `Keyword.take`'d only
+`[:limit, :base, …]`, dropping `:format`), and `Faber.CLI.normalize_format/1` whitelisted only
+`claude`/`codex` → the new formats silently fell to `nil` → a misleading **Claude** scan. Fixed by
+adding `Faber.Ingest.Format.known/0` + `cast/1` (single source of truth; validates `--format`
+without `String.to_atom` on user input) and routing all three entrypoints through it (commits
+`bed30ab`, `966bdbb`). The mix tasks now fail loudly on a typo'd format; the binary keeps lenient
+nil-fallback parity with `--source`/`--rank-by`.
+
+Then dogfooded on **real local data** for the two non-Claude agents present on this machine:
+
+| Agent | Source | Scan result | Notes |
+|-------|--------|-------------|-------|
+| OpenCode | real SQLite DB (`~/.local/share/opencode/opencode.db`, 292 KB) | 1 session, 5 msgs, 4 tools, 1 err → `error_tool_ratio` | validates sqlite3-CLI transport, message⋈part join, tool-name canonicalization |
+| Codex | real rollout JSONL (`~/.codex/sessions/**`) | 10 sessions, 4 tier-2; top two (287/160 msgs) dominant `retry_loops` | rich, believable signals + fingerprints (bug-fix/review) |
+
+**Headline — cross-agent propose works end-to-end.** `mix faber.propose --format codex --rank 1`
+(keyless `claude -p`) on the top real Codex session (`019ef32f`, dominant `retry_loops`) generated a
+gate-passing **"Bugfix Retry Tripwire"** skill (composite **1.00**, all 6 structural dims 1.00) whose
+content maps *directly* to the detected signal ("after 3 fails escalate, never a 4th guess-edit").
+Adapter-grounded in Elixir idioms (`mix test path:LINE`) — that Codex session was an Elixir project,
+so the faber-elixir adapter's knowledge flowed into a domain-correct artifact. The detect→propose
+chain is **agent-blind**: the same friction vocabulary and the same adapter produced a coherent skill
+from a Codex transcript with zero engine changes. (Gemini/Qwen/Cline have no local data on this box →
+fixture-covered only.)
+
 ## Repro
 
 ```sh
 mix faber.scan                                   # rank real sessions
 mix faber.propose --rank 1 --write proposals --trigger   # keyless full pipeline + behavioral eval
 mix faber.propose --rank 9 --write proposals --trigger
+
+# cross-agent (real non-Claude data):
+mix faber.scan --format opencode --top 8         # real SQLite store
+mix faber.scan --format codex --top 8            # real rollout JSONL
+mix faber.propose --format codex --rank 1        # cross-agent propose → "Bugfix Retry Tripwire"
 ```
