@@ -7,13 +7,15 @@ defmodule Mix.Tasks.Faber.Scan do
       mix faber.scan --top 30
       mix faber.scan --limit 200           # score an even sample of 200 sessions
       mix faber.scan --base /path/to/dir --min-messages 10
+      mix faber.scan --format opencode     # scan another agent (codex|cline|gemini|opencode)
 
   Options:
 
     * `--top N`            rows to print (default 20)
     * `--limit N`          cap sessions scored (default: all)
     * `--min-messages N`   drop trivial sessions (default 4)
-    * `--base PATH`        transcript root (default ~/.claude/projects)
+    * `--base PATH`        transcript root (default: the format's own default)
+    * `--format AGENT`     ingest format: claude (default), codex, cline, gemini, opencode
     * `--no-dedupe`        keep sidechain duplicates that share a session_id
 
   Read-only: this task does not start the application (Iron Law #23 — start only what you
@@ -27,6 +29,7 @@ defmodule Mix.Tasks.Faber.Scan do
     limit: :integer,
     min_messages: :integer,
     base: :string,
+    format: :string,
     dedupe: :boolean
   ]
 
@@ -38,12 +41,30 @@ defmodule Mix.Tasks.Faber.Scan do
     scan_opts =
       opts
       |> Keyword.take([:limit, :min_messages, :base, :dedupe])
+      |> put_format(opts[:format])
 
     started = System.monotonic_time(:millisecond)
     results = Faber.Scan.run(scan_opts)
     elapsed = System.monotonic_time(:millisecond) - started
 
     print_report(results, top, elapsed)
+  end
+
+  # Validate `--format` against the ingest registry; fail loudly on a typo rather than silently
+  # scanning the default (Claude) format. Absent flag → no `:format` key → Scan defaults to Claude.
+  defp put_format(scan_opts, nil), do: scan_opts
+
+  defp put_format(scan_opts, format) do
+    case Faber.Ingest.Format.cast(format) do
+      {:ok, atom} ->
+        Keyword.put(scan_opts, :format, atom)
+
+      :error ->
+        Mix.raise(
+          "unknown --format #{inspect(format)}; known: " <>
+            (Faber.Ingest.Format.known() |> Enum.map_join(", ", &Atom.to_string/1))
+        )
+    end
   end
 
   defp print_report([], _top, elapsed) do

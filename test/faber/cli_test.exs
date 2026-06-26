@@ -17,6 +17,9 @@ defmodule Faber.CLITest do
       assert CLI.parse(["scan", "--limit", "5", "--rank-by", "rate"]) ==
                {:scan, [limit: 5, rank_by: "rate"]}
 
+      assert CLI.parse(["scan", "--format", "opencode"]) ==
+               {:scan, [format: "opencode"]}
+
       assert CLI.parse(["propose", "--rank", "2", "--install"]) ==
                {:propose, [rank: 2, install: true]}
 

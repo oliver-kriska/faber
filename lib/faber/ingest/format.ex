@@ -44,6 +44,32 @@ defmodule Faber.Ingest.Format do
   }
 
   @doc """
+  The known format aliases (the keys of the alias map) — the single source of truth for which
+  agents are selectable. CLI surfaces validate `--format` against this so they can't drift behind
+  a newly-added format.
+  """
+  @spec known() :: [atom()]
+  def known, do: Map.keys(@aliases)
+
+  @doc """
+  Cast a user-supplied format (string or atom) to a known alias atom, or `:error`.
+
+  Used by CLI entrypoints to validate untrusted `--format` input **without** `String.to_atom/1` —
+  it compares the string form of each known alias, so an unknown value can never mint a new atom.
+  """
+  @spec cast(String.t() | atom()) :: {:ok, atom()} | :error
+  def cast(value) when is_atom(value) do
+    if value in known(), do: {:ok, value}, else: :error
+  end
+
+  def cast(value) when is_binary(value) do
+    case Enum.find(known(), fn name -> Atom.to_string(name) == value end) do
+      nil -> :error
+      name -> {:ok, name}
+    end
+  end
+
+  @doc """
   Resolve a format from `opts[:format]` → `config :faber, :ingest_format` → the Claude default.
 
   Accepts a module directly or a short alias atom (`:claude`). Raises on an unknown alias so a

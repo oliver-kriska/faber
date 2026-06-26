@@ -377,10 +377,15 @@ defmodule Faber.CLI do
   defp normalize_source("ccrider"), do: :ccrider
   defp normalize_source(_), do: nil
 
-  defp normalize_format(f) when f in [:claude, :codex], do: f
-  defp normalize_format("claude"), do: :claude
-  defp normalize_format("codex"), do: :codex
-  defp normalize_format(_), do: nil
+  # Validate `--format` against the ingest format registry (single source of truth) rather than a
+  # hand-maintained whitelist that drifts behind newly-added agents. Unknown/blank → nil, so it
+  # falls back to the default format (parity with normalize_source/normalize_rank_by above).
+  defp normalize_format(f) do
+    case f && Faber.Ingest.Format.cast(f) do
+      {:ok, format} -> format
+      _ -> nil
+    end
+  end
 
   defp put_if(opts, _key, nil), do: opts
   defp put_if(opts, key, value), do: Keyword.put(opts, key, value)
@@ -418,8 +423,9 @@ defmodule Faber.CLI do
     Sources (--source): files (default) walks the agent's transcript dir; ccrider reads ccrider's
     SQLite index (--db, default ~/.config/ccrider/sessions.db). Or set config :faber, :ingest_source.
 
-    Formats (--format): claude (default, ~/.claude/projects) or codex (~/.codex/sessions). The codex
-    format is files-only — ccrider stores codex content empty, so use --source files --format codex.
+    Formats (--format): claude (default), codex, cline, gemini, opencode — each reads that agent's
+    own transcript location. The non-Claude formats are files-only (ccrider indexes Claude content);
+    opencode reads its SQLite store via the sqlite3 CLI.
     """
   end
 end

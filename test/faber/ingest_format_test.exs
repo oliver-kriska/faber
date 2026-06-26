@@ -49,6 +49,27 @@ defmodule Faber.Ingest.FormatTest do
     end
   end
 
+  describe "known/0 and cast/1 (CLI format validation)" do
+    test "known/0 lists exactly the shipped aliases" do
+      assert Enum.sort(Format.known()) == [:claude, :cline, :codex, :gemini, :opencode]
+    end
+
+    test "cast/1 accepts every shipped format as a string or atom" do
+      for name <- Format.known() do
+        assert Format.cast(Atom.to_string(name)) == {:ok, name}
+        assert Format.cast(name) == {:ok, name}
+      end
+    end
+
+    test "cast/1 rejects unknown / not-yet-shipped formats without minting an atom" do
+      assert Format.cast("pi") == :error
+      assert Format.cast("nope") == :error
+      assert Format.cast(:pi) == :error
+      # The rejected string did not create a new atom (would raise if it had to exist).
+      assert_raise ArgumentError, fn -> String.to_existing_atom("definitely-not-a-format") end
+    end
+  end
+
   describe "Ingest delegates to the resolved format" do
     test "discover uses the format's default_base and glob" do
       assert Ingest.discover(format: FakeFormat) == ["/tmp/fake-agent/session.log"]
