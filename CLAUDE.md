@@ -35,12 +35,13 @@ milestones (M0–M6). Everything here assumes it.
   mix test          # hermetic — no python3 needed
   ```
 
-  `mix test` excludes the `:sidecar`/`:ccrider`/`:live`/`:live_api` tags so it needs no
+  `mix test` excludes the `:sidecar`/`:ccrider`/`:opencode`/`:live`/`:live_api` tags so it needs no
   interpreter, key, or external index. Run **`mix test.full`** (alias for `mix test --include
-  sidecar --include ccrider`) — which needs `python3` — before committing changes that touch the
-  eval matchers or the sidecar boundary, and in CI, to catch native/sidecar drift. The keyless
-  end-to-end run is **`mix test.live`** (real `claude -p`, no key); the paid ReqLLM/Anthropic
-  backend is **`mix test.live.api`** (needs `CLAUDE_API` in `.env`).
+  sidecar --include ccrider --include opencode`) — which needs `python3` (sidecar) and `sqlite3`
+  (the ccrider/OpenCode SQLite readers) — before committing changes that touch the eval matchers,
+  the sidecar boundary, or a SQLite-backed ingest format, and in CI, to catch native/sidecar drift.
+  The keyless end-to-end run is **`mix test.live`** (real `claude -p`, no key); the paid
+  ReqLLM/Anthropic backend is **`mix test.live.api`** (needs `CLAUDE_API` in `.env`).
 
 - **NEVER push to a remote** until explicitly told. The `origin/main` ref shows `[gone]` —
   it is stale; ignore it. Do not create PRs.

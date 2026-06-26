@@ -2,8 +2,8 @@
 
 **A local-first, cross-agent, stack-aware improvement engine for AI coding agents.**
 
-Faber mines your *real* coding-agent sessions (Claude Code first; Codex / OpenCode / Pi
-later) for repetitive, painful workflows, then generates **skills** that automate them —
+Faber mines your *real* coding-agent sessions (Claude Code, Codex, Cline, Gemini / Qwen Code,
+and OpenCode today; Pi later) for repetitive, painful workflows, then generates **skills** that automate them —
 but only skills that a stack-specific **adapter** vouches for and that pass an
 **evaluation gate**. Over time it runs a self-improving loop to make those skills better.
 
@@ -53,6 +53,7 @@ ingest sessions → detect friction → propose skill (adapter-informed)
 | +  | Read-only MCP server (Anubis) — friction/skills as live tools for coding agents | `Faber.MCP.Server`, `Faber.MCP.Tools.*` |
 | +  | Cross-agent skill install + provenance-tracked pointer sync (`faber sync`) | `Faber.Install` (`.faber.json` marker) |
 | +  | **Second adapter (`faber-python`) — engine proven domain-free** (zero `lib/faber` diffs) | `adapters/faber-python/` + contract v0.2 detection vocab |
+| +  | **Cross-agent ingest** — pluggable transcript formats behind one seam: Claude, Codex, Cline, Gemini (+ Qwen Code), OpenCode (SQLite) | `Faber.Ingest.Format.*` (Pi still a stub) |
 
 Two adapters ship today: [`faber-elixir`](adapters/faber-elixir/) (the reference, extracted by
 reference from the `claude-elixir-phoenix` plugin) and [`faber-python`](adapters/faber-python/)
@@ -87,7 +88,7 @@ keyless reflective loop covers v1 self-improvement).
 ```sh
 mix deps.get
 mix test                       # hermetic — Elixir suite incl. LiveView, no python3 needed
-mix test.full                  # also runs @tag :sidecar (native↔Python parity, needs python3) + :ccrider
+mix test.full                  # also runs @tag :sidecar (needs python3) + :ccrider/:opencode (need sqlite3)
 mix compile --warnings-as-errors
 mix faber.scan                 # rank your real ~/.claude sessions by friction
 iex -S mix                     # dashboard at http://localhost:4000 (mix phx.server style boot)
@@ -110,6 +111,28 @@ tool: `faber_propose_skill` — proposes + gates (and optionally installs) a ski
 finding; it calls an LLM (spends tokens), so it stays **disabled** unless you set
 `config :faber, :mcp_allow_propose, true`. The server starts only under `faber serve` /
 `mix phx.server` (never for one-shot CLI commands).
+
+### Cross-agent ingest
+
+Faber is agent-agnostic: each coding agent's on-disk transcript shape is a small format module
+behind one behaviour (`Faber.Ingest.Format`), so the detect/score/propose engine never learns whose
+session it's reading. Pick a format with `format:` (or `config :faber, :ingest_format`):
+
+| Format | Agent | Storage | Validation |
+|--------|-------|---------|------------|
+| `:claude` (default) | Claude Code | `~/.claude/projects/**/*.jsonl` | real |
+| `:codex` | OpenAI Codex | `~/.codex/sessions/**/rollout-*.jsonl` | real |
+| `:cline` | Cline (VS Code) | `**/saoudrizwan.claude-dev/tasks/*/api_conversation_history.json` | documented shape |
+| `:gemini` | Gemini CLI / Qwen Code | `~/.gemini/tmp/*/chats/session-*.json` (Qwen: `~/.qwen/tmp`) | documented shape |
+| `:opencode` | OpenCode | `~/.local/share/opencode/opencode.db` (SQLite, via `sqlite3` CLI) | real DB |
+
+```elixir
+Faber.Scan.run(format: :opencode)        # rank an agent's sessions by friction
+```
+
+Each format canonicalizes its tool names to Faber's vocabulary (`Bash`/`Read`/`Edit`/`Write`/…) so
+the same detection signals fire across agents. Adding one is a single module + a `format` alias — no
+engine changes. (Pi is the remaining stub: it needs a real transcript spec before a faithful module.)
 
 ## License
 
