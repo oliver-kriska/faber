@@ -188,3 +188,34 @@ mix faber.scan   --base ~/.claude/projects/-Users-oliverkriska-Projects-xuku-ena
 mix faber.propose --base ~/.claude/projects/-Users-oliverkriska-Projects-xuku-enaia-main --rank 1 --write proposals
 # install into the project worktree: Faber.Install.install({name, md}, dir: "<worktree>/.claude/skills", provenance: %{…})
 ```
+
+## Consolidation + behavioral eval — structural ≠ behavioral (enaia follow-up)
+
+Merged the three enaia ledger proposals into one `bugfix-ledger` skill (single durable
+`.claude/bugfix-ledger.md`: Hypotheses / Ruled out / Corrections; one trigger), force-reinstalled it,
+and retired the three originals (`Install.list_faber_installed/1` → just `bugfix-ledger`).
+
+Two findings, both about the **trigger**:
+
+1. **Structural triggering is a length/structure proxy — tightening the description is a real fix, not
+   gaming.** The first merged description (~500 chars, opened "Survive-compaction…") scored
+   `triggering 0.33` (composite 0.87): it failed `description_length` (>250 max) and
+   `description_structure` (`has_what` wants `^[A-Z][a-z]+\s` — "Survive-compaction" starts with a
+   hyphen, not a space). Rewriting to a 242-char, "Durable bug-fix ledger … Use when …" description
+   (plain leading word, `Use when`, no vague words) → `triggering 1.00`, composite **1.00**. This is
+   the renderer-guarantee principle: satisfy the proxy by *improving* the artifact (a punchy routing
+   description IS better), never by clamping.
+
+2. **The behavioral trigger eval caught what the structural proxy could not.** 3-sample pooled
+   (30 keyless `claude -p` calls): **precision 1.00, recall 0.40, accuracy 0.50 (σ=0.082)** →
+   behavioral 0.633, composite-with-fold 0.967 (PASS). The structural proxy rated the trigger
+   *perfect (1.00)*, but the real-LLM behavioral eval shows the consolidated description is
+   **under-sensitive**: when it fires it's always right (no false positives), but it stays quiet on
+   60% of the should-fire phrasings. **This is the consolidation tradeoff quantified** — folding three
+   focused single-signal triggers into one concise trigger trades recall for a clean single router.
+   It also validates *why Faber runs both evals*: structural (cheap, deterministic, gates form) +
+   behavioral (LLM, stochastic, measures routing) are not redundant — the behavioral one found a real
+   routing weakness invisible to structure. Because behavioral weight is only 0.10, recall 0.40 docks
+   the composite by ~0.03 (still passes), so it's a *measurement*, not a gate failure — the lever for
+   fixing it is the reflective loop / GEPA regime (optimize the stochastic recall), not the structural
+   gate.
