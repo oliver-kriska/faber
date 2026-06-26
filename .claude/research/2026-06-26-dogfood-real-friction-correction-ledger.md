@@ -70,6 +70,30 @@ Installed the winner to `~/.claude/skills/correction-ledger/SKILL.md` with a `.f
 provenance marker (`installed_by:faber`, adapter, source_session, fingerprint). The loop closed
 end-to-end: the skill became loadable in the same session whose friction produced it.
 
+## Continuous behavioral reward + the stochasticity finding (follow-up)
+
+Changed `Faber.Eval.fold_behavioral/2` so the `behavioral` dimension scores **continuously** (mean of
+raw accuracy/precision/recall) instead of `passed/total` over three boolean thresholds (commit
+`fb1cd7b`, unit-proven: a skill that clears every threshold but isn't perfect now scores 0.833 /
+composite < 1.0 where the old step-function pinned at a flat 1.0). This is what gives the reflective
+loop a gradient to push routing higher — bounded impact since behavioral weight is only 0.10, so a
+structurally-perfect skill still passes the gate.
+
+Re-ran `Loop.refine(rank1, reflect, trigger: true, target: 1.0)`: `status=complete, iterations=1,
+trajectory=[{kept: true, 1.0}]`. The seed scored **composite 1.0 this run** — i.e. the LLM routed
+every trigger fixture correctly. But the *same* session's earlier propose scored trigger accuracy
+**0.75**. **Same skill, same fixtures, different `claude -p` calls → 0.75 vs 1.0: the trigger
+objective is stochastic.**
+
+Implication (reinforces `2026-06-23-gepa-reflective-loop-decision.md` and
+`deterministic-eval-sidesteps-reflective-opt-variance`): the continuous reward correctly exposes a
+gradient *when a gap exists*, but the gap appears/disappears with LLM noise. Greedy single-sample
+keep/revert over a noisy objective is fragile — it'll "keep" a candidate that merely got a lucky
+routing draw. Optimizing a stochastic objective properly needs multi-sample evaluation per candidate
+(average N trigger runs) and/or a dataset-based optimizer (GEPA) — exactly the regime the deferral
+decision reserved GEPA for. Concrete next step if pursuing this: average the trigger eval over N
+samples before folding, so the behavioral score is a stable estimate rather than one Bernoulli draw.
+
 ## Repro
 
 ```sh
