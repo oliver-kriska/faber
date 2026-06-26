@@ -219,3 +219,41 @@ Two findings, both about the **trigger**:
    the composite by ~0.03 (still passes), so it's a *measurement*, not a gate failure — the lever for
    fixing it is the reflective loop / GEPA regime (optimize the stochastic recall), not the structural
    gate.
+
+## Reflective pass to lift recall — works, but the built-in loop can't do it (enaia follow-up)
+
+Goal: lift `bugfix-ledger`'s trigger recall. **The built-in `Faber.Loop.refine/3` does NOT fit this**
+and running it would not have helped — two structural reasons:
+- `refine/3` seeds by `Propose.propose(scan_result, adapter)` — it re-proposes a skill **from a
+  session**, so it can't evolve a hand-consolidated proposal; it would emit a different skill.
+- `reflection_feedback/2` scores a **fixture-less SKILL.md string**, so `Eval.score` can only fold
+  *structural* dimensions (behavioral needs the proposal's `should_trigger` fixtures). bugfix-ledger's
+  structural composite is already 1.0 → the loop sees no gradient and stops at the ceiling. **The loop
+  cannot target behavioral recall today.** (Candidate Faber improvement: let `refine` accept a seed
+  `%Proposal{}` and let reflection score *with trigger* against its fixtures.)
+
+So recall was lifted with a **manual reflective-on-behavioral pass** (keyless): eval with trigger →
+extract the missed should-fire phrasings (credit assignment) → LLM revises ONLY the `description`
+(the router) to cover them under the structural constraints (≤250 chars, `^[A-Z][a-z]+\s`, `Use
+when`, no vague words) → re-eval → keep iff recall beats baseline by a **+0.10 margin** and precision
+≥ 0.8 (a bare `>` banks lucky noise). 5-sample pooled:
+
+| | recall | precision | composite |
+|--|--------|-----------|-----------|
+| before | 0.52 | 1.00 | 0.976 |
+| after  | **0.72** | 1.00 | 0.987 |
+
+Kept (+0.20, precision held at 1.0). The revised description explicitly names the previously-missed
+phrasings ("goes in circles", "a test retried several times", "reproduce an error and find root
+cause"). Reinstalled with a `reflective_pass: recall` provenance marker.
+
+**Noise caveat (the recurring lesson).** Baseline recall for the *same* skill measured 0.40, then
+0.733, then 0.52 across three pooled runs (3/3/5 samples) — the objective is genuinely stochastic. The
++0.10 margin gate is what makes a greedy keep/revert honest here; even so, the two versions' "true"
+recall partly overlaps. The revised description is broader **by construction** (covers more should-fire
+surface while precision stayed 1.0), so the lift is plausibly real, not just a lucky draw — but
+robustly optimizing this objective is the multi-sample / GEPA regime the deferral reserved, not
+single-shot reflection. A first script bug (matched atom key `description:` while
+`LLM.generate_object` returns string keys — the same gotcha `Faber.Eval.Trigger.truthy/1` already
+guards with a dual `Map.get`) silently rejected 4 valid revisions before the fix; a dual-key accessor
+helper is worth adding if more callers parse structured LLM output.
