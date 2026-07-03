@@ -96,6 +96,19 @@ class TestMatchers(unittest.TestCase):
         self.assertTrue(description_structure(GOOD_SKILL)[0])
         self.assertFalse(description_structure(BAD_SKILL)[0])
 
+    def test_description_structure_accepts_stack_vocabulary_leads(self):
+        def with_desc(desc):
+            return f'---\nname: x\ndescription: "{desc}"\n---\n# X\n'
+
+        # Real stack terms are a valid "what" -- CamelCase, acronyms, digit/+/- compounds.
+        for lead in ["GenServer", "LiveView", "OTP", "N+1", "JSON-RPC"]:
+            skill = with_desc(f"{lead} pitfalls explained. Use when debugging them.")
+            self.assertTrue(description_structure(skill)[0], lead)
+
+        # A single capital letter ("A ", "I ") is still no "what".
+        bare = with_desc("A thing that helps. Use when unsure.")
+        self.assertFalse(description_structure(bare)[0])
+
     def test_no_dangerous_patterns_ignores_documented_warnings(self):
         documented = (
             "---\nname: x\ndescription: y\n---\n\n"

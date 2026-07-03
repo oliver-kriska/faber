@@ -194,7 +194,10 @@ defmodule Faber.Eval.Matchers do
   def description_structure(content, _params) do
     {fm, _} = split_frontmatter(content)
     desc = Map.get(fm, "description", "")
-    has_what = Regex.match?(~r/^[A-Z][a-z]+\s/, desc)
+    # "What" = starts with a capitalized word of ≥2 chars. `[\w+-]` (not `[a-z]`) so real stack
+    # vocabulary passes — "GenServer…", "LiveView…", "OTP…", "N+1…" — while a bare "A " still
+    # fails. Keep in lockstep with python/faber_eval/matchers.py (parity test pins both).
+    has_what = Regex.match?(~r/^[A-Z][\w+-]+\s/, desc)
     has_when = Regex.match?(~r/\b[Uu]se\s+(?:when|after|for|to)\b/, desc)
 
     if has_what and has_when,

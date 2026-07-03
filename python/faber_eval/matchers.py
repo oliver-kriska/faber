@@ -162,7 +162,10 @@ def description_no_vague(content, forbidden=None, **_):
 def description_structure(content, **_):
     fm, _ = split_frontmatter(content)
     desc = fm.get("description", "")
-    has_what = bool(re.search(r"^[A-Z][a-z]+\s", desc))
+    # "What" = starts with a capitalized word of >=2 chars. [\w+-] (not [a-z]) so real stack
+    # vocabulary passes -- "GenServer...", "OTP...", "N+1..." -- while a bare "A " still fails.
+    # Keep in lockstep with lib/faber/eval/matchers.ex (parity test pins both).
+    has_what = bool(re.search(r"^[A-Z][\w+-]+\s", desc))
     has_when = bool(re.search(r"\b[Uu]se\s+(?:when|after|for|to)\b", desc))
     if has_what and has_when:
         return True, "description has both what and when"

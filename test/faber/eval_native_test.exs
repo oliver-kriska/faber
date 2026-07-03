@@ -75,6 +75,25 @@ defmodule Faber.Eval.NativeTest do
       assert {false, _} = Matchers.description_structure(@bad, %{})
     end
 
+    test "description_structure accepts stack-vocabulary leads, still rejects bare articles" do
+      with_desc = fn desc ->
+        "---\nname: x\ndescription: \"#{desc}\"\n---\n# X\n"
+      end
+
+      # Real stack terms are a valid "what" — CamelCase, acronyms, digit/`+`/`-` compounds.
+      for lead <- ["GenServer", "LiveView", "OTP", "N+1", "JSON-RPC"] do
+        skill = with_desc.("#{lead} pitfalls explained. Use when debugging them.")
+        assert {true, _} = Matchers.description_structure(skill, %{}), "expected pass: #{lead}"
+      end
+
+      # A single capital letter ("A ", "I ") is still no "what".
+      assert {false, _} =
+               Matchers.description_structure(
+                 with_desc.("A thing that helps. Use when unsure."),
+                 %{}
+               )
+    end
+
     test "no_dangerous_patterns ignores documented warnings but flags live commands" do
       documented =
         "---\nname: x\ndescription: y\n---\n\n## Iron Laws\n\n1. Never run rm -rf / here.\n"
