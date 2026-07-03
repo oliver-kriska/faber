@@ -13,7 +13,7 @@ defmodule Faber.CLI do
   `help`, `--version`.
   """
 
-  alias Faber.{Adapter, Eval, Install, Propose, Scan}
+  alias Faber.{Adapter, Eval, Install, Loop, Propose, Proposal, Scan}
 
   @default_port 4710
 
@@ -78,6 +78,33 @@ defmodule Faber.CLI do
       )
 
     {:propose, opts}
+  end
+
+  def parse(["refine" | rest]) do
+    {opts, _, _} =
+      OptionParser.parse(rest,
+        strict: [
+          rank: :integer,
+          strategy: :string,
+          iterations: :integer,
+          patience: :integer,
+          target: :float,
+          min_improvement: :float,
+          trigger: :boolean,
+          trigger_samples: :integer,
+          holdout: :boolean,
+          install: :boolean,
+          force: :boolean,
+          source: :string,
+          db: :string,
+          format: :string,
+          limit: :integer,
+          base: :string,
+          min_messages: :integer
+        ]
+      )
+
+    {:refine, opts}
   end
 
   def parse(["serve" | rest]) do
@@ -214,6 +241,53 @@ defmodule Faber.CLI do
 
       {:error, reason} ->
         IO.puts(:stderr, "faber propose failed: #{inspect(reason)}")
+        1
+    end
+  end
+
+  def run(:refine, opts) do
+    rank = opts[:rank] || 1
+
+    scan_opts =
+      opts
+      |> Keyword.take([:limit, :base, :min_messages, :db])
+      |> put_if(:source, normalize_source(opts[:source]))
+      |> put_if(:format, normalize_format(opts[:format]))
+
+    # CLI defaults are deliberately tighter than the library's (5 iterations vs 50): every
+    # iteration is a real `claude -p` propose + eval, so a CLI run should be minutes, not hours.
+    # Strategy defaults to :reflect — targeted edits from eval feedback beat blind regeneration
+    # (see .claude/research/2026-06-23-gepa-reflective-loop-decision.md).
+    refine_opts =
+      [
+        strategy: normalize_strategy(opts[:strategy]),
+        max_iterations: opts[:iterations] || 5
+      ]
+      |> put_if(:patience, opts[:patience])
+      |> put_if(:target, opts[:target])
+      |> put_if(:min_improvement, opts[:min_improvement])
+      |> put_if(:trigger, opts[:trigger])
+      |> put_if(:trigger_samples, opts[:trigger_samples])
+      |> put_if(:trigger_holdout, opts[:holdout])
+
+    with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
+         %Scan.Result{} = result <- Enum.at(Scan.run(scan_opts), rank - 1),
+         :ok <- stack_gate(adapter, result, opts[:force]),
+         %Loop.State{} = state <- Loop.refine(result, adapter, refine_opts) do
+      IO.puts(render_refinement(state, adapter))
+      maybe_install_best(state, adapter, opts[:install])
+      0
+    else
+      nil ->
+        IO.puts(:stderr, "faber: no session at rank #{rank}")
+        1
+
+      {:error, {:stack_mismatch, adapter, result}} ->
+        IO.puts(:stderr, stack_mismatch_message(adapter, result))
+        1
+
+      {:error, reason} ->
+        IO.puts(:stderr, "faber refine failed: #{inspect(reason)}")
         1
     end
   end
@@ -366,6 +440,74 @@ defmodule Faber.CLI do
     end
   end
 
+  # ── refine rendering / install ──────────────────────────────────────────────
+
+  defp render_refinement(%Loop.State{} = state, adapter) do
+    kept = Enum.count(state.history, & &1.kept)
+    start = starting_composite(state)
+
+    history =
+      Enum.map_join(state.history, "\n", fn e ->
+        marker = if e.kept, do: "KEEP", else: " -- "
+
+        note =
+          case e.reason do
+            nil -> ""
+            reason -> "  (#{reason})"
+          end
+
+        "  #{String.pad_leading(to_string(e.iteration), 3)}  #{marker}  " <>
+          "#{fmt4(e.new_composite)}  #{e.description}#{note}"
+      end)
+
+    """
+    #{state.skill || "skill"} — refined #{fmt4(start)} → #{fmt4(state.best_composite)} \
+    (#{state.status}, #{kept}/#{length(state.history)} kept)
+
+    #{history}
+    #{render_holdout(state.holdout)}
+    #{render_best(state, adapter)}
+    """
+  end
+
+  # The seed's composite is the first entry's old_composite (entries record best-at-the-time).
+  defp starting_composite(%Loop.State{history: [first | _]}), do: first.old_composite
+  defp starting_composite(%Loop.State{best_composite: best}), do: best
+
+  defp render_holdout(nil), do: ""
+
+  defp render_holdout(%{error: reason}),
+    do: "\nholdout: validation scoring failed — #{inspect(reason)}\n"
+
+  defp render_holdout(%{composite: comp, behavioral: behavioral, fixtures: n}) do
+    "\nholdout: composite #{fmt4(comp)}, behavioral #{fmt4(behavioral)} " <>
+      "(#{n} validation fixtures the loop never optimized against)\n"
+  end
+
+  defp render_best(%Loop.State{best_proposal: %Proposal{} = p}, adapter),
+    do: "\n#{Propose.render_skill_md(p, adapter)}"
+
+  defp render_best(%Loop.State{best_content: content}, _adapter) when is_binary(content),
+    do: "\n#{content}"
+
+  defp render_best(_state, _adapter), do: ""
+
+  defp maybe_install_best(_state, _adapter, install) when install in [nil, false], do: :ok
+
+  defp maybe_install_best(%Loop.State{best_proposal: %Proposal{} = p}, adapter, true),
+    do: maybe_install(p, adapter, true)
+
+  defp maybe_install_best(_state, _adapter, true) do
+    IO.puts(:stderr, "install skipped: the run tracked no proposal")
+  end
+
+  defp normalize_strategy("regenerate"), do: :regenerate
+  defp normalize_strategy("reflect"), do: :reflect
+  defp normalize_strategy(_), do: :reflect
+
+  defp fmt4(n) when is_number(n), do: :erlang.float_to_binary(n * 1.0, decimals: 4)
+  defp fmt4(_), do: "n/a"
+
   defp session(%{path: path, session_id: sid} = result) do
     project = project_label(result, path)
     short = if is_binary(sid), do: String.slice(sid, 0, 8), else: Path.basename(path, ".jsonl")
@@ -427,6 +569,17 @@ defmodule Faber.CLI do
                                                     (--force: skip the stack-match gate;
                                                      --trigger: add the behavioral trigger-accuracy
                                                      dimension — one keyless LLM call per fixture)
+      faber refine [--rank N] [--strategy reflect|regenerate] [--iterations N] [--patience N]
+                   [--target F] [--min-improvement F] [--trigger] [--trigger-samples N]
+                   [--holdout] [--install] [--force] [--source S] [--format F] [--db PATH]
+                   [--base DIR] [--min-messages N]
+                                                    Self-improve a skill: propose → eval → keep
+                                                    the best, looping (default: 5 reflective
+                                                    iterations, keyless via claude -p).
+                                                    (--trigger: also optimize routing recall,
+                                                     scored on the seed's pinned fixtures;
+                                                     --holdout: report a held-out validation
+                                                     score; --install: install the final best)
       faber serve [--port P] [--no-open]            Start the dashboard UI in your browser
                                                     (also serves the read-only MCP server at /mcp)
       faber sync [--target claude,codex] [--check] [--force] [--dir PATH]

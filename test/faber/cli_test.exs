@@ -34,6 +34,17 @@ defmodule Faber.CLITest do
       assert CLI.parse(["propose", "--limit", "10", "--base", "/tmp/x", "--min-messages", "3"]) ==
                {:propose, [limit: 10, base: "/tmp/x", min_messages: 3]}
 
+      assert CLI.parse([
+               "refine",
+               "--iterations",
+               "3",
+               "--trigger",
+               "--holdout",
+               "--min-improvement",
+               "0.05"
+             ]) ==
+               {:refine, [iterations: 3, trigger: true, holdout: true, min_improvement: 0.05]}
+
       assert CLI.parse(["serve", "--port", "9000", "--no-open"]) ==
                {:serve, [port: 9000, open: false]}
 
@@ -105,6 +116,20 @@ defmodule Faber.CLITest do
       installed = Path.wildcard(Path.join([tmp, "*", "SKILL.md"]))
       assert [path] = installed
       assert File.read!(path) =~ "name:"
+    end
+
+    test "refine loops propose → eval → keep and renders the history (stub LLM)" do
+      # The Stub LLM re-proposes an identical skill each iteration, so every candidate is a
+      # "no improvement" rejection — the run still completes, renders the per-iteration history
+      # (reflect strategy → "reflect: <dimension>" descriptions), and prints the final best.
+      # target 1.1 is unreachable, or the stub's perfect seed would end the loop at 0 iterations.
+      opts = @fixtures ++ [rank: 1, iterations: 2, target: 1.1]
+      out = capture_io(fn -> assert CLI.run(:refine, opts) == 0 end)
+
+      assert out =~ "refined"
+      assert out =~ "reflect:"
+      assert out =~ "no improvement"
+      assert out =~ "Iron Laws"
     end
 
     test "propose refuses a stack-mismatched session, and --force overrides" do
