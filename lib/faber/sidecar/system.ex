@@ -17,21 +17,28 @@ defmodule Faber.Sidecar.System do
     python = opts[:python] || Application.get_env(:faber, :python, "python3")
     dir = opts[:python_dir] || Application.get_env(:faber, :python_dir, default_dir())
 
+    timeout =
+      opts[:timeout] || Application.get_env(:faber, :sidecar_timeout_ms, :timer.minutes(2))
+
     with {:ok, json} <- Jason.encode(request),
          {:ok, tmp} <- write_temp(json) do
       try do
-        run(python, command, tmp, dir)
+        run(python, command, tmp, dir, timeout)
       after
         File.rm(tmp)
       end
     end
   end
 
-  defp run(python, command, tmp, dir) do
-    case System.cmd(python, ["-m", "faber_eval", command, "--input", tmp],
+  defp run(python, command, tmp, dir, timeout) do
+    case Faber.Subprocess.run(python, ["-m", "faber_eval", command, "--input", tmp],
            cd: dir,
-           stderr_to_stdout: false
+           stderr_to_stdout: false,
+           timeout: timeout
          ) do
+      {:error, :timeout} ->
+        {:error, {:sidecar_timeout, timeout}}
+
       {out, 0} ->
         case Jason.decode(out) do
           {:ok, map} -> {:ok, map}

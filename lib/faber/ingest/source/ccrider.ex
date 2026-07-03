@@ -124,7 +124,13 @@ defmodule Faber.Ingest.Source.Ccrider do
       raise "ccrider DB not found at #{db} (set `db:` or run ccrider first)"
     end
 
-    case System.cmd(bin, ["-json", "-readonly", db, sql], stderr_to_stdout: true) do
+    case Faber.Subprocess.run(bin, ["-json", "-readonly", db, sql],
+           stderr_to_stdout: true,
+           timeout: :timer.seconds(30)
+         ) do
+      {:error, :timeout} ->
+        {:error, :sqlite3_timeout}
+
       {out, 0} ->
         case String.trim(out) do
           "" ->

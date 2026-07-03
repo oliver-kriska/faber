@@ -13,6 +13,7 @@ defmodule Faber.LLM.ClaudeCLI do
       config :faber, :llm, Faber.LLM.ClaudeCLI
       config :faber, :claude_bin, "claude"          # path/name of the CLI
       config :faber, :claude_model, "sonnet"        # optional; omit to use the CLI default
+      config :faber, :claude_timeout_ms, 300_000    # kill a hung CLI call (default 5 min)
 
   The parsing helpers (`render_schema/1`, `extract_json/1`, `parse_envelope/1`) are pure and unit
   tested; only `generate_object/3` does I/O.
@@ -26,9 +27,12 @@ defmodule Faber.LLM.ClaudeCLI do
     system = build_system(opts[:system_prompt], schema)
     model = opts[:model] || Application.get_env(:faber, :claude_model)
 
+    timeout =
+      opts[:timeout] || Application.get_env(:faber, :claude_timeout_ms, :timer.minutes(5))
+
     case System.find_executable(bin) do
       nil -> {:error, {:claude_cli_unavailable, bin}}
-      resolved -> run(resolved, to_string(prompt), system, model)
+      resolved -> run(resolved, to_string(prompt), system, model, timeout)
     end
   end
 
@@ -36,7 +40,7 @@ defmodule Faber.LLM.ClaudeCLI do
   # (the prompt is on the command line). `System.cmd/3` can't close the child's stdin, so wrap in
   # `sh -c`; every dynamic value goes through the ENVIRONMENT, never the command string, so prompt /
   # system content can't be word-split or shell-injected. `${VAR:+--flag "$VAR"}` omits empty flags.
-  defp run(bin, prompt, system, model) do
+  defp run(bin, prompt, system, model, timeout) do
     script =
       ~s(exec "$FB_BIN" -p "$FB_PROMPT" --output-format json) <>
         ~s( ${FB_SYS:+--append-system-prompt "$FB_SYS"}) <>
@@ -49,7 +53,14 @@ defmodule Faber.LLM.ClaudeCLI do
       {"FB_MODEL", to_string(model || "")}
     ]
 
-    case System.cmd("sh", ["-c", script], env: env, stderr_to_stdout: false) do
+    case Faber.Subprocess.run("sh", ["-c", script],
+           env: env,
+           stderr_to_stdout: false,
+           timeout: timeout
+         ) do
+      {:error, :timeout} ->
+        {:error, {:claude_cli_timeout, timeout}}
+
       {out, 0} ->
         with {:ok, text} <- parse_envelope(out),
              {:ok, object} <- extract_json(text) do

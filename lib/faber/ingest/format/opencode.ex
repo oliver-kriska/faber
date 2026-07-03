@@ -91,7 +91,11 @@ defmodule Faber.Ingest.Format.OpenCode do
   end
 
   defp run_query(sqlite3, path) do
-    case System.cmd(sqlite3, ["-json", "-readonly", path, @query], stderr_to_stdout: true) do
+    case Faber.Subprocess.run(sqlite3, ["-json", "-readonly", path, @query],
+           stderr_to_stdout: true,
+           timeout: :timer.seconds(30)
+         ) do
+      {:error, :timeout} -> [{:error, %{line: path, reason: :sqlite3_timeout}}]
       {"", 0} -> []
       {output, 0} -> decode_rows(output, path)
       {output, status} -> [{:error, %{line: path, reason: {:sqlite3_exit, status, output}}}]

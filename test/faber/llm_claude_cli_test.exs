@@ -88,5 +88,20 @@ defmodule Faber.LLM.ClaudeCLITest do
                  claude_bin: "definitely-not-a-real-bin-xyz"
                )
     end
+
+    @tag :tmp_dir
+    test "a hung CLI is killed at :timeout instead of hanging the caller", %{tmp_dir: dir} do
+      script = Path.join(dir, "hung_claude")
+      File.write!(script, "#!/bin/sh\nsleep 30\n")
+      File.chmod!(script, 0o755)
+
+      {us, result} =
+        :timer.tc(fn ->
+          ClaudeCLI.generate_object("prompt", @schema, claude_bin: script, timeout: 150)
+        end)
+
+      assert result == {:error, {:claude_cli_timeout, 150}}
+      assert us < 5_000_000
+    end
   end
 end

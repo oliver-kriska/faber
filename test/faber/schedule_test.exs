@@ -23,6 +23,13 @@ defmodule Faber.ScheduleTest do
     def generate_object(_prompt, _schema, _opts), do: raise("boom in the LLM")
   end
 
+  defmodule HangLLM do
+    @behaviour Faber.LLM
+    @impl true
+    # Never returns → the run outlives :max_run_ms and must be killed by the wedge guard.
+    def generate_object(_prompt, _schema, _opts), do: Process.sleep(:infinity)
+  end
+
   describe "run_once/1 (pure pipeline driver)" do
     test "scans, proposes, and evals the top sessions (hermetic: stub LLM, native eval)" do
       summary = Schedule.run_once(top: 1, scan: @fixtures, adapter_dir: "adapters/faber-elixir")
@@ -175,6 +182,39 @@ defmodule Faber.ScheduleTest do
 
       refute_receive {:faber_schedule, :run_complete, _}, 300
       assert Schedule.status(pid).runs == 0
+    end
+
+    # Wedge guard: a run that never finishes (hung subprocess) must be killed at :max_run_ms and
+    # recorded as a failed run — otherwise `running: true` sticks forever and every future tick is
+    # silently skipped (the scheduler stops doing anything, with no crash and no log).
+    test "a hung run is killed at max_run_ms; the scheduler recovers and can run again" do
+      pid =
+        start_supervised!(
+          {Schedule,
+           name: nil,
+           enabled: false,
+           max_run_ms: 200,
+           notify: self(),
+           top: 1,
+           scan: @fixtures,
+           adapter_dir: "adapters/faber-elixir",
+           llm: HangLLM}
+        )
+
+      Schedule.run_now(pid)
+
+      assert_receive {:faber_schedule, :run_complete, summary}, 2_000
+      assert summary.error == :run_timeout
+      assert Process.alive?(pid)
+
+      status = Schedule.status(pid)
+      assert status.running == false
+      assert status.runs == 1
+
+      # Not wedged: a follow-up run starts (and is itself killed at the deadline).
+      Schedule.run_now(pid)
+      assert_receive {:faber_schedule, :run_complete, _}, 2_000
+      assert Schedule.status(pid).runs == 2
     end
 
     # async_nolink isolation: a job that hard-crashes must NOT take down the scheduler — it lands as

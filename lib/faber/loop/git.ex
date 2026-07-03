@@ -58,7 +58,14 @@ defmodule Faber.Loop.Git do
   @doc "Run a raw git subcommand in `dir`. Exposed for setup (init, baseline commit) and tests."
   @spec git(Path.t(), [String.t()]) :: {:ok, String.t()} | {:error, term()}
   def git(dir, args) do
-    case System.cmd("git", args, cd: dir, stderr_to_stdout: true) do
+    # Local git ops are sub-second; a hung git (lock contention, credential prompt through a
+    # misconfigured helper) must not stall the loop forever.
+    case Faber.Subprocess.run("git", args,
+           cd: dir,
+           stderr_to_stdout: true,
+           timeout: :timer.minutes(1)
+         ) do
+      {:error, :timeout} -> {:error, {:git_timeout, args}}
       {out, 0} -> {:ok, out}
       {out, code} -> {:error, {:git_failed, code, out}}
     end

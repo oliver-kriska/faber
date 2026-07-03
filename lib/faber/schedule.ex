@@ -15,6 +15,7 @@ defmodule Faber.Schedule do
         enabled: true,
         every_ms: :timer.hours(8),
         initial_delay_ms: :timer.minutes(1),   # optional; defaults to every_ms
+        max_run_ms: :timer.minutes(30),        # kill a run that exceeds this (wedge guard)
         adapter_dir: "adapters/faber-elixir",
         top: 3,                                 # how many top-ranked sessions to propose for
         install: false,                         # install skills that pass the eval bar?
@@ -111,8 +112,9 @@ defmodule Faber.Schedule do
     state = %{
       enabled: Keyword.get(cfg, :enabled, false),
       every_ms: Keyword.get(cfg, :every_ms, @hours8),
+      max_run_ms: Keyword.get(cfg, :max_run_ms, :timer.minutes(30)),
       notify: Keyword.get(cfg, :notify),
-      job_opts: Keyword.drop(cfg, [:enabled, :every_ms, :initial_delay_ms, :notify]),
+      job_opts: Keyword.drop(cfg, [:enabled, :every_ms, :initial_delay_ms, :max_run_ms, :notify]),
       timer: nil,
       running: false,
       task: nil,
@@ -159,6 +161,29 @@ defmodule Faber.Schedule do
     {:noreply, finish_run(state, summary)}
   end
 
+  # Wedge guard: a run that outlives :max_run_ms (a hung subprocess despite the per-call
+  # timeouts, a pathological scan) is killed and recorded as a failed run — without this,
+  # `running: true` would stick forever and every future tick would be silently skipped.
+  # `Task.shutdown` may race a just-finished task and hand us its reply; treat that as a
+  # normal completion.
+  def handle_info({:run_deadline, ref}, %{task: %Task{ref: ref} = task} = state) do
+    case Task.shutdown(task, :brutal_kill) do
+      {:ok, summary} ->
+        Logger.info("faber schedule: run ##{state.runs + 1} complete — #{summarize(summary)}")
+        {:noreply, finish_run(state, summary)}
+
+      _ ->
+        Logger.error(
+          "faber schedule: run ##{state.runs + 1} exceeded max_run_ms (#{state.max_run_ms}ms) — killed"
+        )
+
+        {:noreply, finish_run(state, %{scanned: 0, proposals: [], error: :run_timeout})}
+    end
+  end
+
+  # A deadline for an already-completed run — the current task (if any) has a different ref.
+  def handle_info({:run_deadline, _stale_ref}, state), do: {:noreply, state}
+
   def handle_info(_msg, state), do: {:noreply, state}
 
   # ── internals ──────────────────────────────────────────────────────────────
@@ -181,6 +206,7 @@ defmodule Faber.Schedule do
         end
       end)
 
+    Process.send_after(self(), {:run_deadline, task.ref}, state.max_run_ms)
     %{state | running: true, task: task}
   end
 
