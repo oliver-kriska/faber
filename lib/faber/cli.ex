@@ -178,9 +178,10 @@ defmodule Faber.CLI do
       |> put_if(:format, normalize_format(opts[:format]))
 
     # `--trigger` opts into the behavioral trigger-accuracy dimension (one keyless LLM call per
-    # fixture). It's off by default and one-shot only — never wired into the reflective loop, where
-    # optimizing a composite that includes an LLM-judged dimension would let the loop game its own
-    # generated fixtures (see .claude/research/2026-06-26-behavioral-eval-trigger-accuracy.md).
+    # fixture). Off by default. In the loop (`Faber.Loop.refine/3` with `trigger: true`) the same
+    # dimension is safe to optimize only because candidates are scored against the SEED's fixtures,
+    # pinned — a candidate can't game the objective by rewriting its own exam (see
+    # .claude/research/2026-06-26-behavioral-eval-trigger-accuracy.md and the Loop moduledoc).
     trigger? = opts[:trigger] == true
 
     with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),

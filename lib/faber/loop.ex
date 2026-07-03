@@ -20,9 +20,21 @@ defmodule Faber.Loop do
   Stop conditions (ported): `best_composite >= target` (default `0.95`) → `:complete`;
   `iteration >= max_iterations` (default `50`) → `:complete`; `consecutive_discards >= patience`
   (default `50`) → `:stuck`.
+
+  ## Optimizing routing (behavioral recall) — `trigger: true`
+
+  By default the loop's composite is **structural-only**: `eval_fn` scores a rendered string,
+  which never folds the behavioral trigger dimension. `refine/3` with `trigger: true` opts into
+  behavioral optimization: candidates are scored as **proposals** (so trigger accuracy /
+  precision / recall fold in at weight 0.10) — but always against the **seed proposal's
+  fixtures, pinned** for the whole run. A candidate may not rewrite the exam it is graded on;
+  without pinning the LLM could game the objective by generating fixtures its own description
+  trivially routes (the reason this dimension was originally kept out of the loop). Because one
+  routing call is a single Bernoulli draw, trigger mode defaults to `trigger_samples: 3`
+  (pooled) and `min_improvement` can gate keeps above the remaining noise.
   """
 
-  alias Faber.{Adapter, Eval, Propose, Scan}
+  alias Faber.{Adapter, Eval, Propose, Proposal, Scan}
   alias Faber.Loop.{Git, Journal}
 
   defmodule State do
@@ -34,12 +46,14 @@ defmodule Faber.Loop do
               git_paths: [],
               journal_path: nil,
               best_content: nil,
+              best_proposal: nil,
               best_composite: 0.0,
               iteration: 0,
               consecutive_discards: 0,
               patience: 50,
               max_iterations: 50,
               target: 0.95,
+              min_improvement: 0.0,
               status: :running,
               propose_fn: nil,
               eval_fn: nil,
@@ -53,8 +67,15 @@ defmodule Faber.Loop do
 
   Required opts: `:content` (seed SKILL.md), `:propose_fn`, `:eval_fn`. Optional: `:composite`
   (seed score; else computed via `eval_fn`), `:skill`, `:checks_fn` (default `default_checks/1`),
-  `:target`, `:max_iterations`, `:patience`, `:path`, `:dir`, `:git`, `:git_paths`,
+  `:target`, `:max_iterations`, `:patience`, `:min_improvement` (keep only when
+  `composite > best + min_improvement`; default `0.0` = strict), `:proposal` (the seed
+  `%Faber.Proposal{}`, tracked as `best_proposal`), `:path`, `:dir`, `:git`, `:git_paths`,
   `:journal_path`.
+
+  `propose_fn` returns `{:ok, %{content: String.t(), description: String.t()}}`; the map may
+  also carry `proposal: %Faber.Proposal{}`. `eval_fn` is arity 1 (`content`) or arity 2
+  (`content, candidate_map`) — arity 2 is how proposal-aware scoring (the behavioral trigger
+  dimension) reaches the eval.
   """
   @spec run(keyword()) :: State.t()
   def run(opts) do
@@ -67,14 +88,8 @@ defmodule Faber.Loop do
 
     composite =
       case Keyword.get(opts, :composite) do
-        nil ->
-          case eval_fn.(content) do
-            {:ok, c} -> c
-            _ -> 0.0
-          end
-
-        c ->
-          c
+        nil -> seed_composite(eval_fn, content, Keyword.get(opts, :proposal))
+        c -> c
       end
 
     %State{
@@ -85,14 +100,30 @@ defmodule Faber.Loop do
       git_paths: Keyword.get(opts, :git_paths, []),
       journal_path: Keyword.get(opts, :journal_path),
       best_content: content,
+      best_proposal: Keyword.get(opts, :proposal),
       best_composite: composite,
       patience: Keyword.get(opts, :patience, 50),
       max_iterations: Keyword.get(opts, :max_iterations, 50),
       target: Keyword.get(opts, :target, 0.95),
+      min_improvement: Keyword.get(opts, :min_improvement, 0.0),
       propose_fn: Keyword.fetch!(opts, :propose_fn),
       eval_fn: eval_fn,
       checks_fn: Keyword.get(opts, :checks_fn, &default_checks/1)
     }
+  end
+
+  # Score the seed when no :composite was supplied. An arity-2 eval_fn (proposal-aware) gets a
+  # synthetic candidate map built from the seed opts, mirroring what propose_fn will emit.
+  defp seed_composite(eval_fn, content, proposal) do
+    result =
+      if is_function(eval_fn, 2),
+        do: eval_fn.(content, %{content: content, proposal: proposal}),
+        else: eval_fn.(content)
+
+    case result do
+      {:ok, c} -> c
+      _ -> 0.0
+    end
   end
 
   defp loop(%State{} = state) do
@@ -108,34 +139,35 @@ defmodule Faber.Loop do
     iteration = state.iteration + 1
 
     case state.propose_fn.(state) do
-      {:ok, %{content: content} = prop} ->
-        desc = Map.get(prop, :description, "proposed change")
-        handle_candidate(state, iteration, content, desc)
+      {:ok, %{content: _} = candidate} ->
+        handle_candidate(state, iteration, candidate)
 
       {:error, reason} ->
         reject(state, iteration, state.best_composite, "proposal failed", inspect(reason))
     end
   end
 
-  defp handle_candidate(state, iteration, content, desc) do
+  defp handle_candidate(state, iteration, %{content: content} = candidate) do
+    desc = Map.get(candidate, :description, "proposed change")
+
     case write_candidate(state, content) do
       {:error, reason} ->
         reject(state, iteration, state.best_composite, desc, "write failed: #{inspect(reason)}")
 
       :ok ->
-        run_checks_and_eval(state, iteration, content, desc)
+        run_checks_and_eval(state, iteration, candidate, desc)
     end
   end
 
-  defp run_checks_and_eval(state, iteration, content, desc) do
+  defp run_checks_and_eval(state, iteration, %{content: content} = candidate, desc) do
     case state.checks_fn.(content) do
       {:error, reason} ->
         reject(state, iteration, state.best_composite, desc, "checks failed: #{inspect(reason)}")
 
       :ok ->
-        case state.eval_fn.(content) do
-          {:ok, composite} when composite > state.best_composite ->
-            keep(state, iteration, content, composite, desc)
+        case eval_candidate(state, candidate) do
+          {:ok, composite} when composite > state.best_composite + state.min_improvement ->
+            keep(state, iteration, candidate, composite, desc)
 
           {:ok, composite} ->
             reject(state, iteration, composite, desc, "no improvement")
@@ -152,9 +184,17 @@ defmodule Faber.Loop do
     end
   end
 
+  # An arity-2 eval_fn sees the whole candidate map (so proposal-aware scoring — the behavioral
+  # trigger dimension — is possible); the arity-1 form keeps the original content-only contract.
+  defp eval_candidate(%State{eval_fn: f}, %{content: content} = candidate)
+       when is_function(f, 2),
+       do: f.(content, candidate)
+
+  defp eval_candidate(%State{eval_fn: f}, %{content: content}), do: f.(content)
+
   # ── keep / revert / discard ──────────────────────────────────────────────
 
-  defp keep(state, iteration, content, composite, desc) do
+  defp keep(state, iteration, %{content: content} = candidate, composite, desc) do
     if state.git, do: Git.commit(state.dir, state.git_paths, keep_message(state, composite))
 
     entry = entry(state, iteration, composite, true, desc, nil)
@@ -164,6 +204,7 @@ defmodule Faber.Loop do
       state
       | iteration: iteration,
         best_content: content,
+        best_proposal: Map.get(candidate, :proposal) || state.best_proposal,
         best_composite: composite,
         consecutive_discards: 0,
         history: [entry | state.history]
@@ -245,7 +286,12 @@ defmodule Faber.Loop do
   @doc """
   Refine a proposal for `result` under `adapter` by repeatedly re-proposing and keeping the
   best-scoring variant. Wires `Faber.Propose` + `Faber.Eval` (scoring) into `run/1`. Forwards
-  `opts` to both (e.g. `:llm`, `:sidecar`, `:threshold`, `:max_iterations`, `:patience`, `:target`).
+  `opts` to both (e.g. `:llm`, `:sidecar`, `:threshold`, `:max_iterations`, `:patience`, `:target`,
+  `:min_improvement`).
+
+  `:seed` (a `%Faber.Proposal{}`) starts the loop from an existing proposal — e.g. one already
+  produced by `faber propose` or installed and now being improved — instead of minting a fresh
+  one from the friction finding.
 
   `:strategy` selects how each candidate is generated:
 
@@ -254,10 +300,16 @@ defmodule Faber.Loop do
       find its weakest eval dimension + failed checks, and feed that back into `Propose` so the next
       candidate is a *targeted* edit of the current draft. See `Faber.Optimize.reflect/3` and
       `.claude/research/2026-06-23-gepa-reflective-loop-decision.md`.
+
+  `trigger: true` folds the behavioral routing dimension into the loop's composite: candidates
+  are scored as proposals with the **seed's trigger fixtures pinned** (never their own — see the
+  moduledoc's fixture-gaming note), pooled over `:trigger_samples` (defaults to `3` here; the
+  one-shot eval default stays `1`). This is what lets the loop optimize recall, which a
+  structural-only composite can never see.
   """
   @spec refine(Scan.Result.t(), Adapter.t(), keyword()) :: State.t() | {:error, term()}
   def refine(%Scan.Result{} = result, %Adapter{} = adapter, opts \\ []) do
-    case Propose.propose(result, adapter, opts) do
+    case seed_proposal(result, adapter, opts) do
       {:ok, seed} ->
         run_refinement(result, adapter, seed, opts)
 
@@ -266,38 +318,65 @@ defmodule Faber.Loop do
     end
   end
 
+  defp seed_proposal(result, adapter, opts) do
+    case Keyword.get(opts, :seed) do
+      %Proposal{} = seed -> {:ok, seed}
+      nil -> Propose.propose(result, adapter, opts)
+    end
+  end
+
   defp run_refinement(result, adapter, seed, opts) do
     content = Propose.render_skill_md(seed, adapter)
 
     # Judge each candidate by THIS adapter's stack-specific eval bar (the moat), not a generic one.
-    eval_opts = Keyword.put(opts, :adapter, adapter)
+    # In trigger mode, single draws bank noise — default to pooled sampling (see moduledoc).
+    eval_opts =
+      opts
+      |> Keyword.put(:adapter, adapter)
+      |> then(fn eo ->
+        if eo[:trigger], do: Keyword.put_new(eo, :trigger_samples, 3), else: eo
+      end)
+
+    trigger? = Keyword.get(eval_opts, :trigger, false)
     strategy = Keyword.get(opts, :strategy, :regenerate)
-    propose_fn = build_propose_fn(strategy, result, adapter, eval_opts, opts)
+    propose_fn = build_propose_fn(strategy, result, adapter, eval_opts, opts, seed)
+    eval_fn = build_eval_fn(trigger?, seed, eval_opts)
 
-    eval_fn = fn c ->
-      case Eval.score(c, eval_opts) do
-        {:ok, %{composite: comp}} -> {:ok, comp}
-        {:error, _} = err -> err
-      end
-    end
-
-    run(
+    run_opts =
       Keyword.merge(opts,
         skill: seed.name,
         content: content,
+        proposal: seed,
         propose_fn: propose_fn,
         eval_fn: eval_fn
       )
-    )
+
+    # In trigger mode the seed must be scored the same way candidates are (behavioral folded),
+    # or the first candidate would be compared against an incompatible structural-only baseline.
+    run_opts =
+      if trigger? do
+        case score_pinned(seed, seed, eval_opts) do
+          {:ok, comp} -> Keyword.put(run_opts, :composite, comp)
+          {:error, _} -> run_opts
+        end
+      else
+        run_opts
+      end
+
+    run(run_opts)
   end
 
   # Blind regeneration — the baseline. Each candidate is independent of the last.
-  defp build_propose_fn(:regenerate, result, adapter, _eval_opts, opts) do
+  defp build_propose_fn(:regenerate, result, adapter, _eval_opts, opts, _seed) do
     fn _state ->
       case Propose.propose(result, adapter, opts) do
         {:ok, p} ->
           {:ok,
-           %{content: Propose.render_skill_md(p, adapter), description: "regenerated #{p.name}"}}
+           %{
+             content: Propose.render_skill_md(p, adapter),
+             description: "regenerated #{p.name}",
+             proposal: p
+           }}
 
         {:error, _} = err ->
           err
@@ -306,14 +385,26 @@ defmodule Faber.Loop do
   end
 
   # Reflective evolution — derive the next candidate from the current best + its eval feedback.
-  defp build_propose_fn(:reflect, result, adapter, eval_opts, opts) do
+  # In trigger mode the current best is scored AS a (pinned) proposal, so `behavioral` can be
+  # the weakest dimension and the feedback can target routing/recall explicitly.
+  defp build_propose_fn(:reflect, result, adapter, eval_opts, opts, seed) do
     fn state ->
-      {target, feedback} = reflection_feedback(state.best_content, eval_opts)
+      subject =
+        case {eval_opts[:trigger], state.best_proposal} do
+          {true, %Proposal{} = best} -> pin_fixtures(best, seed)
+          _ -> state.best_content
+        end
+
+      {target, feedback} = reflection_feedback(subject, state.best_content, eval_opts)
 
       case Propose.propose(result, adapter, Keyword.put(opts, :feedback, feedback)) do
         {:ok, p} ->
           {:ok,
-           %{content: Propose.render_skill_md(p, adapter), description: "reflect: #{target}"}}
+           %{
+             content: Propose.render_skill_md(p, adapter),
+             description: "reflect: #{target}",
+             proposal: p
+           }}
 
         {:error, _} = err ->
           err
@@ -321,11 +412,53 @@ defmodule Faber.Loop do
     end
   end
 
-  # Score the current best (deterministic, native — ~free) and turn its weakest dimension + failed
-  # checks into a targeted-edit instruction. Eval dimensions are the "named factors"; this is the
-  # credit-assignment step (KB: bounded-factor-level-prompt-optimization).
-  defp reflection_feedback(content, eval_opts) do
-    case Eval.score(content, eval_opts) do
+  # Structural-only scoring (the default): the composite of the rendered string.
+  defp build_eval_fn(false, _seed, eval_opts) do
+    fn c ->
+      case Eval.score(c, eval_opts) do
+        {:ok, %{composite: comp}} -> {:ok, comp}
+        {:error, _} = err -> err
+      end
+    end
+  end
+
+  # Behavioral-in-the-loop: score the candidate AS a proposal so the trigger dimension folds in —
+  # always against the seed's fixtures (pinned), never the candidate's own.
+  defp build_eval_fn(true, seed, eval_opts) do
+    fn _content, candidate ->
+      case candidate do
+        %{proposal: %Proposal{} = p} -> score_pinned(p, seed, eval_opts)
+        _ -> {:error, :candidate_without_proposal}
+      end
+    end
+  end
+
+  defp score_pinned(proposal, seed, eval_opts) do
+    case Eval.score(pin_fixtures(proposal, seed), eval_opts) do
+      {:ok, %{composite: comp}} -> {:ok, comp}
+      {:error, _} = err -> err
+    end
+  end
+
+  @doc false
+  # The fixture-gaming guard: candidates are graded on the SEED's routing fixtures for the whole
+  # run. Exposed (@doc false) so the pinning contract itself is unit-testable.
+  @spec pin_fixtures(Proposal.t(), Proposal.t()) :: Proposal.t()
+  def pin_fixtures(%Proposal{} = proposal, %Proposal{} = seed) do
+    %{
+      proposal
+      | should_trigger: seed.should_trigger,
+        should_not_trigger: seed.should_not_trigger
+    }
+  end
+
+  # Score the current best (deterministic on the structural dims; + pooled routing calls in
+  # trigger mode) and turn its weakest dimension + failed checks into a targeted-edit
+  # instruction. Eval dimensions are the "named factors"; this is the credit-assignment step
+  # (KB: bounded-factor-level-prompt-optimization). `subject` is what gets scored (string, or a
+  # pinned proposal in trigger mode); `content` is the draft embedded in the prompt.
+  defp reflection_feedback(subject, content, eval_opts) do
+    case Eval.score(subject, eval_opts) do
       {:ok, %{dimensions: dims, composite: comp}} when map_size(dims) > 0 ->
         {name, dim} = Enum.min_by(dims, fn {_n, d} -> d["score"] end)
         failed = for a <- dim["assertions"] || [], a["passed"] == false, do: a["evidence"]

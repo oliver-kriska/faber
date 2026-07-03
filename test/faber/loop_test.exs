@@ -79,6 +79,31 @@ defmodule Faber.LoopTest do
     end
   end
 
+  # Serves BOTH LLM roles of a trigger-mode refine. As the trigger ROUTER (schema carries
+  # :triggers) it answers mechanically — activate iff the request phrase contains "XYZZY". As the
+  # PROPOSER it returns a candidate identical to the seed's content but with GAMED fixtures its
+  # own routing trivially aces. If the loop ever scored candidates on their own fixtures, every
+  # candidate would jump to a perfect behavioral score and be kept; with seed-pinning they tie
+  # the baseline and are all rejected.
+  defmodule GamingLLM do
+    @behaviour Faber.LLM
+
+    @impl true
+    def generate_object(prompt, schema, _opts) do
+      if Keyword.keyword?(schema) and Keyword.has_key?(schema, :triggers) do
+        {:ok, %{triggers: String.contains?(prompt, "XYZZY")}}
+      else
+        gamed =
+          Map.merge(Faber.LLM.Stub.default_proposal(), %{
+            "should_trigger" => ["XYZZY please do the thing"],
+            "should_not_trigger" => ["a plain unrelated question"]
+          })
+
+        {:ok, gamed}
+      end
+    end
+  end
+
   # A supervised, per-test mutable cell (auto-cleaned by ExUnit).
   defp cell(initial) do
     start_supervised!({Agent, fn -> initial end}, id: {:cell, System.unique_integer([:positive])})
@@ -318,6 +343,81 @@ defmodule Faber.LoopTest do
     end
   end
 
+  describe "run/1 :min_improvement margin" do
+    test "a sub-margin gain is rejected; a gain clearing the margin is kept" do
+      state =
+        Loop.run(
+          content: "seed",
+          composite: 0.5,
+          min_improvement: 0.1,
+          patience: 2,
+          max_iterations: 2,
+          target: 0.99,
+          checks_fn: &ok_checks/1,
+          propose_fn: &always_propose/1,
+          eval_fn: scorer([0.55, 0.65])
+        )
+
+      # 0.55 is a real gain but inside the noise margin (0.5 + 0.1) → rejected; 0.65 clears it.
+      assert [%{kept: false, reason: "no improvement"}, %{kept: true}] = state.history
+      assert state.best_composite == 0.65
+    end
+  end
+
+  describe "refine/3 :seed (start from an existing proposal)" do
+    test "bypasses the initial propose — a dead LLM no longer aborts the run" do
+      # Without :seed this exact call is the {:error, :llm_unavailable} case above. With a seed
+      # the loop starts anyway; each iteration's re-propose still fails and is discarded.
+      state =
+        Loop.refine(sample_result(), sample_adapter(),
+          seed: honest_seed(),
+          llm: FailingLLM,
+          patience: 1
+        )
+
+      assert %Loop.State{status: :stuck} = state
+      assert state.skill == "investigate-retry-loops"
+      assert state.best_proposal == honest_seed()
+      assert [%{kept: false, description: desc}] = state.history
+      assert desc =~ "proposal failed"
+    end
+  end
+
+  describe "refine/3 trigger: true (behavioral recall in the loop, fixtures pinned)" do
+    test "candidates cannot game the objective by rewriting their own fixtures" do
+      seed = honest_seed()
+
+      state =
+        Loop.refine(sample_result(), sample_adapter(),
+          seed: seed,
+          llm: GamingLLM,
+          trigger: true,
+          max_iterations: 3,
+          patience: 100,
+          target: 0.99
+        )
+
+      # The router activates only on "XYZZY". The seed's honest fixtures score behavioral
+      # mean(acc 0.5, prec 0.0, rec 0.0) ≈ 0.167; every candidate is content-identical but
+      # carries gamed XYZZY fixtures that would score a perfect 1.0 — IF the loop scored
+      # candidates on their own fixtures. Pinning grades them on the seed's instead, so they tie
+      # the baseline and all are rejected. A single keep here means the guard is broken.
+      assert %Loop.State{} = state
+      assert Enum.count(state.history, & &1.kept) == 0
+      assert Enum.all?(state.history, &(&1.reason == "no improvement"))
+      assert state.best_proposal == seed
+    end
+
+    test "pin_fixtures/2 grafts the seed's fixtures onto the candidate" do
+      seed = honest_seed()
+      gamed = %{seed | should_trigger: ["XYZZY"], should_not_trigger: ["nope"]}
+
+      pinned = Loop.pin_fixtures(gamed, seed)
+      assert pinned.should_trigger == seed.should_trigger
+      assert pinned.should_not_trigger == seed.should_not_trigger
+    end
+  end
+
   describe "refine/3 :reflect strategy (keyless reflective evolution)" do
     test "feeds eval weaknesses back to produce a strictly better candidate and keeps it" do
       # Seed (no feedback) is weak; the reflective re-proposal sees the weakness feedback and
@@ -401,6 +501,24 @@ defmodule Faber.LoopTest do
 
   defp sample_adapter do
     %Faber.Adapter{name: "faber-elixir", version: "0.1.0", laws: [], playbooks: []}
+  end
+
+  # A well-formed seed proposal with HONEST fixtures (none contain the GamingLLM's "XYZZY"
+  # activation token), content-identical to the Stub/GamingLLM proposal otherwise.
+  defp honest_seed do
+    base = Faber.LLM.Stub.default_proposal()
+
+    %Faber.Proposal{
+      name: base["name"],
+      description: base["description"],
+      effort: base["effort"],
+      rationale: base["rationale"],
+      iron_laws: base["iron_laws"],
+      usage: base["usage"],
+      example: base["example"],
+      should_trigger: ["the same mix command keeps failing"],
+      should_not_trigger: ["run the test suite once"]
+    }
   end
 
   defp sample_result do
