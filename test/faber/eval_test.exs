@@ -113,6 +113,42 @@ defmodule Faber.EvalTest do
       {:ok, r} = Eval.score(@skill, adapter: adapter, eval: custom)
       assert Map.keys(r.dimensions) == ["only"]
     end
+
+    test "a vendored adapter's per-check weight is honored (not flattened to 1.0)" do
+      adapter = %Faber.Adapter{
+        name: "x",
+        version: "0.1.0",
+        eval: %{
+          "mode" => "vendored",
+          "dimensions" => [
+            %{
+              "name" => "custom",
+              "weight" => 1.0,
+              "checks" => [
+                %{
+                  "type" => "content_present",
+                  "weight" => 3.0,
+                  "params" => %{"pattern" => "# X"}
+                },
+                %{"type" => "content_present", "params" => %{"pattern" => "NO-SUCH-TEXT"}}
+              ]
+            }
+          ]
+        }
+      }
+
+      {:ok, r} = Eval.score(@skill, adapter: adapter)
+      # passing weight 3 of total 4 → 0.75; a dropped weight would flatten this to 0.5
+      assert r.dimensions["custom"]["score"] == 0.75
+    end
+
+    test "a vendored adapter without dimensions falls through to the engine default" do
+      adapter = %Faber.Adapter{name: "x", version: "0.1.0", eval: %{"mode" => "vendored"}}
+
+      {:ok, r} = Eval.score(@skill, adapter: adapter, eval_set: :full)
+      # A truthy [] used to mask :eval_set — the 6-dim default has no accuracy dimension.
+      assert Map.has_key?(r.dimensions, "accuracy")
+    end
   end
 
   describe "gate/2 (stubbed sidecar)" do
@@ -198,6 +234,63 @@ defmodule Faber.EvalTest do
       assert {:ok, sidecar} = Eval.score(skill, engine: :sidecar, eval_set: :full, refs: refs)
       assert_exact_parity(native, sidecar)
       assert native.dimensions["accuracy"]["score"] == sidecar.dimensions["accuracy"]["score"]
+    end
+
+    test "content/keyword matchers + per-check weights agree across engines" do
+      skill =
+        "---\nname: x\ndescription: GenServer worker with Phoenix PubSub. Use when routing.\n" <>
+          "---\n# X\n\nuse GenServer\n"
+
+      # Same eval, both serializations: adapter-YAML form (params nested) drives the native
+      # engine via build_native_def; the Python dict form (params inline) drives the sidecar.
+      # min: 3 with only 2 hits makes description_keywords FAIL, so parity is checked on a
+      # mixed pass/fail dimension, and the weight-3 check exercises the weighted math.
+      adapter = %Faber.Adapter{
+        name: "x",
+        version: "0.1.0",
+        eval: %{
+          "mode" => "vendored",
+          "dimensions" => [
+            %{
+              "name" => "custom",
+              "weight" => 1.0,
+              "checks" => [
+                %{
+                  "type" => "content_present",
+                  "weight" => 3.0,
+                  "params" => %{"pattern" => "GenServer"}
+                },
+                %{"type" => "content_absent", "params" => %{"pattern" => "FORBIDDEN"}},
+                %{
+                  "type" => "description_keywords",
+                  "params" => %{"keywords" => ["genserver", "phoenix", "django"], "min" => 3}
+                }
+              ]
+            }
+          ]
+        }
+      }
+
+      sidecar_eval = %{
+        "custom" => %{
+          "weight" => 1.0,
+          "checks" => [
+            %{"type" => "content_present", "weight" => 3.0, "pattern" => "GenServer"},
+            %{"type" => "content_absent", "pattern" => "FORBIDDEN"},
+            %{
+              "type" => "description_keywords",
+              "keywords" => ["genserver", "phoenix", "django"],
+              "min" => 3
+            }
+          ]
+        }
+      }
+
+      assert {:ok, native} = Eval.score(skill, adapter: adapter)
+      assert {:ok, sidecar} = Eval.score(skill, engine: :sidecar, eval: sidecar_eval)
+      assert_exact_parity(native, sidecar)
+      # 3 (pass) + 1 (pass) of 5 total weight, keywords fails → 0.8 on both engines
+      assert native.composite == 0.8
     end
   end
 

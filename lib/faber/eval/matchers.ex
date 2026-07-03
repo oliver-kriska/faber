@@ -160,6 +160,29 @@ defmodule Faber.Eval.Matchers do
       else: {false, "description #{n} chars (want #{min}-#{max})"}
   end
 
+  # Generic by default: with no keyword list this is a neutral pass — an adapter supplies its
+  # stack's domain keywords through eval params (mirrors `matchers.py description_keywords`).
+  def description_keywords(content, params) do
+    case params[:keywords] do
+      keywords when is_list(keywords) and keywords != [] ->
+        min = params[:min] || 3
+        {fm, _} = split_frontmatter(content)
+        desc = fm |> Map.get("description", "") |> String.downcase()
+
+        hits =
+          Enum.filter(keywords, fn k ->
+            is_binary(k) and String.contains?(desc, String.downcase(k))
+          end)
+
+        if length(hits) >= min,
+          do: {true, "#{length(hits)} domain keywords: #{inspect(hits)}"},
+          else: {false, "only #{length(hits)} domain keywords (want >= #{min})"}
+
+      _ ->
+        {true, "no keyword list configured (skipped)"}
+    end
+  end
+
   def description_no_vague(content, params) do
     forbidden = params[:forbidden] || @vague_default
     {fm, _} = split_frontmatter(content)
@@ -178,6 +201,37 @@ defmodule Faber.Eval.Matchers do
       do: {true, "has what + when"},
       else: {false, "what=#{has_what} when=#{has_when}"}
   end
+
+  # ── content search ────────────────────────────────────────────────────────────
+
+  # `pattern` comes from an untrusted adapter pack — compile non-bang and fail closed to a failed
+  # check on a bad regex, never raise. (The Python side has no such guard and would crash the
+  # sidecar; on valid patterns the two agree.)
+  def content_present(content, params) do
+    with {:ok, re} <- compile_pattern(params[:pattern]) do
+      if Regex.match?(re, content),
+        do: {true, "pattern present: #{params[:pattern]}"},
+        else: {false, "pattern absent: #{params[:pattern]}"}
+    end
+  end
+
+  def content_absent(content, params) do
+    with {:ok, re} <- compile_pattern(params[:pattern]) do
+      case Regex.run(re, content) do
+        nil -> {true, "pattern absent: #{params[:pattern]}"}
+        [match | _] -> {false, "forbidden pattern present: #{inspect(match)}"}
+      end
+    end
+  end
+
+  defp compile_pattern(pattern) when is_binary(pattern) do
+    case Regex.compile(pattern) do
+      {:ok, re} -> {:ok, re}
+      {:error, _} -> {false, "invalid pattern: #{inspect(pattern)}"}
+    end
+  end
+
+  defp compile_pattern(other), do: {false, "invalid pattern: #{inspect(other)}"}
 
   # ── safety ───────────────────────────────────────────────────────────────────
 
@@ -383,8 +437,11 @@ defmodule Faber.Eval.Matchers do
       "token_estimate" -> token_estimate(content, params)
       "frontmatter_field" -> frontmatter_field(content, params)
       "description_length" -> description_length(content, params)
+      "description_keywords" -> description_keywords(content, params)
       "description_no_vague" -> description_no_vague(content, params)
       "description_structure" -> description_structure(content, params)
+      "content_present" -> content_present(content, params)
+      "content_absent" -> content_absent(content, params)
       "has_iron_laws" -> has_iron_laws(content, params)
       "no_dangerous_patterns" -> no_dangerous_patterns(content, params)
       "has_examples" -> has_examples(content, params)

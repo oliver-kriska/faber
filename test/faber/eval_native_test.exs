@@ -83,6 +83,32 @@ defmodule Faber.Eval.NativeTest do
       live = "---\nname: x\ndescription: y\n---\n\n## Steps\n\nrun rm -rf / now\n"
       assert {false, _} = Matchers.no_dangerous_patterns(live, %{})
     end
+
+    test "description_keywords neutral-passes without a list, counts case-insensitive hits" do
+      skill = "---\nname: x\ndescription: GenServer worker with Phoenix PubSub\n---\n# X\n"
+
+      assert {true, "no keyword list configured (skipped)"} =
+               Matchers.description_keywords(skill, %{})
+
+      assert {true, _} =
+               Matchers.description_keywords(skill, %{keywords: ["genserver", "phoenix"], min: 2})
+
+      assert {false, _} =
+               Matchers.description_keywords(skill, %{keywords: ["django", "flask"], min: 1})
+    end
+
+    test "content_present / content_absent match, and fail closed on a bad pattern" do
+      skill = "---\nname: x\ndescription: y\n---\n# X\n\nuse GenServer\n"
+
+      assert {true, _} = Matchers.content_present(skill, %{pattern: "GenServer"})
+      assert {false, _} = Matchers.content_present(skill, %{pattern: "Ecto"})
+      assert {true, _} = Matchers.content_absent(skill, %{pattern: "Ecto"})
+      assert {false, _} = Matchers.content_absent(skill, %{pattern: "GenServer"})
+
+      # untrusted adapter pattern: an invalid regex fails the check, never raises
+      assert {false, "invalid pattern: " <> _} = Matchers.content_present(skill, %{pattern: "("})
+      assert {false, "invalid pattern: " <> _} = Matchers.content_absent(skill, %{pattern: nil})
+    end
   end
 
   describe "accuracy matchers (pure, known-set membership)" do

@@ -102,8 +102,13 @@ defmodule Faber.Eval do
   end
 
   # Vendored: the adapter ships dimension/check definitions → native scoring honors them.
+  # No `dimensions` in the pack ⇒ no stack-specific bar — fall through to the engine default
+  # (which honors `:eval_set` + `:refs`) instead of a truthy `[]` that would mask them.
   defp run_adapter_eval(skill_md, %{"mode" => "vendored"} = e, opts) do
-    run_engine(:native, skill_md, build_native_def(e["dimensions"] || []), opts)
+    case build_native_def(e["dimensions"] || []) do
+      [] -> run_engine(:native, skill_md, nil, opts)
+      dims -> run_engine(:native, skill_md, dims, opts)
+    end
   end
 
   # Exec-in-place: the adapter references an external scorer (e.g. the plugin's lab.eval, run with
@@ -200,17 +205,33 @@ defmodule Faber.Eval do
   defp sidecar_refs(_), do: nil
 
   # Translate a vendored adapter's eval dimensions (string-keyed YAML) into Native's internal form.
+  # A check-level `weight` (sibling of `type`, mirroring the Python scorer's contract) is threaded
+  # into the params so `Native.score_dimension` honors it — dropping it would silently flatten a
+  # weighted adapter eval to 1.0. Non-numeric weights fall back to the 1.0 default (fail closed).
   defp build_native_def(dimensions) do
     Enum.map(dimensions, fn d ->
       checks =
         (d["checks"] || [])
-        |> Enum.map(fn c -> {to_string(c["type"]), atomize_params(c["params"] || %{})} end)
+        |> Enum.map(fn c ->
+          params = atomize_params(c["params"] || %{})
+
+          params =
+            case c["weight"] do
+              w when is_number(w) -> Map.put(params, :weight, w * 1.0)
+              _ -> params
+            end
+
+          {to_string(c["type"]), params}
+        end)
 
       {to_string(d["name"]), (d["weight"] || 0.0) * 1.0, checks}
     end)
   end
 
   defp atomize_params(params) when is_map(params) do
+    # Matcher param atoms live in Matchers' literal pool — make sure the module is loaded before
+    # `to_existing_atom`, or lazy module loading could reject valid keys as unknown.
+    Code.ensure_loaded(Faber.Eval.Matchers)
     Map.new(params, fn {k, v} -> {safe_atom(k), v} end)
   end
 

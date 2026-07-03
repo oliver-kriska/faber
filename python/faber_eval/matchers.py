@@ -289,12 +289,6 @@ _CONCRETE = [
     r"--\w+",
     r"^\s*-\s*\[\s*\]",
 ]
-_VAGUE_PHRASE = [
-    r"\b(?:consider|you may want|it depends|as needed|if necessary|when appropriate)\b",
-    r"\b(?:should probably|might want to|could potentially|try to|attempt to)\b",
-]
-
-
 def specificity_ratio(content, min_ratio=0.15, **_):
     _, body = split_frontmatter(content)
     lines = [ln for ln in body.split("\n") if ln.strip()]
