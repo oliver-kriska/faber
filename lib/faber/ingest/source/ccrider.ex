@@ -26,6 +26,8 @@ defmodule Faber.Ingest.Source.Ccrider do
 
   @behaviour Faber.Ingest.Source
 
+  require Logger
+
   alias Faber.Ingest
 
   @default_db "~/.config/ccrider/sessions.db"
@@ -43,26 +45,42 @@ defmodule Faber.Ingest.Source.Ccrider do
     db = db_path(opts)
     provider = opts[:provider] || "claude"
 
-    "SELECT id, session_id, project_path FROM sessions WHERE provider = #{quote_str(provider)} ORDER BY id"
-    |> query!(db)
-    |> Enum.map(fn r ->
-      %{id: r["id"], session_id: r["session_id"], project_path: r["project_path"], db: db}
-    end)
+    sql =
+      "SELECT id, session_id, project_path FROM sessions WHERE provider = #{quote_str(provider)} ORDER BY id"
+
+    case query(sql, db) do
+      {:ok, rows} ->
+        Enum.map(rows, fn r ->
+          %{id: r["id"], session_id: r["session_id"], project_path: r["project_path"], db: db}
+        end)
+
+      {:error, reason} ->
+        Logger.warning("faber ccrider: discover failed — #{inspect(reason)}")
+        []
+    end
   end
 
   @impl true
   def parse(%{id: id, session_id: sid, db: db}, _opts) do
     # Ordered by sequence (then id as a stable tiebreak) so the event stream matches file order.
-    ("SELECT type, content, uuid, parent_uuid, timestamp, is_sidechain " <>
-       "FROM messages WHERE session_id = #{int(id)} ORDER BY sequence, id")
-    |> query!(db)
-    |> Enum.reduce({[], []}, fn row, {events, errors} ->
-      case envelope(row, sid) do
-        {:ok, env} -> {[Ingest.normalize(env, format: :claude) | events], errors}
-        {:error, err} -> {events, [err | errors]}
-      end
-    end)
-    |> then(fn {events, errors} -> {Enum.reverse(events), Enum.reverse(errors)} end)
+    sql =
+      "SELECT type, content, uuid, parent_uuid, timestamp, is_sidechain " <>
+        "FROM messages WHERE session_id = #{int(id)} ORDER BY sequence, id"
+
+    case query(sql, db) do
+      {:ok, rows} ->
+        rows
+        |> Enum.reduce({[], []}, fn row, {events, errors} ->
+          case envelope(row, sid) do
+            {:ok, env} -> {[Ingest.normalize(env, format: :claude) | events], errors}
+            {:error, err} -> {events, [err | errors]}
+          end
+        end)
+        |> then(fn {events, errors} -> {Enum.reverse(events), Enum.reverse(errors)} end)
+
+      {:error, reason} ->
+        {[], [%{line: "ccrider session #{sid}", reason: reason}]}
+    end
   end
 
   @impl true
@@ -94,7 +112,10 @@ defmodule Faber.Ingest.Source.Ccrider do
 
   # ── sqlite3 CLI (read-only, JSON output) — no hex/NIF dependency ────────────────
 
-  defp query!(sql, db) do
+  # Missing binary / missing DB stay a `raise`: the source is explicit opt-in, so a setup gap
+  # should fail loud with a fix hint, not silently scan nothing. *Query* failures (corrupt DB,
+  # non-JSON output) degrade to `{:error, reason}` so one bad DB read can't crash a whole scan.
+  defp query(sql, db) do
     bin =
       System.find_executable("sqlite3") ||
         raise "source: :ccrider needs the `sqlite3` CLI on PATH (it ships with ccrider's sqlite)"
@@ -106,12 +127,19 @@ defmodule Faber.Ingest.Source.Ccrider do
     case System.cmd(bin, ["-json", "-readonly", db, sql], stderr_to_stdout: true) do
       {out, 0} ->
         case String.trim(out) do
-          "" -> []
-          json -> Jason.decode!(json)
+          "" ->
+            {:ok, []}
+
+          json ->
+            case Jason.decode(json) do
+              {:ok, rows} when is_list(rows) -> {:ok, rows}
+              {:ok, other} -> {:error, {:unexpected_shape, other}}
+              {:error, reason} -> {:error, {:bad_json, reason}}
+            end
         end
 
       {out, code} ->
-        raise "sqlite3 query failed (exit #{code}): #{String.trim(out)}"
+        {:error, {:sqlite3_exit, code, String.trim(out)}}
     end
   end
 

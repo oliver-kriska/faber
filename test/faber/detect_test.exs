@@ -76,6 +76,44 @@ defmodule Faber.DetectTest do
       assert_in_delta profile.bash, 0.5, 1.0e-9
       assert_in_delta profile.tidewave, 0.5, 1.0e-9
     end
+
+    test "retry loop survives duplicate and nil tool_result ids" do
+      # Three same-prefix Bash calls; t2 has TWO results (error then success) plus an id-less
+      # result. A failed result must win the union — a later success or a nil-id collision
+      # must not erase the failure and hide the retry loop.
+      calls =
+        Ingest.normalize(%{
+          "type" => "assistant",
+          "message" => %{
+            "role" => "assistant",
+            "content" =>
+              for id <- ~w(t1 t2 t3) do
+                %{
+                  "type" => "tool_use",
+                  "name" => "Bash",
+                  "id" => id,
+                  "input" => %{"command" => "mix test foo"}
+                }
+              end
+          }
+        })
+
+      results =
+        Ingest.normalize(%{
+          "type" => "user",
+          "message" => %{
+            "role" => "user",
+            "content" => [
+              %{"type" => "tool_result", "tool_use_id" => "t2", "is_error" => true},
+              %{"type" => "tool_result", "tool_use_id" => "t2", "is_error" => false},
+              %{"type" => "tool_result", "tool_use_id" => nil, "is_error" => false}
+            ]
+          }
+        })
+
+      f = Detect.friction([calls, results])
+      assert f.signals.retry_loops == 1
+    end
   end
 
   describe "fingerprint/1" do
@@ -381,6 +419,26 @@ defmodule Faber.DetectTest do
     test "clamps a pathological fill to 100%" do
       event = usage_event("claude-opus-4-8", 1_500_000, 0)
       assert %{max_ctx_pct: 100.0} = Detect.context([event])
+    end
+
+    test "skips a non-string message.model instead of crashing" do
+      event =
+        Ingest.normalize(%{
+          "type" => "assistant",
+          "message" => %{
+            "role" => "assistant",
+            "model" => 123,
+            "usage" => %{"input_tokens" => 190_000},
+            "content" => []
+          }
+        })
+
+      assert %{max_ctx_pct: nil, primary_model: nil} = Detect.context([event])
+    end
+
+    test "tolerates a non-map message in the raw line" do
+      event = Ingest.normalize(%{"type" => "assistant", "message" => 42})
+      assert %{max_ctx_pct: nil, primary_model: nil} = Detect.context([event])
     end
   end
 

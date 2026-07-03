@@ -78,6 +78,29 @@ defmodule Faber.Ingest.SourceTest do
       assert %Result{session_id: "sess-ccrider-1", error_count: 2} =
                Scan.score_session(handle, source: :ccrider, db: db)
     end
+
+    test "discover/1 degrades to no sessions on a corrupt DB (never crashes the scan)",
+         %{tmp_dir: dir} do
+      corrupt = Path.join(dir, "corrupt.db")
+      File.write!(corrupt, "this is not a sqlite database")
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert Source.Ccrider.discover(db: corrupt) == []
+        end)
+
+      assert log =~ "ccrider: discover failed"
+    end
+
+    test "parse/2 degrades to a per-session error on a query failure", %{tmp_dir: dir} do
+      corrupt = Path.join(dir, "corrupt2.db")
+      File.write!(corrupt, "garbage")
+
+      handle = %{id: 1, session_id: "gone", project_path: "p", db: corrupt}
+
+      assert {[], [%{line: "ccrider session gone", reason: {:sqlite3_exit, _, _}}]} =
+               Source.Ccrider.parse(handle, [])
+    end
   end
 
   defp seed_sql do

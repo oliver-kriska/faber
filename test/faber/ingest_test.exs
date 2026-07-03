@@ -55,6 +55,26 @@ defmodule Faber.IngestTest do
       assert length(errors) == 1
       assert [%{line: _, reason: _}] = errors
     end
+
+    @tag :tmp_dir
+    test "a valid-JSON wrong-shape line degrades to an inert event, not a crash", %{tmp_dir: dir} do
+      path = Path.join(dir, "shapes.jsonl")
+
+      File.write!(
+        path,
+        ~s({"type":"user","message":42}\n) <>
+          ~s({"type":"user","message":"just a string"}\n) <>
+          ~s({"type":"user","message":{"role":"user","content":"ok"}}\n)
+      )
+
+      {events, errors} = Ingest.parse_file(path)
+
+      assert errors == []
+      assert [wrong_num, wrong_str, good] = events
+      assert wrong_num.role == nil and wrong_num.tool_uses == []
+      assert wrong_str.role == nil
+      assert good.text == "ok"
+    end
   end
 
   describe "normalize/1" do
@@ -63,6 +83,16 @@ defmodule Faber.IngestTest do
       assert event.type == :user
       assert event.text == "hi"
       assert event.raw["type"] == "user"
+    end
+
+    test "a non-map message degrades to an inert event (untrusted JSON shape)" do
+      event = Ingest.normalize(%{"type" => "user", "message" => 42})
+
+      assert event.type == :user
+      assert event.role == nil
+      assert event.text == nil
+      assert event.tool_uses == []
+      assert event.tool_results == []
     end
 
     test "maps unknown internal types to :other" do

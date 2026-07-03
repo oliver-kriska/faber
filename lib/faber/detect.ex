@@ -454,14 +454,16 @@ defmodule Faber.Detect do
   defp num(n) when is_number(n), do: n
   defp num(_), do: 0
 
-  # Most-frequent model across turns (ties break by name for reproducibility).
+  # Most-frequent model across turns (ties break by name for reproducibility). Pattern-matched
+  # (not `get_in`) and filtered to binaries: `message` / `model` come from untrusted transcript
+  # JSON, so a non-map message or non-string model must be skipped, not crash the scan.
   defp primary_model(events) do
     events
     |> Enum.map(fn
-      %Event{raw: raw} when is_map(raw) -> get_in(raw, ["message", "model"])
+      %Event{raw: %{"message" => %{"model" => model}}} -> model
       _ -> nil
     end)
-    |> Enum.reject(&is_nil/1)
+    |> Enum.filter(&is_binary/1)
     |> case do
       [] -> nil
       models -> models |> Enum.frequencies() |> Enum.max_by(fn {m, c} -> {c, m} end) |> elem(0)
@@ -626,11 +628,17 @@ defmodule Faber.Detect do
     |> Enum.count(& &1.is_error)
   end
 
-  # Map of tool_use_id => errored?, so a Bash call can be linked to its result.
+  # Map of tool_use_id => errored?, so a Bash call can be linked to its result. `nil` ids are
+  # skipped (id-less results from Gemini/OpenCode would otherwise collapse onto one key), and
+  # duplicate ids union their error flags — one failed result marks the call failed, so a later
+  # success can't silently overwrite it.
   defp error_index(events) do
     events
     |> Enum.flat_map(& &1.tool_results)
-    |> Map.new(fn r -> {r.tool_use_id, r.is_error} end)
+    |> Enum.reject(&is_nil(&1.tool_use_id))
+    |> Enum.reduce(%{}, fn r, acc ->
+      Map.update(acc, r.tool_use_id, r.is_error, &(&1 or r.is_error))
+    end)
   end
 
   # Runs of the same Bash command prefix (length >= 3) that contain at least one failed

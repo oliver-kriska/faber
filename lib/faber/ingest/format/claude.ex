@@ -66,7 +66,7 @@ defmodule Faber.Ingest.Format.Claude do
 
     %Event{
       type: parse_type(map["type"]),
-      role: message["role"],
+      role: message_role(message),
       timestamp: parse_timestamp(map["timestamp"]),
       uuid: map["uuid"],
       parent_uuid: map["parentUuid"],
@@ -79,6 +79,11 @@ defmodule Faber.Ingest.Format.Claude do
       raw: map
     }
   end
+
+  # `message` is usually a map, but the line is untrusted JSON — a non-map value must degrade
+  # to an inert event, not crash the stream (the moduledoc promises malformed input never raises).
+  defp message_role(%{"role" => role}), do: role
+  defp message_role(_), do: nil
 
   defp parse_type("user"), do: :user
   defp parse_type("assistant"), do: :assistant
