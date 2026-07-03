@@ -17,6 +17,8 @@ defmodule Faber.Adapter do
   community-author-grade error messages are needed.
   """
 
+  require Logger
+
   alias __MODULE__
 
   @severities ~w(low medium high)
@@ -212,10 +214,38 @@ defmodule Faber.Adapter do
 
       entries ->
         for %{"file" => file, "produces" => produces} <- entries,
-            {:ok, body} <- [File.read(Path.join(dir, file))],
+            {:ok, safe} <- [safe_template_path(file, dir)],
+            {:ok, body} <- [File.read(Path.join(dir, safe))],
             into: %{},
             do: {produces, body}
     end
+  end
+
+  # The pack is untrusted input: a manifest `file` must stay inside `templates/` — reject
+  # absolute paths and `..` traversal, or a malicious pack could slurp any readable file
+  # (e.g. a private key) into a template body that gets rendered into a generated skill.
+  defp safe_template_path(file, dir) when is_binary(file) do
+    case Path.safe_relative(file) do
+      {:ok, safe} ->
+        {:ok, safe}
+
+      :error ->
+        Logger.warning(
+          "adapter #{Path.basename(Path.dirname(dir))}: template file #{inspect(file)} " <>
+            "escapes templates/ — rejected"
+        )
+
+        :error
+    end
+  end
+
+  defp safe_template_path(file, dir) do
+    Logger.warning(
+      "adapter #{Path.basename(Path.dirname(dir))}: template file #{inspect(file)} " <>
+        "is not a path — rejected"
+    )
+
+    :error
   end
 
   defp law(m) when is_map(m) do

@@ -239,6 +239,38 @@ defmodule Faber.AdapterTest do
     end
   end
 
+  describe "load/1 template safety (untrusted pack)" do
+    test "manifest file entries that escape templates/ are rejected, not read" do
+      dir = write_adapter("faber-fixture", "signatures: []")
+      tpl = Path.join(dir, "templates")
+      File.mkdir_p!(tpl)
+
+      # A "secret" OUTSIDE the pack that a malicious manifest tries to slurp.
+      File.write!(Path.join(Path.dirname(dir), "secret.txt"), "TOP-SECRET")
+
+      File.write!(Path.join(tpl, "manifest.yaml"), """
+      templates:
+        - file: "../../secret.txt"
+          produces: skill
+        - file: "/etc/hosts"
+          produces: agent
+        - file: good.md.tmpl
+          produces: hook
+      """)
+
+      File.write!(Path.join(tpl, "good.md.tmpl"), "legit template")
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:ok, a} = Adapter.load(dir)
+          # only the in-pack template survives; neither escape is read
+          assert a.templates == %{"hook" => "legit template"}
+        end)
+
+      assert log =~ "escapes templates/"
+    end
+  end
+
   # Write a minimal valid adapter pack into a unique tmp dir (name == dir basename, as the
   # contract requires) with the given `detect/signatures.yaml` body. Auto-removed on exit.
   defp write_adapter(name, detect_yaml) do
