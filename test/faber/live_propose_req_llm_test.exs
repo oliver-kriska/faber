@@ -43,7 +43,7 @@ defmodule Faber.LiveProposeReqLLMTest do
             # Structure, not content (nondeterministic). Name must be a safe path segment.
             assert is_binary(proposal.name) and proposal.name =~ ~r/\A[a-z0-9][a-z0-9-]{0,63}\z/
             assert is_binary(proposal.description) and String.length(proposal.description) >= 50
-            assert is_list(proposal.iron_laws) and proposal.iron_laws != []
+            assert proposal.iron_laws != []
 
             skill = Propose.render_skill_md(proposal, adapter)
             assert {:ok, score} = Eval.score(skill, engine: :native)

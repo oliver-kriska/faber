@@ -1,5 +1,16 @@
 # Deep audit — features, docs accuracy, bugs & suggestions (2026-07-03)
 
+> **Fix status (same day):** all 10 bugs below were fixed and regression-tested in five
+> follow-up commits — `93eb50f` (ingest/detect crash vectors #6/#7/#9 + ccrider isolation #10),
+> `b28f7dc` (eval drift #3, per-check weight #4, :eval_set fallthrough #8 + a new cross-engine
+> parity test), `f2c9199` (adapter template traversal #5), `2183386` (subprocess timeouts #2 via
+> new `Faber.Subprocess` + scheduler `:max_run_ms` wedge guard), `7fa4968` (dashboard Propose
+> gate `:web_allow_propose` + `check_origin` pinned to loopback #1). The two dead-`is_list` test
+> warnings were also removed. Full suites green after each commit (incl. `mix test.full`;
+> `mix test.live` re-run after the ClaudeCLI subprocess change). Still OPEN: the loop
+> behavioral-recall limitation (a feature, not a fix — see below), the HANDOFF.md
+> tracked-vs-referenced decision, and the ranked suggestions list.
+
 Five-agent parallel audit of the whole repo: docs-vs-code accuracy, ingest+detect,
 adapter+propose+eval+sidecar, loop+install+CLI+MCP+web, and a verification runner that
 executed every suite. Goal: confirm the docs are correct, confirm the features work, and
