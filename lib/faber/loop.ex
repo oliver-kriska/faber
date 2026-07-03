@@ -32,6 +32,13 @@ defmodule Faber.Loop do
   trivially routes (the reason this dimension was originally kept out of the loop). Because one
   routing call is a single Bernoulli draw, trigger mode defaults to `trigger_samples: 3`
   (pooled) and `min_improvement` can gate keeps above the remaining noise.
+
+  Pinning stops *gaming*, but the loop still optimizes against the fixtures it is judged on —
+  `trigger_holdout: true` adds a generalization check: the seed's fixtures are split
+  deterministically (alternating) into a **train** half the loop pins and optimizes against, and
+  a **validation** half it never sees; the final best is scored once on the validation half and
+  the result lands in `State.holdout`. A big train/validation gap means the loop overfit the
+  train phrasings rather than improving routing.
   """
 
   alias Faber.{Adapter, Eval, Propose, Proposal, Scan}
@@ -54,6 +61,10 @@ defmodule Faber.Loop do
               max_iterations: 50,
               target: 0.95,
               min_improvement: 0.0,
+              # Set only by refine/3 with trigger_holdout: true — the final best scored on the
+              # held-out validation fixtures (never optimized against): %{composite:, behavioral:,
+              # fixtures:} or %{error: reason}.
+              holdout: nil,
               status: :running,
               propose_fn: nil,
               eval_fn: nil,
@@ -306,6 +317,11 @@ defmodule Faber.Loop do
   moduledoc's fixture-gaming note), pooled over `:trigger_samples` (defaults to `3` here; the
   one-shot eval default stays `1`). This is what lets the loop optimize recall, which a
   structural-only composite can never see.
+
+  `trigger_holdout: true` (requires `trigger: true` and ≥2 fixtures in BOTH lists, else
+  `{:error, :insufficient_fixtures_for_holdout}`) splits the seed's fixtures: the loop optimizes
+  against the train half only, and the returned state carries `holdout` — the final best scored
+  on the never-optimized validation half (see the moduledoc).
   """
   @spec refine(Scan.Result.t(), Adapter.t(), keyword()) :: State.t() | {:error, term()}
   def refine(%Scan.Result{} = result, %Adapter{} = adapter, opts \\ []) do
@@ -326,6 +342,23 @@ defmodule Faber.Loop do
   end
 
   defp run_refinement(result, adapter, seed, opts) do
+    trigger? = Keyword.get(opts, :trigger, false)
+    holdout? = trigger? and Keyword.get(opts, :trigger_holdout, false)
+
+    case holdout_split(seed, holdout?) do
+      {:ok, pin_seed, validate_seed} ->
+        result
+        |> do_refinement(adapter, seed, pin_seed, opts)
+        |> attach_holdout(validate_seed, holdout_eval_opts(adapter, opts))
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  # `pin_seed` carries the fixtures candidates are graded on: the whole seed normally, the train
+  # half under trigger_holdout (so reflection feedback can't peek at the validation half either).
+  defp do_refinement(result, adapter, seed, pin_seed, opts) do
     content = Propose.render_skill_md(seed, adapter)
 
     # Judge each candidate by THIS adapter's stack-specific eval bar (the moat), not a generic one.
@@ -339,8 +372,8 @@ defmodule Faber.Loop do
 
     trigger? = Keyword.get(eval_opts, :trigger, false)
     strategy = Keyword.get(opts, :strategy, :regenerate)
-    propose_fn = build_propose_fn(strategy, result, adapter, eval_opts, opts, seed)
-    eval_fn = build_eval_fn(trigger?, seed, eval_opts)
+    propose_fn = build_propose_fn(strategy, result, adapter, eval_opts, opts, pin_seed)
+    eval_fn = build_eval_fn(trigger?, pin_seed, eval_opts)
 
     run_opts =
       Keyword.merge(opts,
@@ -355,7 +388,7 @@ defmodule Faber.Loop do
     # or the first candidate would be compared against an incompatible structural-only baseline.
     run_opts =
       if trigger? do
-        case score_pinned(seed, seed, eval_opts) do
+        case score_pinned(seed, pin_seed, eval_opts) do
           {:ok, comp} -> Keyword.put(run_opts, :composite, comp)
           {:error, _} -> run_opts
         end
@@ -365,6 +398,60 @@ defmodule Faber.Loop do
 
     run(run_opts)
   end
+
+  # ── held-out validation (trigger_holdout: true) ────────────────────────────
+
+  defp holdout_split(seed, false), do: {:ok, seed, nil}
+
+  defp holdout_split(%Proposal{} = seed, true) do
+    if length(seed.should_trigger || []) >= 2 and length(seed.should_not_trigger || []) >= 2 do
+      {st_train, st_val} = alternate(seed.should_trigger)
+      {snt_train, snt_val} = alternate(seed.should_not_trigger)
+
+      {:ok, %{seed | should_trigger: st_train, should_not_trigger: snt_train},
+       %{seed | should_trigger: st_val, should_not_trigger: snt_val}}
+    else
+      {:error, :insufficient_fixtures_for_holdout}
+    end
+  end
+
+  # Deterministic alternating split (even indices train, odd validate) — reproducible runs, and
+  # both polarities land on both sides whenever each list has ≥2 fixtures.
+  defp alternate(list) do
+    list
+    |> Enum.with_index()
+    |> Enum.split_with(fn {_, i} -> rem(i, 2) == 0 end)
+    |> then(fn {evens, odds} -> {Enum.map(evens, &elem(&1, 0)), Enum.map(odds, &elem(&1, 0))} end)
+  end
+
+  # Validation must score with the same trigger-fold + pooling the loop used.
+  defp holdout_eval_opts(adapter, opts) do
+    opts
+    |> Keyword.put(:adapter, adapter)
+    |> Keyword.put_new(:trigger_samples, 3)
+  end
+
+  defp attach_holdout(state_or_err, nil, _eval_opts), do: state_or_err
+  defp attach_holdout({:error, _} = err, _validate_seed, _eval_opts), do: err
+
+  defp attach_holdout(%State{best_proposal: %Proposal{} = best} = state, validate, eval_opts) do
+    report =
+      case Eval.score(pin_fixtures(best, validate), eval_opts) do
+        {:ok, %{composite: comp} = result} ->
+          %{
+            composite: comp,
+            behavioral: get_in(result.dimensions, ["behavioral", "score"]),
+            fixtures: length(validate.should_trigger) + length(validate.should_not_trigger)
+          }
+
+        {:error, reason} ->
+          %{error: reason}
+      end
+
+    %{state | holdout: report}
+  end
+
+  defp attach_holdout(%State{} = state, _validate_seed, _eval_opts), do: state
 
   # Blind regeneration — the baseline. Each candidate is independent of the last.
   defp build_propose_fn(:regenerate, result, adapter, _eval_opts, opts, _seed) do

@@ -416,6 +416,45 @@ defmodule Faber.LoopTest do
       assert pinned.should_trigger == seed.should_trigger
       assert pinned.should_not_trigger == seed.should_not_trigger
     end
+
+    test "trigger_holdout: true reports the never-optimized validation half (overfit visible)" do
+      # Alternating split: index 0 → train, index 1 → validate. The GamingLLM router activates
+      # iff the phrase contains XYZZY, so this seed is a PERFECT overfit setup — the train half
+      # routes flawlessly (behavioral 1.0), the validation half routes perfectly WRONG (0.0):
+      #   train:    should_trigger "XYZZY alpha" (→ true, tp), should_not "gamma plain" (→ false, tn)
+      #   validate: should_trigger "beta plain" (→ false, fn), should_not "XYZZY delta" (→ true, fp)
+      seed = %{
+        honest_seed()
+        | should_trigger: ["XYZZY alpha", "beta plain"],
+          should_not_trigger: ["gamma plain", "XYZZY delta"]
+      }
+
+      state =
+        Loop.refine(sample_result(), sample_adapter(),
+          seed: seed,
+          llm: GamingLLM,
+          trigger: true,
+          trigger_holdout: true,
+          max_iterations: 1,
+          patience: 100,
+          target: 0.99
+        )
+
+      assert %Loop.State{holdout: %{composite: hold, behavioral: 0.0, fixtures: 2}} = state
+      # Train-optimized composite (behavioral 1.0 folded) strictly beats the holdout score.
+      assert hold < state.best_composite
+    end
+
+    test "trigger_holdout with fewer than 2 fixtures per list fails loudly" do
+      # honest_seed has 1+1 fixtures — an alternating split would leave a side empty.
+      assert {:error, :insufficient_fixtures_for_holdout} =
+               Loop.refine(sample_result(), sample_adapter(),
+                 seed: honest_seed(),
+                 llm: GamingLLM,
+                 trigger: true,
+                 trigger_holdout: true
+               )
+    end
   end
 
   describe "refine/3 :reflect strategy (keyless reflective evolution)" do
