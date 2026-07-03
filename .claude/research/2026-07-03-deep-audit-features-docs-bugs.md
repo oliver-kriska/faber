@@ -10,6 +10,21 @@
 > `mix test.live` re-run after the ClaudeCLI subprocess change). Still OPEN: the loop
 > behavioral-recall limitation (a feature, not a fix — see below), the HANDOFF.md
 > tracked-vs-referenced decision, and the ranked suggestions list.
+>
+> **Improvement status (same day, round 2):** the open improvement items were then implemented
+> in three more commits — `905ad9d` **feat(loop): behavioral recall in the loop** —
+> `Loop.refine/3` gains `seed: %Proposal{}` (start from an existing proposal; dead LLM no longer
+> aborts) and `trigger: true` (candidates scored AS proposals with the **seed's fixtures
+> pinned** for the whole run — the anti-fixture-gaming guard, mutation-verified: unpinning makes
+> the regression test fail; pooled `trigger_samples: 3` default; `min_improvement:` keep-margin
+> on `run/1`; `:reflect` feedback scores the pinned best proposal so `behavioral` can surface as
+> the weakest dimension). `e200fff` **fix(eval): has_what relaxation** — `^[A-Z][a-z]+\s` →
+> `^[A-Z][\w+-]+\s` on BOTH engines in lockstep, so "GenServer…"/"OTP…"/"N+1…" descriptions pass
+> `description_structure` (parity test green). `282a497` **quick wins** — dead CLI keys
+> `--base`/`--min-messages` made live (+ `--limit` on propose), 50 MB size cap on the Cline/
+> Gemini whole-file reads (sparse-file tests), fingerprint per-message 2000-char slice, and
+> `priv/skills/README.md` documenting the packs as reference artifacts. Suites after each:
+> hermetic 356, full 366+3, python 42 — all green.
 
 Five-agent parallel audit of the whole repo: docs-vs-code accuracy, ingest+detect,
 adapter+propose+eval+sidecar, loop+install+CLI+MCP+web, and a verification runner that

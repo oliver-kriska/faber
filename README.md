@@ -80,6 +80,13 @@ composite (weight `0.10`, so it never sinks a structurally-sound skill; precisio
 the result into a stable estimate with a reported `σ`. It's off the structural hot path (one LLM call
 per fixture per sample), and covered by `eval_trigger_test` plus the live tests.
 
+The self-improving loop can optimize this dimension too: `Faber.Loop.refine(result, adapter,
+trigger: true)` scores every candidate as a proposal — always against the **seed proposal's
+fixtures, pinned** for the whole run, so a candidate can never game the objective by generating
+fixtures its own description trivially routes (mutation-tested). Trigger mode pools
+`trigger_samples: 3` by default and accepts `min_improvement:` as a keep-margin above the
+routing noise; `seed:` starts the loop from an existing proposal instead of minting a new one.
+
 **Known runtime gaps** (wired + tested with stubs; live use needs the runtime): the GEPA
 `optimize` command is implemented as a capability-gated seam — its orchestration (the eval-matcher
 metric, budget guardrail, result shaping) is unit-tested and the real subprocess boundary is
