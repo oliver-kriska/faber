@@ -116,6 +116,10 @@ finding; it calls an LLM (spends tokens), so it stays **disabled** unless you se
 `config :faber, :mcp_allow_propose, true`. The server starts only under `faber serve` /
 `mix phx.server` (never for one-shot CLI commands).
 
+The dashboard's per-row **Propose** button spends tokens too, but is human-initiated, so it
+defaults **on** behind a browser confirm (origins are pinned to loopback); disable it outright
+with `config :faber, :web_allow_propose, false`.
+
 ### Cross-agent ingest
 
 Faber is agent-agnostic: each coding agent's on-disk transcript shape is a small format module

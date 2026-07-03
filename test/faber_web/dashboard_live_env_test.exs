@@ -39,6 +39,23 @@ defmodule FaberWeb.DashboardLiveEnvTest do
     refute html =~ "<table"
   end
 
+  test "web_allow_propose: false hides the button and rejects the raw event", %{conn: conn} do
+    Application.put_env(:faber, :web_allow_propose, false)
+    on_exit(fn -> Application.delete_env(:faber, :web_allow_propose) end)
+
+    {:ok, view, _html} = live(conn, "/")
+    html = render_async(view)
+
+    # UI: no Propose button anywhere in the ranked table.
+    refute html =~ "phx-click=\"propose\""
+
+    # Boundary: a client driving the raw event (bypassing the hidden button) is refused —
+    # no async proposal starts, and the refusal is surfaced as a flash.
+    html = render_click(view, "propose", %{"i" => "1"})
+    assert html =~ "Propose is disabled"
+    refute render(view) =~ "Proposing a skill"
+  end
+
   test "a proposal failure renders an error panel without crashing the view", %{conn: conn} do
     prev = Application.get_env(:faber, :llm)
     Application.put_env(:faber, :llm, FailingLLM)

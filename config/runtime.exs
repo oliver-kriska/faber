@@ -38,6 +38,8 @@ if config_env() == :prod do
     url: [host: "localhost", port: port, scheme: "http"],
     http: [ip: {127, 0, 0, 1}, port: port],
     secret_key_base: secret_key_base,
-    check_origin: false,
+    # Pin origins to loopback (any port — `faber serve --port` is user-chosen): a DNS-rebinding
+    # page resolving to 127.0.0.1 must not be able to open the socket and drive Propose events.
+    check_origin: ["//localhost", "//127.0.0.1"],
     server: true
 end

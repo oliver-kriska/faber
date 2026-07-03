@@ -4,9 +4,14 @@ defmodule FaberWeb.DashboardLive do
   button. Read-only over the filesystem, so no database is involved. The scan options come from
   `config :faber, :dashboard_scan_opts` (tests point it at fixtures for a hermetic render).
 
-  Local-first by design: there is no auth on the rescan event (it only triggers a read-only
-  scan, debounced while one is in flight). Add an `on_mount` guard before exposing this endpoint
-  over any network interface.
+  Local-first by design: there is no auth. The rescan event triggers only a read-only scan
+  (debounced while one is in flight). The per-row **Propose** button is different — it calls the
+  configured `Faber.LLM` and spends tokens — so it is guarded three ways: the endpoint binds
+  loopback with `check_origin` pinned to it, the button carries a browser confirm, and
+  `config :faber, :web_allow_propose, false` removes it outright (the server rejects the event
+  too, not just the UI). The MCP twin `faber_propose_skill` is opt-in in the opposite direction
+  (default off): an agent must not spend your tokens silently, a human clicking a button may.
+  Add an `on_mount` guard before exposing this endpoint over any network interface.
   """
   use FaberWeb, :live_view
 
@@ -23,7 +28,8 @@ defmodule FaberWeb.DashboardLive do
         results: [],
         shown: 0,
         proposing: false,
-        proposal: nil
+        proposal: nil,
+        allow_propose: allow_propose?()
       )
 
     # Scan only on the connected mount, and run it asynchronously so the LiveView process stays
@@ -46,16 +52,28 @@ defmodule FaberWeb.DashboardLive do
     do: {:noreply, socket}
 
   def handle_event("propose", %{"i" => i}, socket) do
-    # `i` is a client-supplied string — parse defensively so a malformed value can't crash the
-    # LiveView process (it would just be ignored).
-    with {idx, ""} <- Integer.parse(i),
+    # Server-side gate (the UI also hides the button): propose spends LLM tokens, so a client
+    # driving raw events must be refused when the flag is off — the hidden button alone is not
+    # a boundary. `i` is a client-supplied string — parse defensively so a malformed value
+    # can't crash the LiveView process (it would just be ignored).
+    with true <- allow_propose?(),
+         {idx, ""} <- Integer.parse(i),
          result when not is_nil(result) <- Enum.at(socket.assigns.results, idx - 1) do
       {:noreply,
        socket
        |> assign(proposing: true, proposal: nil)
        |> start_async(:propose, fn -> do_propose(result) end)}
     else
-      _ -> {:noreply, socket}
+      false ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "Propose is disabled — set `config :faber, :web_allow_propose, true`."
+         )}
+
+      _ ->
+        {:noreply, socket}
     end
   end
 
@@ -122,6 +140,8 @@ defmodule FaberWeb.DashboardLive do
     Application.get_env(:faber, :dashboard_scan_opts, min_messages: 4)
   end
 
+  defp allow_propose?, do: Application.get_env(:faber, :web_allow_propose, true) == true
+
   @impl true
   def render(assigns) do
     ~H"""
@@ -164,7 +184,15 @@ defmodule FaberWeb.DashboardLive do
             <td class="tier2">{if(r.tier2, do: "✓", else: "")}</td>
             <td class="muted">{session(r)}</td>
             <td>
-              <button phx-click="propose" phx-value-i={i} disabled={@proposing}>Propose</button>
+              <button
+                :if={@allow_propose}
+                phx-click="propose"
+                phx-value-i={i}
+                disabled={@proposing}
+                data-confirm="This calls the configured LLM (claude -p by default) and spends tokens. Continue?"
+              >
+                Propose
+              </button>
             </td>
           </tr>
         </tbody>
