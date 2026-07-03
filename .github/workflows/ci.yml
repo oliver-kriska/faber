@@ -1,0 +1,48 @@
+name: ci
+
+# Test gate for every push/PR: format, warnings-as-errors compile, `mix test.full` (the hermetic
+# suite PLUS the :sidecar/:ccrider/:opencode tags — ubuntu-latest ships python3 and sqlite3, so
+# the native↔python matcher parity test always runs here), and the Python sidecar's own suite.
+# The :live/:live_api tags stay excluded — they need a real `claude` CLI / paid API key.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Erlang + Elixir come from .tool-versions (single source of truth, shared with local mise
+      # and the release workflow).
+      - uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: mix-${{ runner.os }}-${{ hashFiles('.tool-versions', 'mix.lock') }}
+          restore-keys: mix-${{ runner.os }}-
+
+      - run: mix deps.get
+
+      - run: mix format --check-formatted
+
+      - run: mix compile --warnings-as-errors
+
+      - run: mix test.full
+
+      - name: Python sidecar tests (stdlib-only)
+        working-directory: python
+        run: python3 -m unittest discover -s tests
