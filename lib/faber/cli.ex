@@ -46,7 +46,15 @@ defmodule Faber.CLI do
   def parse(["scan" | rest]) do
     {opts, _, _} =
       OptionParser.parse(rest,
-        strict: [limit: :integer, rank_by: :string, source: :string, db: :string, format: :string]
+        strict: [
+          limit: :integer,
+          rank_by: :string,
+          source: :string,
+          db: :string,
+          format: :string,
+          base: :string,
+          min_messages: :integer
+        ]
       )
 
     {:scan, opts}
@@ -62,7 +70,10 @@ defmodule Faber.CLI do
           trigger: :boolean,
           source: :string,
           db: :string,
-          format: :string
+          format: :string,
+          limit: :integer,
+          base: :string,
+          min_messages: :integer
         ]
       )
 
@@ -407,8 +418,11 @@ defmodule Faber.CLI do
 
     Usage:
       faber scan [--limit N] [--rank-by raw|rate] [--source S] [--format F] [--db PATH]
-                                                    Rank session friction
+                 [--base DIR] [--min-messages N]   Rank session friction
+                                                    (--base: transcript root override;
+                                                     --min-messages: skip shorter sessions)
       faber propose [--rank N] [--install] [--force] [--trigger] [--source S] [--format F] [--db PATH]
+                    [--base DIR] [--min-messages N]
                                                     Draft + eval a skill for one session
                                                     (--force: skip the stack-match gate;
                                                      --trigger: add the behavioral trigger-accuracy

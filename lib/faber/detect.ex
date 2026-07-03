@@ -244,11 +244,14 @@ defmodule Faber.Detect do
   def fingerprint(events, adapter \\ nil) do
     events = Enum.to_list(events)
 
+    # Intent keywords live in the request's opening words; slice each message (like the
+    # corrections detector's 500-char slice) so a pasted log/diff doesn't feed megabytes into
+    # every keyword Regex.scan below.
     user_text =
       events
       |> Enum.filter(&Event.human_turn?/1)
       |> Enum.take(10)
-      |> Enum.map_join(" ", & &1.text)
+      |> Enum.map_join(" ", &String.slice(&1.text || "", 0, 2000))
 
     tool_uses = Enum.flat_map(events, & &1.tool_uses)
     names = Enum.map(tool_uses, & &1.name)

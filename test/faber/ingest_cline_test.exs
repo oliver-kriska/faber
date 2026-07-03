@@ -110,6 +110,19 @@ defmodule Faber.Ingest.Format.ClineTest do
 
       assert [{:error, %{reason: _}}] = Cline.stream_file!(bad) |> Enum.to_list()
     end
+
+    test "an oversized file is refused before reading (whole-file decode size cap)" do
+      big = Path.join(System.tmp_dir!(), "cline-big-#{System.unique_integer([:positive])}.json")
+      # A sparse file: seek past the cap and write one byte — full logical size, no real 50 MB.
+      {:ok, fd} = :file.open(big, [:write, :raw])
+      {:ok, _} = :file.position(fd, 51 * 1024 * 1024)
+      :ok = :file.write(fd, "x")
+      :ok = :file.close(fd)
+      on_exit(fn -> File.rm(big) end)
+
+      assert [{:error, %{reason: {:too_large, _size, _max}}}] =
+               Cline.stream_file!(big) |> Enum.to_list()
+    end
   end
 
   describe "end-to-end scan" do

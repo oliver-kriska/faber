@@ -71,13 +71,30 @@ defmodule Faber.Ingest.Format.Cline do
   The file is one JSON array, so it's read and decoded in full (not line-streamed), then one event
   is emitted per message with the session id derived from the task directory.
   """
+  # Whole-file decode (a JSON array has no line-streaming path) — cap the read so a pathological
+  # or misidentified file can't balloon memory. Real task histories are single-digit MB.
+  @max_file_bytes 50 * 1024 * 1024
+
   @impl true
   def stream_file!(path) do
     sid = session_id_from_path(path)
 
-    case File.read(path) do
+    case read_capped(path) do
       {:ok, body} -> decode_body(body, sid, path)
       {:error, reason} -> [{:error, %{line: path, reason: reason}}]
+    end
+  end
+
+  defp read_capped(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{size: size}} when size > @max_file_bytes ->
+        {:error, {:too_large, size, @max_file_bytes}}
+
+      {:ok, _} ->
+        File.read(path)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

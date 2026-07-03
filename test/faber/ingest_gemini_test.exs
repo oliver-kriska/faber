@@ -121,6 +121,19 @@ defmodule Faber.Ingest.Format.GeminiTest do
 
       assert [{:error, %{reason: {:unexpected_shape, _}}}] = Gemini.stream_file!(bad)
     end
+
+    test "an oversized file is refused before reading (whole-file decode size cap)" do
+      big = Path.join(System.tmp_dir!(), "gemini-big-#{System.unique_integer([:positive])}.json")
+      # A sparse file: seek past the cap and write one byte — full logical size, no real 50 MB.
+      {:ok, fd} = :file.open(big, [:write, :raw])
+      {:ok, _} = :file.position(fd, 51 * 1024 * 1024)
+      :ok = :file.write(fd, "x")
+      :ok = :file.close(fd)
+      on_exit(fn -> File.rm(big) end)
+
+      assert [{:error, %{reason: {:too_large, _size, _max}}}] =
+               Gemini.stream_file!(big) |> Enum.to_list()
+    end
   end
 
   describe "alternate (source-derived) shape: type discriminator + toolCalls[] + .jsonl" do

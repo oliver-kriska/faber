@@ -26,6 +26,14 @@ defmodule Faber.CLITest do
       assert CLI.parse(["propose", "--rank", "1", "--trigger"]) ==
                {:propose, [rank: 1, trigger: true]}
 
+      # --base / --min-messages reach the scan opts (run/2 Keyword.take's them) — a strict
+      # OptionParser silently DROPS unknown switches, so these must stay in the parser lists.
+      assert CLI.parse(["scan", "--base", "/tmp/x", "--min-messages", "3"]) ==
+               {:scan, [base: "/tmp/x", min_messages: 3]}
+
+      assert CLI.parse(["propose", "--limit", "10", "--base", "/tmp/x", "--min-messages", "3"]) ==
+               {:propose, [limit: 10, base: "/tmp/x", min_messages: 3]}
+
       assert CLI.parse(["serve", "--port", "9000", "--no-open"]) ==
                {:serve, [port: 9000, open: false]}
 

@@ -78,11 +78,28 @@ defmodule Faber.Ingest.Format.Gemini do
   message in the `messages` array (a bare top-level array is tolerated), each stamped with the
   session id.
   """
+  # Whole-file decode (single JSON document) — cap the read so a pathological or misidentified
+  # file can't balloon memory. Real session files are single-digit MB.
+  @max_file_bytes 50 * 1024 * 1024
+
   @impl true
   def stream_file!(path) do
-    case File.read(path) do
+    case read_capped(path) do
       {:ok, body} -> decode_body(body, path)
       {:error, reason} -> [{:error, %{line: path, reason: reason}}]
+    end
+  end
+
+  defp read_capped(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{size: size}} when size > @max_file_bytes ->
+        {:error, {:too_large, size, @max_file_bytes}}
+
+      {:ok, _} ->
+        File.read(path)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
