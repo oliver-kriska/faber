@@ -53,7 +53,7 @@ ingest sessions → detect friction → propose skill (adapter-informed)
 | +  | Read-only MCP server (Anubis) — friction/skills as live tools for coding agents | `Faber.MCP.Server`, `Faber.MCP.Tools.*` |
 | +  | Cross-agent skill install + provenance-tracked pointer sync (`faber sync`) | `Faber.Install` (`.faber.json` marker) |
 | +  | **Second adapter (`faber-python`) — engine proven domain-free** (zero `lib/faber` diffs) | `adapters/faber-python/` + contract v0.2 detection vocab |
-| +  | **Cross-agent ingest** — pluggable transcript formats behind one seam: Claude, Codex, Cline, Gemini (+ Qwen Code), OpenCode (SQLite) | `Faber.Ingest.Format.*` (Pi still a stub) |
+| +  | **Cross-agent ingest** — pluggable transcript formats behind one seam: Claude, Codex, Cline, Gemini (+ Qwen Code), OpenCode (SQLite) | `Faber.Ingest.Format.*` (Pi deliberately absent — no transcript spec yet) |
 
 Two adapters ship today: [`faber-elixir`](adapters/faber-elixir/) (the reference, extracted by
 reference from the `claude-elixir-phoenix` plugin) and [`faber-python`](adapters/faber-python/)
@@ -136,7 +136,7 @@ Faber.Scan.run(format: :opencode)        # rank an agent's sessions by friction
 
 Each format canonicalizes its tool names to Faber's vocabulary (`Bash`/`Read`/`Edit`/`Write`/…) so
 the same detection signals fire across agents. Adding one is a single module + a `format` alias — no
-engine changes. (Pi is the remaining stub: it needs a real transcript spec before a faithful module.)
+engine changes. (Pi is deliberately absent rather than guessed: it needs a real transcript spec before a faithful module.)
 
 ## License
 

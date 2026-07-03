@@ -1,32 +1,37 @@
 # faber_eval — Python eval sidecar
 
 The Python half of Faber. It hosts the eval matchers (ported from the plugin's
-`lab/eval` in M4) and the GEPA / DSPy optimizer (M4/M5). The Elixir spine reaches it over
-a **subprocess boundary**: it spawns `python -m faber_eval <command>`, writes a JSON
-request on stdin, and reads a JSON response on stdout.
+`lab/eval`) and the GEPA / DSPy optimizer. The Elixir spine reaches it over a
+**subprocess boundary**: it spawns `python -m faber_eval <command>` with the JSON
+request in a temp file (`--input PATH`), and reads a JSON response on stdout.
 
 ## Boundary contract (v1)
 
 | | |
 |---|---|
 | Invocation | `python -m faber_eval <command>` (or console script `faber-eval`) |
-| Request | one JSON object on **stdin** (empty stdin ⇒ `{}`) |
+| Request | one JSON object on **stdin** (canonical; empty stdin ⇒ `{}`) or via `--input PATH` — the Elixir spine uses `--input` to avoid feeding stdin from a Port |
 | Response | one JSON object on **stdout**, newline-terminated |
 | Diagnostics | **stderr** (stdout stays pure JSON) |
 | Exit codes | `0` ok · `1` bad request (e.g. invalid JSON) · `2` unknown command |
 
 ### Commands
 
-- **`score`** — structural / trigger eval of a proposed skill. *Stub in M0* (returns
-  `status: "not_implemented"`); ports `lab/eval` matchers + `trigger_scorer.py` in M4.
-- **`optimize`** — evolve→eval→keep optimization wrapping GEPA / `dspy.GEPA`. *Stub in
-  M0*; implemented in M4/M5.
+- **`score`** — structural eval of a proposed skill (implemented, stdlib-only, no API
+  key). Ports the plugin's `lab/eval` matchers. Request: `skill_md` (or `content`),
+  optional `eval` dict / `eval_set: "full"` / `refs` known-sets. The *behavioral*
+  trigger eval is Elixir-side (`Faber.Eval.Trigger`), not this command.
+- **`optimize`** — `dspy.GEPA` optimization of a SKILL.md against the eval matchers.
+  The orchestration (capability gate, eval-matcher metric, budget clamp) is implemented
+  and tested; the live dspy path needs the `gepa` extra + a provider API key, and
+  degrades to `status: "not_implemented"` with a precise reason without them.
 
 Example:
 
 ```sh
-echo '{"skill": {"name": "demo"}}' | python -m faber_eval score
-# {"command": "score", "status": "not_implemented", "version": "0.1.0", "echo": {...}, "result": null}
+echo '{"skill_md": "---\nname: demo\ndescription: Demo skill\n---\n\n# Demo\n"}' | python -m faber_eval score
+# {"command": "score", "status": "ok", "version": "0.1.0",
+#  "result": {"schema_version": "1.0", "composite": 0.3917, "dimensions": {...}}}
 ```
 
 ## Development
@@ -37,11 +42,12 @@ runs with nothing installed beyond CPython ≥ 3.11.
 ```sh
 # with uv:
 uv sync
-uv run python -m unittest discover -s tests
+uv run --extra dev pytest
 
 # without uv (stdlib only):
 python -m unittest discover -s tests
 ```
 
 > Note: `uv` is not assumed to be on the build host. The smoke test runs under plain
-> `python -m unittest`. Third-party deps (`gepa`, `dspy`) arrive with M4.
+> `python -m unittest`. The only third-party deps are optional extras: `pytest` (dev)
+> and `dspy` (`gepa` extra, for the live optimizer).
