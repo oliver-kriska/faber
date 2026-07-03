@@ -54,6 +54,8 @@ ingest sessions → detect friction → propose skill (adapter-informed)
 | +  | Cross-agent skill install + provenance-tracked pointer sync (`faber sync`) | `Faber.Install` (`.faber.json` marker) |
 | +  | **Second adapter (`faber-python`) — engine proven domain-free** (zero `lib/faber` diffs) | `adapters/faber-python/` + contract v0.2 detection vocab |
 | +  | **Cross-agent ingest** — pluggable transcript formats behind one seam: Claude, Codex, Cline, Gemini (+ Qwen Code), OpenCode (SQLite) | `Faber.Ingest.Format.*` (Pi deliberately absent — no transcript spec yet) |
+| +  | **Install-feedback outer loop** — did installed skills actually fire, and did friction drop? (`faber feedback`) | `Faber.Feedback` |
+| +  | **Proposal consolidation** — cluster near-duplicate proposals (pure), LLM-merge each cluster through the eval gate | `Faber.Consolidate` |
 
 Two adapters ship today: [`faber-elixir`](adapters/faber-elixir/) (the reference, extracted by
 reference from the `claude-elixir-phoenix` plugin) and [`faber-python`](adapters/faber-python/)
@@ -85,7 +87,15 @@ trigger: true)` scores every candidate as a proposal — always against the **se
 fixtures, pinned** for the whole run, so a candidate can never game the objective by generating
 fixtures its own description trivially routes (mutation-tested). Trigger mode pools
 `trigger_samples: 3` by default and accepts `min_improvement:` as a keep-margin above the
-routing noise; `seed:` starts the loop from an existing proposal instead of minting a new one.
+routing noise; `seed:` starts the loop from an existing proposal instead of minting a new one;
+`trigger_holdout: true` splits the fixtures and reports the final best against a validation half
+the loop never optimized (`State.holdout`) — the overfit detector. The loop has a CLI surface
+too: **`faber refine`** (`mix faber.refine` in dev) runs scan → seed → reflect-loop with tight
+defaults (5 iterations) and `--install` for the final best.
+
+After installing, **`faber feedback`** closes the outer loop: for every Faber-installed skill it
+reports whether sessions since install actually used it (`skills_used`) and how friction compares
+with vs. without — `:unused` skills are the ones to `faber refine --trigger` or retire.
 
 **Known runtime gaps** (wired + tested with stubs; live use needs the runtime): the GEPA
 `optimize` command is implemented as a capability-gated seam — its orchestration (the eval-matcher

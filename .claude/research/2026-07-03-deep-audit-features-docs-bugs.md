@@ -25,6 +25,24 @@
 > Gemini whole-file reads (sparse-file tests), fingerprint per-message 2000-char slice, and
 > `priv/skills/README.md` documenting the packs as reference artifacts. Suites after each:
 > hermetic 356, full 366+3, python 42 — all green.
+>
+> **Feature status (same day, round 3):** the forward-looking suggestions were then implemented
+> in five more commits — `a96f238` **ci**: `.github/workflows/ci.yml` (format + warnings-as-errors
+> + `mix test.full` + python suite on every push/PR; versions from `.tool-versions` like the
+> release workflow). `441b685` **feat(loop): trigger_holdout** — deterministic alternating split
+> of the seed's fixtures; the loop optimizes the train half only (reflection feedback included),
+> the final best is scored once on the validation half → `State.holdout` (test: a router+seed
+> crafted for perfect overfit shows behavioral 1.0 train / 0.0 validation). `e715412` **feat(cli):
+> `faber refine`** (+ thin `mix faber.refine`) — full loop surface: strategy/iterations/patience/
+> target/min-improvement/trigger/samples/holdout/install; CLI defaults tighter than the library
+> (5 iterations, :reflect). `c5983a8` **feat(feedback)** — `Faber.Feedback` + `faber feedback`:
+> per installed skill (provenance marker; `installed_at` now stamped by Install), partition
+> post-install sessions by `skills_used`, compare friction with/without, verdict hints
+> (:unused → refine or retire). Read-only, aggregates only. `273b523` **feat(consolidate)** —
+> `Faber.Consolidate`: pure deterministic clustering (token Jaccard, single-linkage) + LLM merge
+> per cluster through the SAME proposer schema, gated by `Eval.gate` (below-bar merges rejected,
+> originals kept). Suites: hermetic 372, python 42 — green; `mix test.full` re-run at the end.
+> Still the user's call: whether HANDOFF.md should ever be git-tracked.
 
 Five-agent parallel audit of the whole repo: docs-vs-code accuracy, ingest+detect,
 adapter+propose+eval+sidecar, loop+install+CLI+MCP+web, and a verification runner that
