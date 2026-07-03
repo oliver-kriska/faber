@@ -86,9 +86,19 @@ defmodule Faber.Install do
 
   # Stamp the provenance sentinel so `list_faber_installed/1` (and thus the pointer + MCP listing)
   # can recognize this skill as Faber-installed. Best-effort richness, stable keys so it stays
-  # deterministic for tests.
+  # deterministic for tests. `installed_at` lets `Faber.Feedback` scope its outer-loop usage
+  # report to sessions that ran after the skill existed.
   defp write_marker(skill_dir, name, opts) do
-    data = Map.merge(%{"installed_by" => "faber", "name" => name}, opts[:provenance] || %{})
+    data =
+      Map.merge(
+        %{
+          "installed_by" => "faber",
+          "name" => name,
+          "installed_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+        },
+        opts[:provenance] || %{}
+      )
+
     File.write(Path.join(skill_dir, @marker), Jason.encode!(data) <> "\n")
   end
 

@@ -107,6 +107,23 @@ defmodule Faber.CLI do
     {:refine, opts}
   end
 
+  def parse(["feedback" | rest]) do
+    {opts, _, _} =
+      OptionParser.parse(rest,
+        strict: [
+          dir: :string,
+          source: :string,
+          db: :string,
+          format: :string,
+          limit: :integer,
+          base: :string,
+          min_messages: :integer
+        ]
+      )
+
+    {:feedback, opts}
+  end
+
   def parse(["serve" | rest]) do
     {opts, _, _} = OptionParser.parse(rest, strict: [port: :integer, open: :boolean])
     {:serve, opts}
@@ -289,6 +306,24 @@ defmodule Faber.CLI do
       {:error, reason} ->
         IO.puts(:stderr, "faber refine failed: #{inspect(reason)}")
         1
+    end
+  end
+
+  def run(:feedback, opts) do
+    feedback_opts =
+      opts
+      |> Keyword.take([:dir, :limit, :base, :min_messages, :db])
+      |> put_if(:source, normalize_source(opts[:source]))
+      |> put_if(:format, normalize_format(opts[:format]))
+
+    case Faber.Feedback.report(feedback_opts) do
+      [] ->
+        IO.puts("No Faber-installed skills found. Install one with `faber propose --install`.")
+        0
+
+      reports ->
+        IO.puts(render_feedback(reports))
+        0
     end
   end
 
@@ -505,6 +540,47 @@ defmodule Faber.CLI do
   defp normalize_strategy("reflect"), do: :reflect
   defp normalize_strategy(_), do: :reflect
 
+  # ── feedback rendering ──────────────────────────────────────────────────────
+
+  defp render_feedback(reports) do
+    header =
+      "  skill                            sessions  used   rate   friction w/  w/o   verdict"
+
+    rows =
+      Enum.map_join(reports, "\n", fn r ->
+        [
+          "  " <> String.pad_trailing(r.skill, 32),
+          String.pad_leading(to_string(r.sessions), 8),
+          String.pad_leading(to_string(r.sessions_used), 5),
+          String.pad_leading(fmt_rate(r.usage_rate), 6),
+          String.pad_leading(fmt_friction(r.friction_with), 12),
+          String.pad_leading(fmt_friction(r.friction_without), 5),
+          "   #{r.verdict}"
+        ]
+        |> Enum.join(" ")
+      end)
+
+    hints =
+      case Enum.filter(reports, &(&1.verdict == :unused)) do
+        [] ->
+          ""
+
+        unused ->
+          names = Enum.map_join(unused, ", ", & &1.skill)
+
+          "\n\nunused: #{names} — sessions ran but the skill never fired; " <>
+            "`faber refine --trigger` its routing, or remove it."
+      end
+
+    "#{header}\n#{rows}#{hints}"
+  end
+
+  defp fmt_rate(nil), do: "—"
+  defp fmt_rate(rate), do: "#{round(rate * 100)}%"
+
+  defp fmt_friction(nil), do: "—"
+  defp fmt_friction(n), do: :erlang.float_to_binary(n * 1.0, decimals: 2)
+
   defp fmt4(n) when is_number(n), do: :erlang.float_to_binary(n * 1.0, decimals: 4)
   defp fmt4(_), do: "n/a"
 
@@ -580,6 +656,11 @@ defmodule Faber.CLI do
                                                      scored on the seed's pinned fixtures;
                                                      --holdout: report a held-out validation
                                                      score; --install: install the final best)
+      faber feedback [--dir PATH] [--source S] [--format F] [--db PATH] [--base DIR]
+                     [--min-messages N]             The outer loop: for every Faber-installed
+                                                    skill, report whether sessions since install
+                                                    actually used it and how friction compares —
+                                                    verdicts flag skills to refine or retire
       faber serve [--port P] [--no-open]            Start the dashboard UI in your browser
                                                     (also serves the read-only MCP server at /mcp)
       faber sync [--target claude,codex] [--check] [--force] [--dir PATH]

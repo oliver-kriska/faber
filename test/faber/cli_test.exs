@@ -45,6 +45,9 @@ defmodule Faber.CLITest do
              ]) ==
                {:refine, [iterations: 3, trigger: true, holdout: true, min_improvement: 0.05]}
 
+      assert CLI.parse(["feedback", "--dir", "/tmp/skills", "--format", "codex"]) ==
+               {:feedback, [dir: "/tmp/skills", format: "codex"]}
+
       assert CLI.parse(["serve", "--port", "9000", "--no-open"]) ==
                {:serve, [port: 9000, open: false]}
 
@@ -130,6 +133,33 @@ defmodule Faber.CLITest do
       assert out =~ "reflect:"
       assert out =~ "no improvement"
       assert out =~ "Iron Laws"
+    end
+
+    test "feedback reports installed-skill usage across scanned sessions" do
+      dir = Path.join(System.tmp_dir!(), "faber-cli-fb-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      {:ok, path} =
+        Faber.Install.install({"demo-skill", "---\nname: demo-skill\n---\n# D\n"}, dir: dir)
+
+      # Pin the install into the past so the (old) fixture transcripts count as post-install.
+      marker = path |> Path.dirname() |> Path.join(".faber.json")
+      data = marker |> File.read!() |> Jason.decode!()
+
+      File.write!(
+        marker,
+        Jason.encode!(Map.put(data, "installed_at", "2000-01-01T00:00:00Z")) <> "\n"
+      )
+
+      out = capture_io(fn -> assert CLI.run(:feedback, @fixtures ++ [dir: dir]) == 0 end)
+      assert out =~ "demo-skill"
+      assert out =~ "verdict"
+
+      # An empty skills dir reports the no-skills hint instead of an empty table.
+      empty = Path.join(dir, "none")
+      File.mkdir_p!(empty)
+      out2 = capture_io(fn -> assert CLI.run(:feedback, @fixtures ++ [dir: empty]) == 0 end)
+      assert out2 =~ "No Faber-installed skills"
     end
 
     test "propose refuses a stack-mismatched session, and --force overrides" do

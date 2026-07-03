@@ -93,7 +93,8 @@ defmodule Faber.InstallTest do
       data = path |> Path.dirname() |> Path.join(".faber.json") |> File.read!() |> Jason.decode!()
 
       # adapter/source_session/fingerprint were all nil → dropped; only the always-present keys remain.
-      assert Enum.sort(Map.keys(data)) == ["installed_by", "name"]
+      assert Enum.sort(Map.keys(data)) == ["installed_at", "installed_by", "name"]
+      assert {:ok, _, _} = DateTime.from_iso8601(data["installed_at"])
     end
   end
 
