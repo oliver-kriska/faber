@@ -63,6 +63,10 @@ reference from the `claude-elixir-phoenix` plugin) and [`faber-python`](adapters
 zero `lib/faber` diffs, driving Python-flavored detection/generation purely from declarative
 pack data (contract v0.2 §4.1).
 
+**New here? Start with the [User Guide](docs/GUIDE.md)** — a step-by-step walkthrough of the
+whole workflow (scan → propose → eval → refine → install → sync → feedback), every CLI flag,
+the configuration reference, and troubleshooting.
+
 See [`HANDOFF.md`](HANDOFF.md) for the full thesis and architecture rationale,
 [`docs/ADAPTER_CONTRACT.md`](docs/ADAPTER_CONTRACT.md) for the adapter pack spec (v0.2), and
 [`.claude/research/`](.claude/research/) for the calibration and source-study notes.

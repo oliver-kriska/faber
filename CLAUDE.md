@@ -24,6 +24,9 @@ milestones (M0–M6). Everything here assumes it.
   the engine stays domain-free. Spec: [`docs/ADAPTER_CONTRACT.md`](docs/ADAPTER_CONTRACT.md).
   Reference adapter: `adapters/faber-elixir/`.
 
+The end-user walkthrough (every command, flag, config key, and the intended workflow) is
+[`docs/GUIDE.md`](docs/GUIDE.md) — keep it in sync when CLI flags or config keys change.
+
 ## Conventions (HANDOFF §10)
 
 - **Commit per feature / cohesive unit**, conventional-commit style messages.
