@@ -55,6 +55,10 @@ defmodule Faber.Loop do
               best_content: nil,
               best_proposal: nil,
               best_composite: 0.0,
+              # The current best's full eval (%{composite:, dimensions:}) when the eval_fn
+              # supplies one ({:ok, comp, meta}) — lets :reflect derive feedback without
+              # re-scoring the unchanged best every iteration. nil for plain 2-tuple eval_fns.
+              best_eval: nil,
               iteration: 0,
               consecutive_discards: 0,
               patience: 50,
@@ -86,7 +90,10 @@ defmodule Faber.Loop do
   `propose_fn` returns `{:ok, %{content: String.t(), description: String.t()}}`; the map may
   also carry `proposal: %Faber.Proposal{}`. `eval_fn` is arity 1 (`content`) or arity 2
   (`content, candidate_map`) — arity 2 is how proposal-aware scoring (the behavioral trigger
-  dimension) reaches the eval.
+  dimension) reaches the eval. It returns `{:ok, composite}` or `{:ok, composite, meta}` — the
+  optional `meta` (`%{composite:, dimensions:}`) is cached as the best's eval on a keep so the
+  `:reflect` strategy can derive feedback without re-scoring the unchanged best (`:best_eval`
+  seeds it when a precomputed `:composite` is supplied).
   """
   @spec run(keyword()) :: State.t()
   def run(opts) do
@@ -97,10 +104,10 @@ defmodule Faber.Loop do
     content = Keyword.fetch!(opts, :content)
     eval_fn = Keyword.fetch!(opts, :eval_fn)
 
-    composite =
+    {composite, best_eval} =
       case Keyword.get(opts, :composite) do
-        nil -> seed_composite(eval_fn, content, Keyword.get(opts, :proposal))
-        c -> c
+        nil -> seed_eval(eval_fn, content, Keyword.get(opts, :proposal))
+        c -> {c, Keyword.get(opts, :best_eval)}
       end
 
     %State{
@@ -113,6 +120,7 @@ defmodule Faber.Loop do
       best_content: content,
       best_proposal: Keyword.get(opts, :proposal),
       best_composite: composite,
+      best_eval: best_eval,
       patience: Keyword.get(opts, :patience, 50),
       max_iterations: Keyword.get(opts, :max_iterations, 50),
       target: Keyword.get(opts, :target, 0.95),
@@ -125,15 +133,16 @@ defmodule Faber.Loop do
 
   # Score the seed when no :composite was supplied. An arity-2 eval_fn (proposal-aware) gets a
   # synthetic candidate map built from the seed opts, mirroring what propose_fn will emit.
-  defp seed_composite(eval_fn, content, proposal) do
+  defp seed_eval(eval_fn, content, proposal) do
     result =
       if is_function(eval_fn, 2),
         do: eval_fn.(content, %{content: content, proposal: proposal}),
         else: eval_fn.(content)
 
     case result do
-      {:ok, c} -> c
-      _ -> 0.0
+      {:ok, c} -> {c, nil}
+      {:ok, c, meta} -> {c, meta}
+      _ -> {0.0, nil}
     end
   end
 
@@ -177,11 +186,11 @@ defmodule Faber.Loop do
 
       :ok ->
         case eval_candidate(state, candidate) do
-          {:ok, composite} when composite > state.best_composite + state.min_improvement ->
-            keep(state, iteration, candidate, composite, desc)
-
           {:ok, composite} ->
-            reject(state, iteration, composite, desc, "no improvement")
+            decide(state, iteration, candidate, composite, nil, desc)
+
+          {:ok, composite, meta} ->
+            decide(state, iteration, candidate, composite, meta, desc)
 
           {:error, reason} ->
             reject(
@@ -192,6 +201,14 @@ defmodule Faber.Loop do
               "eval failed: #{inspect(reason)}"
             )
         end
+    end
+  end
+
+  defp decide(state, iteration, candidate, composite, meta, desc) do
+    if composite > state.best_composite + state.min_improvement do
+      keep(state, iteration, candidate, composite, meta, desc)
+    else
+      reject(state, iteration, composite, desc, "no improvement")
     end
   end
 
@@ -208,7 +225,7 @@ defmodule Faber.Loop do
   # A keep the ratchet can't bank is a failed keep: the git-mode invariant is "HEAD always holds
   # the current best", so a failed commit routes to reject/5 (restore to HEAD, count the discard)
   # rather than letting in-memory best and the committed tree silently diverge.
-  defp keep(state, iteration, %{content: content} = candidate, composite, desc) do
+  defp keep(state, iteration, %{content: content} = candidate, composite, meta, desc) do
     case commit_best(state, composite) do
       :ok ->
         entry = entry(state, iteration, composite, true, desc, nil)
@@ -220,6 +237,7 @@ defmodule Faber.Loop do
             best_content: content,
             best_proposal: Map.get(candidate, :proposal) || state.best_proposal,
             best_composite: composite,
+            best_eval: meta,
             consecutive_discards: 0,
             history: [entry | state.history]
         }
@@ -401,8 +419,11 @@ defmodule Faber.Loop do
     run_opts =
       if trigger? do
         case score_pinned(seed, pin_seed, eval_opts) do
-          {:ok, comp} -> Keyword.put(run_opts, :composite, comp)
-          {:error, _} -> run_opts
+          {:ok, comp, meta} ->
+            run_opts |> Keyword.put(:composite, comp) |> Keyword.put(:best_eval, meta)
+
+          {:error, _} ->
+            run_opts
         end
       else
         run_opts
@@ -494,7 +515,8 @@ defmodule Faber.Loop do
           _ -> state.best_content
         end
 
-      {target, feedback} = reflection_feedback(subject, state.best_content, eval_opts)
+      {target, feedback} =
+        reflection_feedback(state.best_eval, subject, state.best_content, eval_opts)
 
       case Propose.propose(result, adapter, Keyword.put(opts, :feedback, feedback)) do
         {:ok, p} ->
@@ -511,11 +533,12 @@ defmodule Faber.Loop do
     end
   end
 
-  # Structural-only scoring (the default): the composite of the rendered string.
+  # Structural-only scoring (the default): the composite of the rendered string. The full eval
+  # rides along as the 3rd element so a keep caches it for :reflect feedback (see State.best_eval).
   defp build_eval_fn(false, _seed, eval_opts) do
     fn c ->
       case Eval.score(c, eval_opts) do
-        {:ok, %{composite: comp}} -> {:ok, comp}
+        {:ok, %{composite: comp} = result} -> {:ok, comp, eval_meta(result)}
         {:error, _} = err -> err
       end
     end
@@ -534,10 +557,13 @@ defmodule Faber.Loop do
 
   defp score_pinned(proposal, seed, eval_opts) do
     case Eval.score(pin_fixtures(proposal, seed), eval_opts) do
-      {:ok, %{composite: comp}} -> {:ok, comp}
+      {:ok, %{composite: comp} = result} -> {:ok, comp, eval_meta(result)}
       {:error, _} = err -> err
     end
   end
+
+  defp eval_meta(%{composite: comp} = result),
+    do: %{composite: comp, dimensions: result.dimensions}
 
   @doc false
   # The fixture-gaming guard: candidates are graded on the SEED's routing fixtures for the whole
@@ -551,21 +577,36 @@ defmodule Faber.Loop do
     }
   end
 
-  # Score the current best (deterministic on the structural dims; + pooled routing calls in
-  # trigger mode) and turn its weakest dimension + failed checks into a targeted-edit
+  # Turn the current best's eval — its weakest dimension + failed checks — into a targeted-edit
   # instruction. Eval dimensions are the "named factors"; this is the credit-assignment step
-  # (KB: bounded-factor-level-prompt-optimization). `subject` is what gets scored (string, or a
-  # pinned proposal in trigger mode); `content` is the draft embedded in the prompt.
-  defp reflection_feedback(subject, content, eval_opts) do
+  # (KB: bounded-factor-level-prompt-optimization). The best only changes on a keep, so its eval
+  # is read from the cache keep/6 populated; re-scoring it every iteration (the pre-cache
+  # behavior) roughly doubled the loop's LLM routing spend in trigger mode. The live-score
+  # fallback only fires for custom eval_fns that return no meta. Intentional consequence: the
+  # fixed best is no longer RE-SAMPLED per iteration — candidates still score fresh and pooled
+  # (`trigger_samples`), which is where the anti-noise sampling belongs.
+  defp reflection_feedback(%{} = best_eval, _subject, content, _eval_opts) do
+    derive_feedback(best_eval, content)
+  end
+
+  defp reflection_feedback(nil, subject, content, eval_opts) do
     case Eval.score(subject, eval_opts) do
-      {:ok, %{dimensions: dims, composite: comp}} when map_size(dims) > 0 ->
-        {name, dim} = Enum.min_by(dims, fn {_n, d} -> d["score"] end)
-        failed = for a <- dim["assertions"] || [], a["passed"] == false, do: a["evidence"]
-        {name, feedback_string(content, comp, name, dim["score"], failed)}
+      {:ok, %{dimensions: dims, composite: comp}} ->
+        derive_feedback(%{composite: comp, dimensions: dims}, content)
 
       _ ->
-        {"overall", feedback_string(content, nil, "overall", nil, [])}
+        derive_feedback(%{composite: nil, dimensions: %{}}, content)
     end
+  end
+
+  defp derive_feedback(%{dimensions: dims, composite: comp}, content) when map_size(dims) > 0 do
+    {name, dim} = Enum.min_by(dims, fn {_n, d} -> d["score"] end)
+    failed = for a <- dim["assertions"] || [], a["passed"] == false, do: a["evidence"]
+    {name, feedback_string(content, comp, name, dim["score"], failed)}
+  end
+
+  defp derive_feedback(%{composite: comp}, content) do
+    {"overall", feedback_string(content, comp, "overall", nil, [])}
   end
 
   defp feedback_string(content, composite, target, score, failed) do

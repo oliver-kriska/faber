@@ -432,6 +432,31 @@ defmodule Faber.LoopTest do
     end
   end
 
+  describe "refine/3 :reflect eval economy" do
+    test "the unchanged best is NOT re-scored every iteration — reflection reads the cached eval" do
+      # Every Eval.score consumes exactly one sequenced sidecar score, so the agent's remaining
+      # length counts the evals. Expected: seed (1) + one per candidate (3 iterations, all ties →
+      # rejected) = 4. The pre-fix behavior ALSO re-scored the unchanged best inside
+      # reflection_feedback each iteration (= 7 here) — in trigger mode each of those re-scores
+      # is trigger_samples × fixtures real LLM routing calls, roughly doubling a run's spend.
+      scores = cell(List.duplicate(0.5, 20))
+
+      state =
+        Loop.refine(sample_result(), sample_adapter(),
+          llm: Faber.LLM.Stub,
+          sidecar: SeqSidecar,
+          seq_agent: scores,
+          strategy: :reflect,
+          patience: 3,
+          target: 0.99
+        )
+
+      assert state.status == :stuck
+      consumed = 20 - length(Agent.get(scores, & &1))
+      assert consumed == 4
+    end
+  end
+
   describe "run/1 :min_improvement margin" do
     test "a sub-margin gain is rejected; a gain clearing the margin is kept" do
       state =
