@@ -118,6 +118,30 @@ defmodule Faber.InstallTest do
     end
   end
 
+  describe "installed_at/1" do
+    # THE marker-timestamp reader — Faber.Feedback delegates here, so this pins the write→read
+    # round-trip that used to be two independently-hardcoded copies of the marker convention.
+    @tag :tmp_dir
+    test "reads back the timestamp install/2 wrote", %{tmp_dir: dir} do
+      before = DateTime.utc_now() |> DateTime.add(-1, :second)
+      {:ok, path} = Install.install({"stamped", "---\nname: stamped\n---\n"}, dir: dir)
+
+      assert %DateTime{} = at = Install.installed_at(path)
+      assert DateTime.compare(at, before) in [:gt, :eq]
+    end
+
+    @tag :tmp_dir
+    test "nil for a skill without a marker (user's own) or an old-shape marker", %{tmp_dir: dir} do
+      write_unmanaged_skill(dir, "users-own", "Theirs.")
+      assert Install.installed_at(Path.join([dir, "users-own", "SKILL.md"])) == nil
+
+      {:ok, path} = Install.install({"legacy", "---\nname: legacy\n---\n"}, dir: dir)
+      marker = path |> Path.dirname() |> Path.join(".faber.json")
+      File.write!(marker, ~s({"installed_by":"faber","name":"legacy"}\n))
+      assert Install.installed_at(path) == nil
+    end
+  end
+
   describe "cross-agent pointers (managed block)" do
     setup %{tmp_dir: dir} do
       skills = Path.join(dir, "skills")

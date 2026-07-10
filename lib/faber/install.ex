@@ -169,6 +169,28 @@ defmodule Faber.Install do
     skill_path |> Path.dirname() |> Path.join(@marker) |> File.exists?()
   end
 
+  @doc """
+  When Faber installed the skill at `skill_path` (its `SKILL.md` path), read from the `#{@marker}`
+  provenance marker beside it — `nil` for a missing or older-shape marker ("unknown install
+  time", which `Faber.Feedback` treats as "count every session").
+
+  This is THE reader for the marker's timestamp: the marker filename and its
+  dirname-of-`SKILL.md` location are private to this module, so callers must go through here
+  rather than restating the convention.
+  """
+  @spec installed_at(Path.t()) :: DateTime.t() | nil
+  def installed_at(skill_path) do
+    marker = skill_path |> Path.dirname() |> Path.join(@marker)
+
+    with {:ok, body} <- File.read(marker),
+         {:ok, %{"installed_at" => iso}} when is_binary(iso) <- Jason.decode(body),
+         {:ok, dt, _offset} <- DateTime.from_iso8601(iso) do
+      dt
+    else
+      _ -> nil
+    end
+  end
+
   @doc "Render the managed-block body that lists `skills` for an agent's context file."
   @spec render_pointer_body([%{name: String.t(), description: String.t()}]) :: String.t()
   def render_pointer_body(skills) do

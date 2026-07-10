@@ -56,7 +56,7 @@ defmodule Faber.Feedback do
   end
 
   defp skill_report(%{name: name, path: skill_path}, results) do
-    installed_at = read_installed_at(skill_path)
+    installed_at = Install.installed_at(skill_path)
     sessions = Enum.filter(results, &session_after?(&1, installed_at))
 
     {used, unused} =
@@ -92,20 +92,6 @@ defmodule Faber.Feedback do
     case scores do
       [] -> nil
       _ -> Float.round(Enum.sum(scores) / length(scores), 3)
-    end
-  end
-
-  # The marker is best-effort provenance from Install — parse defensively; any missing/older
-  # shape means "unknown install time" and the report counts every session.
-  defp read_installed_at(skill_path) do
-    marker = skill_path |> Path.dirname() |> Path.join(".faber.json")
-
-    with {:ok, body} <- File.read(marker),
-         {:ok, %{"installed_at" => iso}} when is_binary(iso) <- Jason.decode(body),
-         {:ok, dt, _offset} <- DateTime.from_iso8601(iso) do
-      dt
-    else
-      _ -> nil
     end
   end
 
