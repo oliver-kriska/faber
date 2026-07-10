@@ -653,6 +653,53 @@ defmodule Faber.LoopTest do
       assert state.iteration == 3
       assert state.best_composite == 0.7
     end
+
+    # async_nolink: the run task is crash-isolated, so a loop that raises reaches the server as
+    # a DOWN — waiters get {:error, {:crashed, _}} and the server stays queryable instead of
+    # dying with the task.
+    @tag capture_log: true
+    test "a crashing loop settles as :crashed instead of killing the server" do
+      pid =
+        start_supervised!(
+          {Server,
+           [
+             content: "seed",
+             composite: 0.4,
+             target: 0.95,
+             checks_fn: &ok_checks/1,
+             propose_fn: fn _state -> raise "loop body blew up" end,
+             eval_fn: scorer([])
+           ]}
+        )
+
+      assert {:error, {:crashed, {%RuntimeError{message: "loop body blew up"}, _stack}}} =
+               Server.await(pid, 5_000)
+
+      assert Server.status(pid) == :crashed
+      assert Process.alive?(pid)
+    end
+
+    # The wedge guard (mirrors Faber.Schedule): a hung loop is killed at :max_run_ms and
+    # recorded, so await/2 callers aren't parked forever behind a wedged subprocess.
+    test "a hung loop is killed at :max_run_ms and settles as :timeout" do
+      pid =
+        start_supervised!(
+          {Server,
+           [
+             content: "seed",
+             composite: 0.4,
+             target: 0.95,
+             max_run_ms: 50,
+             checks_fn: &ok_checks/1,
+             propose_fn: fn _state -> Process.sleep(:infinity) end,
+             eval_fn: scorer([])
+           ]}
+        )
+
+      assert {:error, :run_timeout} = Server.await(pid, 5_000)
+      assert Server.status(pid) == :timeout
+      assert Process.alive?(pid)
+    end
   end
 
   defp sample_adapter do

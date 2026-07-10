@@ -17,6 +17,10 @@ defmodule Faber.Application do
       [
         # PubSub first — anything below may broadcast on it.
         {Phoenix.PubSub, name: Faber.PubSub},
+        # Crash-isolated home for the loop servers' run tasks (async_nolink): a loop that raises
+        # must reach its server as a DOWN, not kill it — and OTP shutdown must not sever a link
+        # mid git-commit. Must start before Faber.Loop.Supervisor's children can run.
+        {Task.Supervisor, name: Faber.Loop.TaskSupervisor},
         # On-demand homes for autoresearch loop runs (M5). Started empty; loops are launched
         # explicitly via Faber.Loop.Supervisor.start_loop/1, never at boot.
         Faber.Loop.Supervisor,
