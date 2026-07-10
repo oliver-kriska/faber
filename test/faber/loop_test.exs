@@ -34,6 +34,14 @@ defmodule Faber.LoopTest do
     def generate_object(_prompt, _schema, _opts), do: {:error, :llm_unavailable}
   end
 
+  # A sidecar that fails every call — drives Eval.score down its {:error, _} path wherever the
+  # loop consumes it (candidate scoring, seed scoring, the final holdout validation).
+  defmodule FailSidecar do
+    @behaviour Faber.Sidecar
+    @impl true
+    def call(_command, _request, _opts), do: {:error, :sidecar_down}
+  end
+
   # Reflective double: returns a deliberately weak skill on the first (feedback-free) call, and a
   # strong one once the prompt carries reflective feedback ("REVISION TASK"). Proves the :reflect
   # strategy threads the eval's weakness back into the next proposal — scored by the REAL native
@@ -571,6 +579,32 @@ defmodule Faber.LoopTest do
                  trigger: true,
                  trigger_holdout: true
                )
+    end
+
+    test "a failing holdout eval lands as holdout: %{error: _}, not a crash" do
+      seed = %{
+        honest_seed()
+        | should_trigger: ["XYZZY alpha", "beta plain"],
+          should_not_trigger: ["gamma plain", "XYZZY delta"]
+      }
+
+      # FailSidecar sinks every Eval.score (candidates reject as "eval failed", and the final
+      # holdout validation errors too) — the run must still return a State with the failure
+      # recorded on :holdout rather than raising out of attach_holdout.
+      state =
+        Loop.refine(sample_result(), sample_adapter(),
+          seed: seed,
+          llm: GamingLLM,
+          trigger: true,
+          trigger_holdout: true,
+          sidecar: FailSidecar,
+          max_iterations: 1,
+          patience: 100,
+          target: 0.99
+        )
+
+      assert %Loop.State{holdout: %{error: _}} = state
+      assert Enum.all?(state.history, &(&1.reason =~ "eval failed"))
     end
   end
 

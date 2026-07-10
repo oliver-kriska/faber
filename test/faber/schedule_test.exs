@@ -30,6 +30,20 @@ defmodule Faber.ScheduleTest do
     def generate_object(_prompt, _schema, _opts), do: Process.sleep(:infinity)
   end
 
+  defmodule GateLLM do
+    @behaviour Faber.LLM
+    @impl true
+    # Parks until the test releases it, then behaves like the Stub — lets a test freeze a run
+    # mid-flight to orchestrate message-ordering races deterministically.
+    def generate_object(prompt, schema, opts) do
+      send(:faber_schedule_gate_test, {:job_running, self()})
+
+      receive do
+        :go -> Faber.LLM.Stub.generate_object(prompt, schema, opts)
+      end
+    end
+  end
+
   describe "run_once/1 (pure pipeline driver)" do
     test "scans, proposes, and evals the top sessions (hermetic: stub LLM, native eval)" do
       summary = Schedule.run_once(top: 1, scan: @fixtures, adapter_dir: "adapters/faber-elixir")
@@ -216,6 +230,64 @@ defmodule Faber.ScheduleTest do
       Schedule.run_now(pid)
       assert_receive {:faber_schedule, :run_complete, _}, 2_000
       assert Schedule.status(pid).runs == 2
+    end
+
+    test "a deadline for an already-completed run is ignored (stale ref)" do
+      pid =
+        start_supervised!(
+          {Schedule,
+           name: nil,
+           enabled: false,
+           notify: self(),
+           top: 1,
+           scan: @fixtures,
+           adapter_dir: "adapters/faber-elixir"}
+        )
+
+      send(pid, {:run_deadline, make_ref()})
+
+      # The status call is processed after the stale deadline — the scheduler ignored it.
+      assert %{running: false, runs: 0} = Schedule.status(pid)
+      assert Process.alive?(pid)
+    end
+
+    # The deadline can RACE a just-finishing run: the timer message is enqueued, then the task
+    # completes, so its {ref, summary} reply sits in the mailbox behind the deadline.
+    # Task.shutdown's selective receive must hand back the real summary — the run counts as a
+    # normal completion, not a :run_timeout.
+    test "a deadline racing a just-finished run records the real summary, not a timeout" do
+      Process.register(self(), :faber_schedule_gate_test)
+
+      pid =
+        start_supervised!(
+          {Schedule,
+           name: nil,
+           enabled: false,
+           notify: self(),
+           top: 1,
+           scan: @fixtures,
+           adapter_dir: "adapters/faber-elixir",
+           llm: GateLLM}
+        )
+
+      Schedule.run_now(pid)
+      assert_receive {:job_running, job}, 2_000
+
+      %{task: %Task{ref: ref, pid: task_pid}} = :sys.get_state(pid)
+      mon = Process.monitor(task_pid)
+
+      # Freeze the scheduler, enqueue the deadline FIRST, then let the job finish — its reply
+      # lands behind the deadline, reproducing the race.
+      :ok = :sys.suspend(pid)
+      send(pid, {:run_deadline, ref})
+      send(job, :go)
+      assert_receive {:DOWN, ^mon, :process, ^task_pid, :normal}, 2_000
+      :ok = :sys.resume(pid)
+
+      assert_receive {:faber_schedule, :run_complete, summary}, 2_000
+      refute match?(%{error: :run_timeout}, summary)
+      assert summary.scanned == 1
+      assert %{running: false, runs: 1} = Schedule.status(pid)
     end
 
     # async_nolink isolation: a job that hard-crashes must NOT take down the scheduler — it lands as

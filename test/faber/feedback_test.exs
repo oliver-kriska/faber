@@ -69,6 +69,37 @@ defmodule Faber.FeedbackTest do
     end
 
     @tag :tmp_dir
+    test ":low_usage when the skill fired in under 10% of sessions", %{tmp_dir: dir} do
+      skills = Path.join(dir, "skills")
+      {:ok, path} = Install.install({"rare", "---\nname: rare\n---\n# R\n"}, dir: skills)
+      rewrite_installed_at!(path, "2000-01-01T00:00:00Z")
+
+      results =
+        for i <- 1..11 do
+          used = if i == 1, do: ["rare"], else: []
+          result(transcript!(dir, "s#{i}.jsonl"), 0.5, used)
+        end
+
+      assert [%{skill: "rare", sessions: 11, sessions_used: 1, verdict: :low_usage}] =
+               Feedback.report(dir: skills, results: results)
+    end
+
+    # session_after?/2's documented permissive fallback: a transcript that can't be stat'ed (a
+    # vanished file, or a non-file source handle like OpenCode's "db#session") is KEPT. A strict
+    # implementation would report :no_sessions here.
+    @tag :tmp_dir
+    test "a vanished transcript is counted permissively, not dropped", %{tmp_dir: dir} do
+      skills = Path.join(dir, "skills")
+      {:ok, path} = Install.install({"ghost", "---\nname: ghost\n---\n# G\n"}, dir: skills)
+      rewrite_installed_at!(path, "2000-01-01T00:00:00Z")
+
+      results = [result(Path.join(dir, "vanished.jsonl"), 0.5, [])]
+
+      assert [%{skill: "ghost", sessions: 1, verdict: :unused}] =
+               Feedback.report(dir: skills, results: results)
+    end
+
+    @tag :tmp_dir
     test "sessions older than installed_at are excluded (→ :no_sessions)", %{tmp_dir: dir} do
       skills = Path.join(dir, "skills")
       {:ok, path} = Install.install({"future", "---\nname: future\n---\n# F\n"}, dir: skills)
