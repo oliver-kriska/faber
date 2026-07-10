@@ -71,11 +71,11 @@ defmodule Faber.Adapter do
   @spec load(Path.t()) :: {:ok, t()} | {:error, term()}
   def load(dir) do
     with {:ok, manifest} <- read_yaml(Path.join(dir, "faber.adapter.yaml")),
-         laws <- read_list(Path.join(dir, "laws/laws.yaml"), "laws"),
-         detect <- read_detect(Path.join(dir, "detect/signatures.yaml")),
-         playbooks <- read_list(Path.join(dir, "investigate/playbooks.yaml"), "playbooks"),
-         eval <- read_optional_yaml(Path.join(dir, "eval/eval.yaml")),
-         templates <- read_templates(Path.join(dir, "templates")),
+         {:ok, laws} <- read_list(Path.join(dir, "laws/laws.yaml"), "laws"),
+         {:ok, detect} <- read_detect(Path.join(dir, "detect/signatures.yaml")),
+         {:ok, playbooks} <- read_list(Path.join(dir, "investigate/playbooks.yaml"), "playbooks"),
+         {:ok, eval} <- read_optional_yaml(Path.join(dir, "eval/eval.yaml")),
+         {:ok, templates} <- read_templates(Path.join(dir, "templates")),
          adapter <- build(dir, manifest, detect, laws, playbooks, eval, templates),
          [] <- validate(adapter) do
       {:ok, adapter}
@@ -208,16 +208,15 @@ defmodule Faber.Adapter do
   # Reads `templates/manifest.yaml`, then the body of each named file. Absent dir/manifest → %{}.
   # A manifest entry whose file is missing is skipped (not fatal — validation can flag it later).
   defp read_templates(dir) do
-    case read_list(Path.join(dir, "manifest.yaml"), "templates") do
-      [] ->
-        %{}
-
-      entries ->
+    with {:ok, entries} <- read_list(Path.join(dir, "manifest.yaml"), "templates") do
+      templates =
         for %{"file" => file, "produces" => produces} <- entries,
             {:ok, safe} <- [safe_template_path(file, dir)],
             {:ok, body} <- [File.read(Path.join(dir, safe))],
             into: %{},
             do: {produces, body}
+
+      {:ok, templates}
     end
   end
 
@@ -399,36 +398,41 @@ defmodule Faber.Adapter do
     end
   end
 
+  # Absent file → `{:ok, nil}` (engine defaults apply). Present-but-malformed → propagate the
+  # `{:error, ...}` so `load/1` rejects the pack at the boundary rather than silently ignoring a
+  # broken optional file (fail-closed: a malformed stricter eval must not downgrade to defaults).
   defp read_optional_yaml(path) do
-    if File.exists?(path) do
-      case read_yaml(path) do
-        {:ok, map} -> map
-        {:error, _} -> nil
-      end
-    end
+    if File.exists?(path), do: read_yaml(path), else: {:ok, nil}
   end
 
-  # Bulk list file (laws.yaml / playbooks.yaml / templates manifest.yaml). Absent → []. Returns
-  # the top-level list under `key`, or [] if the file or key is missing.
+  # Bulk list file (laws.yaml / playbooks.yaml / templates manifest.yaml). Absent → `{:ok, []}`.
+  # Returns the top-level list under `key`, or `{:ok, []}` if the key is missing; a malformed file
+  # propagates its `{:error, ...}`.
   defp read_list(path, key) do
-    case read_optional_yaml(path) do
-      %{^key => list} when is_list(list) -> list
-      _ -> []
+    with {:ok, yaml} <- read_optional_yaml(path) do
+      case yaml do
+        %{^key => list} when is_list(list) -> {:ok, list}
+        _ -> {:ok, []}
+      end
     end
   end
 
   # `detect/signatures.yaml` carries several sibling top-level keys (contract §4: `signatures`;
   # §4.1: `fingerprints`, `opportunities`, `skill_namespaces`). Read the file once and project
-  # each. Absent file → all empty (engine-default behavior, see `Faber.Detect`).
+  # each. Absent file → all empty (engine-default behavior, see `Faber.Detect`); malformed file
+  # propagates its `{:error, ...}`.
   defp read_detect(path) do
-    yaml = read_optional_yaml(path) || %{}
+    with {:ok, yaml0} <- read_optional_yaml(path) do
+      yaml = yaml0 || %{}
 
-    %{
-      signatures: list_under(yaml, "signatures"),
-      fingerprints: list_under(yaml, "fingerprints"),
-      opportunities: list_under(yaml, "opportunities"),
-      skill_namespaces: list_under(yaml, "skill_namespaces")
-    }
+      {:ok,
+       %{
+         signatures: list_under(yaml, "signatures"),
+         fingerprints: list_under(yaml, "fingerprints"),
+         opportunities: list_under(yaml, "opportunities"),
+         skill_namespaces: list_under(yaml, "skill_namespaces")
+       }}
+    end
   end
 
   defp list_under(map, key) do

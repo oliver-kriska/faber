@@ -123,5 +123,13 @@ def main(argv=None):
         _emit({"status": "error", "command": command, "error": f"cannot read --input: {exc}"})
         return 1
 
-    _emit(HANDLERS[command](request))
+    try:
+        result = HANDLERS[command](request)
+    except Exception as exc:  # noqa: BLE001 — the sidecar must always answer in JSON, never a traceback
+        # An untrusted adapter pack can supply e.g. an invalid regex that makes a matcher raise.
+        # Honor the JSON-over-stdin/stdout contract: emit a structured error, not a bare traceback.
+        _emit({"status": "error", "command": command, "error": f"{type(exc).__name__}: {exc}"})
+        return 1
+
+    _emit(result)
     return 0

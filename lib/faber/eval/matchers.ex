@@ -279,11 +279,34 @@ defmodule Faber.Eval.Matchers do
       end)
       |> Enum.join("\n")
 
-    case Enum.find(patterns, &Regex.match?(&1, haystack)) do
-      nil -> {true, "no dangerous patterns"}
-      pat -> {false, "dangerous pattern: #{inspect(Regex.source(pat))}"}
+    # `patterns` may come from an untrusted adapter pack as YAML strings (not compiled `%Regex{}`),
+    # so normalize each fail-closed: a bad regex is a failed safety check, never a raise mid-scan.
+    with {:ok, regexes} <- compile_patterns(patterns) do
+      case Enum.find(regexes, &Regex.match?(&1, haystack)) do
+        nil -> {true, "no dangerous patterns"}
+        pat -> {false, "dangerous pattern: #{inspect(Regex.source(pat))}"}
+      end
     end
   end
+
+  # Accepts a mix of compiled `%Regex{}` (e.g. `@dangerous_default`) and strings from a pack's
+  # YAML. Short-circuits to a failed check on the first uncompilable pattern.
+  defp compile_patterns(patterns) do
+    Enum.reduce_while(patterns, {:ok, []}, fn pat, {:ok, acc} ->
+      case normalize_pattern(pat) do
+        {:ok, re} -> {:cont, {:ok, [re | acc]}}
+        {false, _} = failed -> {:halt, failed}
+      end
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      failed -> failed
+    end
+  end
+
+  defp normalize_pattern(%Regex{} = re), do: {:ok, re}
+  defp normalize_pattern(pat) when is_binary(pat), do: compile_pattern(pat)
+  defp normalize_pattern(other), do: {false, "invalid pattern: #{inspect(other)}"}
 
   # ── clarity / specificity ─────────────────────────────────────────────────────
 
