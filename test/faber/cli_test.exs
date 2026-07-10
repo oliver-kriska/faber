@@ -64,6 +64,30 @@ defmodule Faber.CLITest do
     end
   end
 
+  describe "guarded/1 (the dispatch halt-guard)" do
+    test "passes a clean status through" do
+      assert CLI.guarded(fn -> 0 end) == 0
+    end
+
+    test "a raise becomes exit status 1" do
+      err = capture_io(:stderr, fn -> assert CLI.guarded(fn -> raise "boom" end) == 1 end)
+      assert err =~ "faber: boom"
+    end
+
+    # Faber.Subprocess re-raises abnormal task exits via exit/1 — rescue alone would let these
+    # escape the dispatch process, so System.halt/1 would never run and a scripted `faber scan`
+    # would hang the VM instead of failing fast.
+    test "an exit becomes exit status 1" do
+      err = capture_io(:stderr, fn -> assert CLI.guarded(fn -> exit(:boom) end) == 1 end)
+      assert err =~ "uncaught exit"
+    end
+
+    test "a throw becomes exit status 1" do
+      err = capture_io(:stderr, fn -> assert CLI.guarded(fn -> throw(:boom) end) == 1 end)
+      assert err =~ "uncaught throw"
+    end
+  end
+
   describe "run/2" do
     test "scan prints a ranked table" do
       out = capture_io(fn -> assert CLI.run(:scan, @fixtures ++ [limit: 5]) == 0 end)

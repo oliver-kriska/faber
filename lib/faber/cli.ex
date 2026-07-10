@@ -168,24 +168,29 @@ defmodule Faber.CLI do
   def dispatch({:serve, opts}), do: serve(opts)
 
   def dispatch({command, opts}) do
-    # ALWAYS halt — if run/2 raises, halt with 1 rather than leaving the release VM hung with no
-    # exit path (one-shot commands have no other process keeping the node alive).
-    spawn(fn ->
-      status =
-        try do
-          run(command, opts)
-        rescue
-          e -> halt_on_raise(e, __STACKTRACE__)
-        end
-
-      System.halt(status)
-    end)
-
+    # ALWAYS halt — if run/2 raises, exits, or throws, halt with 1 rather than leaving the
+    # release VM hung with no exit path (one-shot commands have no other process keeping the node
+    # alive). `catch` is load-bearing, not belt-and-braces: `Faber.Subprocess` re-raises abnormal
+    # task exits via `exit/1`, which `rescue` alone lets escape — the process would die with
+    # System.halt/1 never reached and the VM hung.
+    Task.start(fn -> System.halt(guarded(fn -> run(command, opts) end)) end)
     :ok
   end
 
-  defp halt_on_raise(error, stacktrace) do
-    IO.puts(:stderr, "faber: #{Exception.message(error)}")
+  @doc false
+  # The halt-guard of dispatch/1, minus the halt — exposed so the raise/exit/throw → exit-status-1
+  # contract is unit-testable (System.halt/1 itself can't be exercised in a test).
+  @spec guarded((-> non_neg_integer())) :: non_neg_integer()
+  def guarded(fun) do
+    fun.()
+  rescue
+    e -> fail("faber: #{Exception.message(e)}", __STACKTRACE__)
+  catch
+    kind, reason -> fail("faber: uncaught #{kind}: #{inspect(reason)}", __STACKTRACE__)
+  end
+
+  defp fail(message, stacktrace) do
+    IO.puts(:stderr, message)
     IO.puts(:stderr, Exception.format_stacktrace(stacktrace))
     1
   end
