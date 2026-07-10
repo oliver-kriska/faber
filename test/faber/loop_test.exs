@@ -314,6 +314,95 @@ defmodule Faber.LoopTest do
       assert length(String.split(log, "\n", trim: true)) == 2
       assert log =~ "autoresearch: demo"
     end
+
+    # The ratchet invariant is "HEAD always holds the current best" — so a keep whose commit
+    # FAILS must become a reject (restore to HEAD, count the discard), or in-memory best and the
+    # committed tree silently diverge and the next revert discards the "kept" content.
+    @tag :tmp_dir
+    test "a failed git commit turns the keep into a reject", %{tmp_dir: dir} do
+      skill = "---\nname: demo\ndescription: a demo skill for the loop\n---\n# Demo\n"
+      c1 = skill <> "\nversion 1\n"
+      file = Path.join(dir, "SKILL.md")
+      File.write!(file, skill)
+
+      {:ok, _} = Loop.Git.git(dir, ["init", "-q"])
+      {:ok, _} = Loop.Git.git(dir, ["config", "user.email", "t@example.com"])
+      {:ok, _} = Loop.Git.git(dir, ["config", "user.name", "t"])
+      {:ok, _} = Loop.Git.git(dir, ["add", "SKILL.md"])
+      {:ok, _} = Loop.Git.git(dir, ["commit", "-q", "-m", "baseline"])
+
+      # Make every `git commit` fail (add still succeeds): a rejecting pre-commit hook.
+      hooks = Path.join(dir, "hooks")
+      File.mkdir_p!(hooks)
+      hook = Path.join(hooks, "pre-commit")
+      File.write!(hook, "#!/bin/sh\nexit 1\n")
+      File.chmod!(hook, 0o755)
+      {:ok, _} = Loop.Git.git(dir, ["config", "core.hooksPath", "hooks"])
+
+      state =
+        Loop.run(
+          content: skill,
+          composite: 0.4,
+          target: 0.99,
+          max_iterations: 1,
+          patience: 100,
+          path: file,
+          dir: dir,
+          git: true,
+          git_paths: ["SKILL.md"],
+          skill: "demo",
+          propose_fn: fn _state -> {:ok, %{content: c1, description: "candidate"}} end,
+          eval_fn: scorer([0.9])
+        )
+
+      # The improvement could not be banked: best is unchanged and nothing was kept.
+      assert state.best_composite == 0.4
+      assert state.best_content == skill
+      assert [%{kept: false} = entry] = state.history
+      assert entry.reason =~ "commit failed"
+      # The working tree was restored to HEAD, not left holding the un-committed candidate.
+      assert File.read!(file) == skill
+      {:ok, log} = Loop.Git.git(dir, ["log", "--oneline"])
+      assert length(String.split(log, "\n", trim: true)) == 1
+    end
+
+    # The flip side: a candidate byte-identical to HEAD (eval noise re-scores the same draft
+    # higher) is a SUCCESSFUL no-op keep — HEAD already holds it. `git commit` alone would exit
+    # non-zero ("nothing to commit"); that must not be reported as a failure.
+    @tag :tmp_dir
+    test "a candidate identical to HEAD keeps without a new commit", %{tmp_dir: dir} do
+      skill = "---\nname: demo\ndescription: a demo skill for the loop\n---\n# Demo\n"
+      file = Path.join(dir, "SKILL.md")
+      File.write!(file, skill)
+
+      {:ok, _} = Loop.Git.git(dir, ["init", "-q"])
+      {:ok, _} = Loop.Git.git(dir, ["config", "user.email", "t@example.com"])
+      {:ok, _} = Loop.Git.git(dir, ["config", "user.name", "t"])
+      {:ok, _} = Loop.Git.git(dir, ["add", "SKILL.md"])
+      {:ok, _} = Loop.Git.git(dir, ["commit", "-q", "-m", "baseline"])
+
+      state =
+        Loop.run(
+          content: skill,
+          composite: 0.4,
+          target: 0.99,
+          max_iterations: 1,
+          patience: 100,
+          path: file,
+          dir: dir,
+          git: true,
+          git_paths: ["SKILL.md"],
+          skill: "demo",
+          propose_fn: fn _state -> {:ok, %{content: skill, description: "same draft"}} end,
+          eval_fn: scorer([0.9])
+        )
+
+      assert state.best_composite == 0.9
+      assert [%{kept: true}] = state.history
+      # No new commit — HEAD already held the content.
+      {:ok, log} = Loop.Git.git(dir, ["log", "--oneline"])
+      assert length(String.split(log, "\n", trim: true)) == 1
+    end
   end
 
   describe "refine/3 (real Propose + Eval wiring)" do

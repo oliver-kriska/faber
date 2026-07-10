@@ -205,22 +205,34 @@ defmodule Faber.Loop do
 
   # ── keep / revert / discard ──────────────────────────────────────────────
 
+  # A keep the ratchet can't bank is a failed keep: the git-mode invariant is "HEAD always holds
+  # the current best", so a failed commit routes to reject/5 (restore to HEAD, count the discard)
+  # rather than letting in-memory best and the committed tree silently diverge.
   defp keep(state, iteration, %{content: content} = candidate, composite, desc) do
-    if state.git, do: Git.commit(state.dir, state.git_paths, keep_message(state, composite))
+    case commit_best(state, composite) do
+      :ok ->
+        entry = entry(state, iteration, composite, true, desc, nil)
+        log(state, entry)
 
-    entry = entry(state, iteration, composite, true, desc, nil)
-    log(state, entry)
+        %{
+          state
+          | iteration: iteration,
+            best_content: content,
+            best_proposal: Map.get(candidate, :proposal) || state.best_proposal,
+            best_composite: composite,
+            consecutive_discards: 0,
+            history: [entry | state.history]
+        }
 
-    %{
-      state
-      | iteration: iteration,
-        best_content: content,
-        best_proposal: Map.get(candidate, :proposal) || state.best_proposal,
-        best_composite: composite,
-        consecutive_discards: 0,
-        history: [entry | state.history]
-    }
+      {:error, reason} ->
+        reject(state, iteration, composite, desc, "commit failed: #{inspect(reason)}")
+    end
   end
+
+  defp commit_best(%State{git: true} = state, composite),
+    do: Git.commit(state.dir, state.git_paths, keep_message(state, composite))
+
+  defp commit_best(_state, _composite), do: :ok
 
   # A rejected candidate (no improvement, failed checks, or eval error): restore the working tree
   # to the current best, journal it, and bump the plateau counter. The entry's desc/reason record

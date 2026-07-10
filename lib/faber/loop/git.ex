@@ -8,15 +8,44 @@ defmodule Faber.Loop.Git do
   invariant as the plugin's `git checkout -- {skill_dir}`.
   """
 
-  @doc "Stage `paths` and commit with `message`. Returns `:ok` or `{:error, output}`."
+  @doc """
+  Stage `paths` and commit with `message`. Returns `:ok` or `{:error, output}`.
+
+  A candidate byte-identical to HEAD is a successful no-op (`:ok`, no commit made) — HEAD
+  already holds it, and `git commit` exiting non-zero on "nothing to commit" must not read as a
+  ratchet failure.
+  """
   @spec commit(Path.t(), [String.t()], String.t()) :: :ok | {:error, term()}
   def commit(_dir, [], _message), do: :ok
 
   def commit(dir, paths, message) do
     with {:ok, safe} <- safe_paths(dir, paths),
-         {:ok, _} <- git(dir, ["add", "--" | safe]),
-         {:ok, _} <- git(dir, ["commit", "-m", message]) do
-      :ok
+         {:ok, _} <- git(dir, ["add", "--" | safe]) do
+      if staged_changes?(dir, safe) do
+        case git(dir, ["commit", "-m", message]) do
+          {:ok, _} ->
+            :ok
+
+          {:error, _} = err ->
+            # Un-stage what we just added (best-effort): `revert/2` restores the worktree FROM
+            # the index, so a failed commit must not leave the candidate staged or the
+            # follow-up revert would "restore" the very content whose commit failed.
+            _ = git(dir, ["reset", "--" | safe])
+            err
+        end
+      else
+        :ok
+      end
+    end
+  end
+
+  # `git diff --quiet --cached` exits 0 only when the staged paths match HEAD. Non-zero means
+  # staged changes (1) — or an unborn HEAD in a fresh repo (128); both must fall through to the
+  # commit, so anything but a clean 0 counts as "changes present".
+  defp staged_changes?(dir, safe) do
+    case git(dir, ["diff", "--quiet", "--cached", "--" | safe]) do
+      {:ok, _} -> false
+      {:error, _} -> true
     end
   end
 
