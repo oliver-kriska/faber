@@ -112,6 +112,7 @@ below exists in both forms:
 | `faber scan` | `mix faber.scan` |
 | `faber propose` | `mix faber.propose` |
 | `faber refine` | `mix faber.refine` |
+| `faber consolidate` | — (library: `Faber.Consolidate.run/3`) |
 | `faber feedback` | — (library: `Faber.Feedback.report/1`) |
 | `faber sync` | — (library: `Faber.Install.sync_pointer/2`) |
 | `faber serve` | `iex -S mix` (dashboard on port 4000) |
@@ -400,8 +401,30 @@ aggregates (usage flags + friction scores), never transcript text.
 ## 11. Consolidating overlapping proposals
 
 Scanning many sessions produces near-duplicates ("investigate-retry-loops",
-"investigate-failing-commands", …). Installing all of them pollutes routing. Consolidation is a
-library-level feature (v1):
+"investigate-failing-commands", …). Installing all of them pollutes routing. Consolidation
+drafts a skill per top-ranked session, clusters near-duplicates, and LLM-merges each cluster —
+every merge must pass the eval gate or the originals are kept:
+
+```sh
+faber consolidate                          # top 5 sessions → propose → cluster → merge → gate
+faber consolidate --top 10 --cluster-threshold 0.5
+faber consolidate --trigger                # score merges with the behavioral trigger dimension
+```
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--top N` | how many top-friction sessions to draft proposals from | 5 |
+| `--cluster-threshold F` | token-Jaccard similarity for two proposals to share a cluster | 0.3 |
+| `--trigger` | add the behavioral trigger-accuracy dimension to the merge gate | off |
+| `--force` | include sessions that fail the adapter's stack-match gate | off |
+
+(`--source`, `--format`, `--db`, `--base`, `--min-messages`, `--limit` pass through to the scan,
+same as `faber propose`.) Output is one line per cluster outcome — `MERGED` (with the merge's
+eval composite), `kept` (singleton), `kept-originals` (merge scored below the gate), `error`
+(merge LLM call failed) — plus a summary count. Nothing is installed automatically; install
+winners with `faber propose --install` or the library API.
+
+The same pipeline as a library:
 
 ```elixir
 {:ok, adapter} = Faber.Adapter.load("adapters/faber-elixir")

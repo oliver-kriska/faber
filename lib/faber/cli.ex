@@ -9,11 +9,12 @@ defmodule Faber.CLI do
   command: one-shot commands print and `System.halt/1`; `serve` prints the URL, opens the browser,
   and leaves the BEAM running.
 
-  Subcommands: `scan`, `propose [--rank N] [--install] [--trigger]`, `serve [--port P] [--no-open]`,
+  Subcommands: `scan`, `propose [--rank N] [--install] [--trigger]`, `refine`, `consolidate
+  [--top N] [--cluster-threshold F]`, `feedback`, `serve [--port P] [--no-open]`, `sync`,
   `help`, `--version`.
   """
 
-  alias Faber.{Adapter, Eval, Install, Loop, Propose, Proposal, Scan}
+  alias Faber.{Adapter, Consolidate, Eval, Install, Loop, Propose, Proposal, Scan}
 
   @default_port 4710
 
@@ -105,6 +106,26 @@ defmodule Faber.CLI do
       )
 
     {:refine, opts}
+  end
+
+  def parse(["consolidate" | rest]) do
+    {opts, _, _} =
+      OptionParser.parse(rest,
+        strict: [
+          top: :integer,
+          cluster_threshold: :float,
+          trigger: :boolean,
+          force: :boolean,
+          source: :string,
+          db: :string,
+          format: :string,
+          limit: :integer,
+          base: :string,
+          min_messages: :integer
+        ]
+      )
+
+    {:consolidate, opts}
   end
 
   def parse(["feedback" | rest]) do
@@ -314,6 +335,47 @@ defmodule Faber.CLI do
     end
   end
 
+  def run(:consolidate, opts) do
+    top = opts[:top] || 5
+
+    scan_opts =
+      opts
+      |> Keyword.take([:limit, :base, :min_messages, :db])
+      |> put_if(:source, normalize_source(opts[:source]))
+      |> put_if(:format, normalize_format(opts[:format]))
+
+    # `:threshold` here is Consolidate's CLUSTER threshold (token-Jaccard); the eval gate keeps
+    # its own configured bar. `--trigger` forwards to the gate like `propose --trigger`.
+    consolidate_opts =
+      []
+      |> put_if(:threshold, opts[:cluster_threshold])
+      |> put_if(:trigger, opts[:trigger])
+
+    case Adapter.load(Faber.adapter_dir()) do
+      {:ok, adapter} ->
+        {candidates, skipped} =
+          scan_opts
+          |> Scan.run()
+          |> Enum.take(top)
+          |> Enum.split_with(fn r ->
+            opts[:force] == true or Adapter.matches_session?(adapter, r.file_paths)
+          end)
+
+        if skipped != [] do
+          IO.puts(
+            :stderr,
+            "skipping #{length(skipped)} stack-mismatched session(s) — --force includes them"
+          )
+        end
+
+        consolidate_proposals(candidates, adapter, consolidate_opts, top)
+
+      {:error, reason} ->
+        IO.puts(:stderr, "faber consolidate failed: #{inspect(reason)}")
+        1
+    end
+  end
+
   def run(:feedback, opts) do
     feedback_opts =
       opts
@@ -479,6 +541,64 @@ defmodule Faber.CLI do
       {:error, reason} -> IO.puts(:stderr, "install failed: #{inspect(reason)}")
     end
   end
+
+  # ── consolidate ─────────────────────────────────────────────────────────────
+
+  # Draft one proposal per candidate session (reporting per-session failures without aborting
+  # the batch), then cluster + merge + gate the survivors and print one line per outcome.
+  defp consolidate_proposals(candidates, adapter, consolidate_opts, top) do
+    {proposals, failures} =
+      Enum.reduce(candidates, {[], []}, fn r, {oks, errs} ->
+        case Propose.propose(r, adapter) do
+          {:ok, p} -> {[p | oks], errs}
+          {:error, reason} -> {oks, [{r, reason} | errs]}
+        end
+      end)
+
+    failures
+    |> Enum.reverse()
+    |> Enum.each(fn {r, reason} ->
+      IO.puts(:stderr, "propose failed for #{session(r)}: #{inspect(reason)}")
+    end)
+
+    case Enum.reverse(proposals) do
+      [] ->
+        IO.puts(:stderr, "faber: no proposals to consolidate (top #{top} sessions)")
+        1
+
+      proposals ->
+        outcomes = Consolidate.run(proposals, adapter, consolidate_opts)
+        IO.puts(render_outcomes(outcomes))
+        0
+    end
+  end
+
+  defp render_outcomes(outcomes) do
+    lines = Enum.map_join(outcomes, "\n", &render_outcome/1)
+    counts = Enum.frequencies_by(outcomes, &elem(&1, 0))
+
+    summary =
+      "#{length(outcomes)} cluster(s): #{counts[:merged] || 0} merged, " <>
+        "#{counts[:kept] || 0} kept, #{counts[:kept_originals] || 0} kept-originals, " <>
+        "#{counts[:error] || 0} errors."
+
+    "#{lines}\n\n#{summary}"
+  end
+
+  # One line per Consolidate outcome, mirroring `t:Faber.Consolidate.outcome/0`.
+  defp render_outcome({:kept, p}),
+    do: "  kept            —       #{p.name} (singleton cluster)"
+
+  defp render_outcome({:merged, merged, eval, originals}),
+    do: "  MERGED          #{fmt4(eval.composite)}  #{merged.name} ← #{names(originals)}"
+
+  defp render_outcome({:kept_originals, originals, eval}),
+    do: "  kept-originals  #{fmt4(eval.composite)}  merge below gate — #{names(originals)}"
+
+  defp render_outcome({:error, originals, reason}),
+    do: "  error           —       #{names(originals)}: #{inspect(reason)}"
+
+  defp names(proposals), do: Enum.map_join(proposals, " + ", & &1.name)
 
   # ── refine rendering / install ──────────────────────────────────────────────
 
@@ -661,6 +781,13 @@ defmodule Faber.CLI do
                                                      scored on the seed's pinned fixtures;
                                                      --holdout: report a held-out validation
                                                      score; --install: install the final best)
+      faber consolidate [--top N] [--cluster-threshold F] [--trigger] [--force] [--source S]
+                        [--format F] [--db PATH] [--base DIR] [--min-messages N]
+                                                    Draft skills for the top-N friction sessions
+                                                    (default 5), cluster near-duplicates (token
+                                                    Jaccard, threshold 0.3), and LLM-merge each
+                                                    cluster — a merge must pass the eval gate or
+                                                    the originals are kept
       faber feedback [--dir PATH] [--source S] [--format F] [--db PATH] [--base DIR]
                      [--min-messages N]             The outer loop: for every Faber-installed
                                                     skill, report whether sessions since install

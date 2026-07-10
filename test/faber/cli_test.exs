@@ -45,6 +45,9 @@ defmodule Faber.CLITest do
              ]) ==
                {:refine, [iterations: 3, trigger: true, holdout: true, min_improvement: 0.05]}
 
+      assert CLI.parse(["consolidate", "--top", "3", "--cluster-threshold", "0.5", "--force"]) ==
+               {:consolidate, [top: 3, cluster_threshold: 0.5, force: true]}
+
       assert CLI.parse(["feedback", "--dir", "/tmp/skills", "--format", "codex"]) ==
                {:feedback, [dir: "/tmp/skills", format: "codex"]}
 
@@ -157,6 +160,39 @@ defmodule Faber.CLITest do
       assert out =~ "reflect:"
       assert out =~ "no improvement"
       assert out =~ "Iron Laws"
+    end
+
+    test "consolidate drafts top-N proposals, merges the cluster, and prints outcomes" do
+      # The stub LLM proposes the identical canned skill for every session, so the top-2
+      # proposals form one cluster; the (stub) merge passes the native eval gate → one MERGED
+      # outcome line plus the summary. --force skips the stack gate (the smooth fixture has no
+      # file_paths to match).
+      out =
+        capture_io(fn ->
+          assert CLI.run(:consolidate, @fixtures ++ [top: 2, force: true]) == 0
+        end)
+
+      assert out =~ "MERGED"
+      assert out =~ "investigate-retry-loops"
+      assert out =~ "1 cluster(s): 1 merged, 0 kept, 0 kept-originals, 0 errors."
+    end
+
+    test "consolidate reports when there is nothing to consolidate" do
+      # An empty transcript base yields no sessions → no proposals → actionable failure (1).
+      empty =
+        Path.join(System.tmp_dir!(), "faber-cli-cons-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(empty)
+      on_exit(fn -> File.rm_rf(empty) end)
+
+      err =
+        capture_io(:stderr, fn ->
+          capture_io(fn ->
+            assert CLI.run(:consolidate, base: empty, min_messages: 0) == 1
+          end)
+        end)
+
+      assert err =~ "no proposals to consolidate"
     end
 
     test "feedback reports installed-skill usage across scanned sessions" do
