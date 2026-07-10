@@ -148,10 +148,9 @@ defmodule Faber.Scan do
     source = Source.resolve(opts)
     adapter = opts[:adapter]
     {events, parse_errors} = source.parse(handle, opts)
-    f = Detect.friction(events)
-    fp = Detect.fingerprint(events, adapter)
-    op = Detect.opportunity(events, adapter)
-    ctx = Detect.context(events)
+
+    %{friction: f, fingerprint: fp, opportunity: op, context: ctx, tool_uses: tool_uses} =
+      Detect.analyze(events, adapter)
 
     %Result{
       path: source.label(handle),
@@ -172,7 +171,7 @@ defmodule Faber.Scan do
       message_count: f.message_count,
       parse_errors: length(parse_errors),
       max_ctx_pct: ctx.max_ctx_pct,
-      file_paths: referenced_paths(events),
+      file_paths: referenced_paths(tool_uses),
       tier2: tier2?(f, op, ctx)
     }
   end
@@ -180,9 +179,8 @@ defmodule Faber.Scan do
   # File paths the session referenced through tool calls (Edit/Write/Read/NotebookEdit `file_path`,
   # Read/view_image `path`). Feeds `Faber.Adapter.matches_session?/2` for stack-aware gating — a
   # session that edits/reads `.ex` files matches the Elixir adapter; a Next.js one won't.
-  defp referenced_paths(events) do
-    events
-    |> Enum.flat_map(& &1.tool_uses)
+  defp referenced_paths(tool_uses) do
+    tool_uses
     |> Enum.flat_map(fn
       %{input: input} when is_map(input) ->
         [input["file_path"], input["path"], input["notebook_path"]]
