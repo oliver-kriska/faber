@@ -129,6 +129,19 @@ defmodule Faber.LoopTest do
     end
   end
 
+  # scorer/1's 3-tuple sibling: pops {score, meta} pairs, returning {:ok, comp, meta} — the
+  # extended eval_fn contract that feeds the State.best_eval cache.
+  defp scorer3(pairs) do
+    agent = cell(pairs)
+
+    fn _content ->
+      Agent.get_and_update(agent, fn
+        [{s, meta} | rest] -> {{:ok, s, meta}, rest}
+        [] -> {{:error, :exhausted}, []}
+      end)
+    end
+  end
+
   defp always_propose(_state), do: {:ok, %{content: "candidate", description: "change"}}
   defp ok_checks(_content), do: :ok
 
@@ -462,6 +475,32 @@ defmodule Faber.LoopTest do
       assert state.status == :stuck
       consumed = 20 - length(Agent.get(scores, & &1))
       assert consumed == 4
+    end
+  end
+
+  describe "run/1 best_eval cache (extended {:ok, comp, meta} eval_fn contract)" do
+    test "a keep refreshes the cache with the winner's meta; a reject leaves it untouched" do
+      # The cache-subject invariant reflect feedback depends on: best_eval must always describe
+      # the eval that set the CURRENT best. A keep must swap in the winner's meta; a
+      # "no improvement" reject produced a fresh eval of a NON-best candidate — it must be
+      # discarded, never cached.
+      meta = fn comp, dim -> %{composite: comp, dimensions: %{dim => %{"score" => comp}}} end
+
+      state =
+        Loop.run(
+          content: "seed",
+          composite: 0.5,
+          best_eval: meta.(0.5, "seeded"),
+          max_iterations: 2,
+          patience: 2,
+          target: 0.99,
+          checks_fn: &ok_checks/1,
+          propose_fn: &always_propose/1,
+          eval_fn: scorer3([{0.7, meta.(0.7, "kept")}, {0.6, meta.(0.6, "rejected")}])
+        )
+
+      assert [%{kept: true}, %{kept: false, reason: "no improvement"}] = state.history
+      assert state.best_eval == meta.(0.7, "kept")
     end
   end
 

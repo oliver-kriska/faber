@@ -35,6 +35,12 @@ defmodule Faber.Ingest.Format.OpenCode do
 
   Untrusted JSON keys are decoded as **strings** (`keys: :strings`) — never atoms (Iron Law).
 
+  Session handles are **pseudo-paths** (`"<db>#<session_id>"` — see `discover/1`), not files.
+  One consequence: `Faber.Feedback.session_after?/2` can't `File.stat` them, so its permissive
+  fallback includes EVERY OpenCode session in a feedback report regardless of when a skill was
+  installed (statting the shared DB file would be equally meaningless). Aggregate-only, so the
+  cost is precision, not correctness.
+
   > **Validation status:** built and verified against a **real `opencode.db`** (schema + part shapes
   > confirmed on disk), unlike the documentation-derived Cline/Gemini formats. Token usage
   > (`step-finish.tokens`) is present but not mapped to `Event.usage` for v1 — OpenCode records no
@@ -49,9 +55,11 @@ defmodule Faber.Ingest.Format.OpenCode do
   @default_base "~/.local/share/opencode"
   @db_name "opencode.db"
 
-  # sqlite3 -json buffers its whole result as one binary before we decode it. Per-session queries
-  # keep that bounded, but a pathological single session must still fail closed (same 50 MB class
-  # of cap as the Cline/Gemini whole-file formats) rather than balloon into a multi-GB string.
+  # sqlite3 -json buffers its whole result as one binary before we decode it — System.cmd has
+  # already collected the port output by the time this cap is checked, so the cap can't prevent
+  # that RSS peak; it stops Jason.decode from doubling a pathological payload into a giant term
+  # (defense-in-depth, same 50 MB class of cap as the Cline/Gemini whole-file formats).
+  # Per-session queries are what keep NORMAL reads bounded.
   @max_output_bytes 50 * 1024 * 1024
 
   # One row per (message, part), ordered so a message's parts are contiguous. The `part` column is a

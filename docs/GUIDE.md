@@ -495,7 +495,12 @@ single behaviour, so the engine never learns whose session it's reading. Pick wi
 
 Every format canonicalizes tool names to Faber's vocabulary (`Bash`/`Read`/`Edit`/`Write`/…),
 so the same friction signals fire across agents. Whole-file formats (cline, gemini) cap reads
-at 50 MB defensively.
+at 50 MB defensively; opencode caps each session's query result the same way.
+
+OpenCode keeps every session in one shared DB, so its session handles are **pseudo-paths** —
+`"<db>#<session_id>"` — one per session (this is what `Ingest.discover(format: :opencode)`
+returns and what shows up as the session label). If the `sqlite3` CLI is missing, ingest
+degrades to a single whole-DB handle whose read reports the error.
 
 **Sources** are orthogonal to formats: `--source files` (default) walks the directories above;
 `--source ccrider` reads ccrider's SQLite index of Claude sessions instead (`--db` to point at
