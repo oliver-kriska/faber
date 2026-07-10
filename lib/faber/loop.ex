@@ -42,7 +42,7 @@ defmodule Faber.Loop do
   """
 
   alias Faber.{Adapter, Eval, Propose, Proposal, Scan}
-  alias Faber.Loop.{Git, Journal}
+  alias Faber.Loop.{Git, Journal, Reflect}
 
   defmodule State do
     @moduledoc "Loop state carried across iterations and returned by `Faber.Loop.run/1`."
@@ -516,7 +516,7 @@ defmodule Faber.Loop do
         end
 
       {target, feedback} =
-        reflection_feedback(state.best_eval, subject, state.best_content, eval_opts)
+        Reflect.feedback(state.best_eval, subject, state.best_content, eval_opts)
 
       case Propose.propose(result, adapter, Keyword.put(opts, :feedback, feedback)) do
         {:ok, p} ->
@@ -576,60 +576,4 @@ defmodule Faber.Loop do
         should_not_trigger: seed.should_not_trigger
     }
   end
-
-  # Turn the current best's eval — its weakest dimension + failed checks — into a targeted-edit
-  # instruction. Eval dimensions are the "named factors"; this is the credit-assignment step
-  # (KB: bounded-factor-level-prompt-optimization). The best only changes on a keep, so its eval
-  # is read from the cache keep/6 populated; re-scoring it every iteration (the pre-cache
-  # behavior) roughly doubled the loop's LLM routing spend in trigger mode. The live-score
-  # fallback only fires for custom eval_fns that return no meta. Intentional consequence: the
-  # fixed best is no longer RE-SAMPLED per iteration — candidates still score fresh and pooled
-  # (`trigger_samples`), which is where the anti-noise sampling belongs.
-  defp reflection_feedback(%{} = best_eval, _subject, content, _eval_opts) do
-    derive_feedback(best_eval, content)
-  end
-
-  defp reflection_feedback(nil, subject, content, eval_opts) do
-    case Eval.score(subject, eval_opts) do
-      {:ok, %{dimensions: dims, composite: comp}} ->
-        derive_feedback(%{composite: comp, dimensions: dims}, content)
-
-      _ ->
-        derive_feedback(%{composite: nil, dimensions: %{}}, content)
-    end
-  end
-
-  defp derive_feedback(%{dimensions: dims, composite: comp}, content) when map_size(dims) > 0 do
-    {name, dim} = Enum.min_by(dims, fn {_n, d} -> d["score"] end)
-    failed = for a <- dim["assertions"] || [], a["passed"] == false, do: a["evidence"]
-    {name, feedback_string(content, comp, name, dim["score"], failed)}
-  end
-
-  defp derive_feedback(%{composite: comp}, content) do
-    {"overall", feedback_string(content, comp, "overall", nil, [])}
-  end
-
-  defp feedback_string(content, composite, target, score, failed) do
-    weaknesses =
-      case failed do
-        [] -> "  - (no specific failing checks — tighten this dimension without weakening others)"
-        list -> Enum.map_join(list, "\n", &"  - #{&1}")
-      end
-
-    """
-    REVISION TASK — improve the EXISTING skill below; do not start over.
-    Current composite score: #{fmt_score(composite)}. Weakest dimension: "#{target}" (#{fmt_score(score)}).
-    Fix ONLY these weaknesses while keeping every existing strength intact:
-    #{weaknesses}
-
-    Return the full improved skill as the structured object. Preserve the skill's intent, name, and
-    any parts that already work; change only what addresses the weaknesses above.
-
-    --- CURRENT SKILL.md ---
-    #{content}
-    """
-  end
-
-  defp fmt_score(nil), do: "n/a"
-  defp fmt_score(n) when is_number(n), do: :erlang.float_to_binary(n * 1.0, decimals: 3)
 end
