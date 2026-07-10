@@ -68,7 +68,7 @@ defmodule Faber.FaberPythonTest do
       events: e
     } do
       assert %{missed: missed, used: used} = Detect.opportunity(e, py)
-      # `verify` comes from the adapter's pytest rule (the engine default keys on `mix test`).
+      # `verify` comes from the adapter's pytest rule (the engine has no :commands rules).
       assert "verify" in missed
       assert "investigate" in missed
       # `/py:lint` is extracted because this adapter's namespace is `py` (not phx|ecto|lv).

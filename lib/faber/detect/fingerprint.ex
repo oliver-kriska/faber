@@ -4,8 +4,8 @@ defmodule Faber.Detect.Fingerprint do
   `review` / `refactoring`) — port of `compute-metrics.py`'s `compute_fingerprint`, plus the
   tool-usage profile.
 
-  Stack-specific command bonuses come from the selected adapter's detection vocab (contract
-  §4.1); adapter-free runs use the engine defaults (see `Faber.Detect`).
+  Stack-specific command/tool bonuses come from the selected adapter's detection vocab
+  (contract §4.1); adapter-free runs have none (see `Faber.Detect`).
   """
 
   alias Faber.Adapter
@@ -63,20 +63,18 @@ defmodule Faber.Detect.Fingerprint do
     bash_pct = count(counts, "Bash") / total
 
     files = files_edited(tool_uses)
-    tidewave? = Enum.any?(names, &String.starts_with?(&1, "mcp__tidewave"))
 
     scores =
       @fingerprint_keywords
       |> Map.new(fn {type, re} -> {type, length(Regex.scan(re, user_text)) * 2.0} end)
-      # Generic, engine-side bonuses (tool-ratio / files / Tidewave) — never stack-specific.
+      # Generic, engine-side bonuses (tool-ratio / files) — never stack-specific.
       |> bonus("exploration", read_pct > 0.5 and edit_pct < 0.1, 3.0)
       |> bonus("feature", edit_pct > 0.3, 2.0)
       |> bonus("bug-fix", bash_pct > 0.3, 2.0)
       |> bonus("refactoring", length(files) > 10, 2.0)
       |> bonus("feature", length(files) > 5, 1.0)
-      |> bonus("bug-fix", tidewave?, 1.5)
-      # Stack-specific command bonuses — from the adapter, or the generic defaults when adapter-free.
-      |> apply_fingerprint_rules(bash_cmds, Detect.fingerprint_rules(adapter))
+      # Stack-specific command/tool bonuses — from the adapter (adapter-free there are none).
+      |> apply_fingerprint_rules(bash_cmds, names, Detect.fingerprint_rules(adapter))
 
     total_score = scores |> Map.values() |> Enum.sum()
 
@@ -105,7 +103,7 @@ defmodule Faber.Detect.Fingerprint do
     names = events |> Enum.flat_map(& &1.tool_uses) |> Enum.map(& &1.name)
     total = length(names)
 
-    empty = %{read: 0, edit: 0, bash: 0, grep: 0, tidewave: 0, other: 0}
+    empty = %{read: 0, edit: 0, bash: 0, grep: 0, mcp: 0, other: 0}
 
     if total == 0 do
       Map.new(empty, fn {cat, _} -> {cat, 0.0} end)
@@ -122,20 +120,30 @@ defmodule Faber.Detect.Fingerprint do
   defp categorize_tool(name) when name in ["Edit", "Write", "NotebookEdit"], do: :edit
   defp categorize_tool("Bash"), do: :bash
   defp categorize_tool("Grep"), do: :grep
-  defp categorize_tool("mcp__tidewave" <> _), do: :tidewave
+  defp categorize_tool("mcp__" <> _), do: :mcp
   defp categorize_tool(_), do: :other
 
-  # Apply each command-bonus rule: when any of its `commands` appears in the session's Bash calls,
-  # add `bonus` to its `type`. `Map.update/4` (not `update!`) so adapter-introduced novel types are
-  # created on first hit rather than crashing.
-  defp apply_fingerprint_rules(scores, bash_cmds, rules) do
-    Enum.reduce(rules, scores, fn %{type: type, commands: cmds, bonus: amount}, acc ->
-      if any_cmd?(bash_cmds, cmds), do: Map.update(acc, type, amount, &(&1 + amount)), else: acc
+  # Apply each bonus rule: when any of its `commands` appears in the session's Bash calls, OR
+  # any tool name starts with one of its `tools` prefixes (contract §4.1 — MCP tool families
+  # like `mcp__tidewave`), add `bonus` to its `type`. `Map.update/4` (not `update!`) so
+  # adapter-introduced novel types are created on first hit rather than crashing. Both keys are
+  # read with `Map.get` — an in-memory rule may carry only one of them.
+  defp apply_fingerprint_rules(scores, bash_cmds, names, rules) do
+    Enum.reduce(rules, scores, fn %{type: type, bonus: amount} = rule, acc ->
+      hit? =
+        any_cmd?(bash_cmds, Map.get(rule, :commands, [])) or
+          any_tool?(names, Map.get(rule, :tools, []))
+
+      if hit?, do: Map.update(acc, type, amount, &(&1 + amount)), else: acc
     end)
   end
 
   defp any_cmd?(bash_cmds, needles) do
     Enum.any?(bash_cmds, fn cmd -> Enum.any?(needles, &String.contains?(cmd, &1)) end)
+  end
+
+  defp any_tool?(names, prefixes) do
+    Enum.any?(names, fn name -> Enum.any?(prefixes, &String.starts_with?(name, &1)) end)
   end
 
   defp files_edited(tool_uses) do

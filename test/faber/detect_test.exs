@@ -70,11 +70,11 @@ defmodule Faber.DetectTest do
       assert profile.edit == 0.0
     end
 
-    test "tool_profile/1 counts tidewave tools" do
+    test "tool_profile/1 buckets MCP tools generically" do
       events = [asst([{"Bash", %{}}, {"mcp__tidewave__project_eval", %{}}])]
       profile = Detect.tool_profile(events)
       assert_in_delta profile.bash, 0.5, 1.0e-9
-      assert_in_delta profile.tidewave, 0.5, 1.0e-9
+      assert_in_delta profile.mcp, 0.5, 1.0e-9
     end
 
     test "retry loop survives duplicate and nil tool_result ids" do
@@ -172,7 +172,10 @@ defmodule Faber.DetectTest do
       assert score >= 0.2
     end
 
-    test "repeated test/compile flags verify (without firing investigate)" do
+    test "command-based rules need an adapter — adapter-free flags nothing here" do
+      # `mix test`/`mix compile` alternate (differing 2-token prefixes), so investigate doesn't
+      # fire; the historical `verify` :commands rule now lives in the faber-elixir pack, so the
+      # stack-neutral defaults report NO missed opportunity for this session.
       events = [
         asst([
           {"Bash", %{"command" => "mix test"}},
@@ -181,9 +184,7 @@ defmodule Faber.DetectTest do
         ])
       ]
 
-      assert %{missed: missed} = Detect.opportunity(events)
-      assert "verify" in missed
-      refute "investigate" in missed
+      assert %{missed: []} = Detect.opportunity(events)
     end
 
     test "many edits flag review" do
@@ -197,7 +198,20 @@ defmodule Faber.DetectTest do
       assert "plan" in missed
     end
 
-    test "already-used skills are excluded" do
+    test "already-used skills are excluded (vocab-supplied namespaces + rules)" do
+      adapter = %Adapter{
+        opportunity_rules: [
+          %{
+            skill: "verify",
+            when: :commands,
+            commands: ["mix test", "mix compile"],
+            threshold: 3,
+            unless_used: true
+          }
+        ],
+        skill_namespaces: ["phx"]
+      }
+
       events = [
         user("let me run /phx:verify on this"),
         asst([
@@ -207,7 +221,7 @@ defmodule Faber.DetectTest do
         ])
       ]
 
-      assert %{missed: missed, used: used} = Detect.opportunity(events)
+      assert %{missed: missed, used: used} = Detect.opportunity(events, adapter)
       assert "verify" in used
       refute "verify" in missed
     end
@@ -230,12 +244,28 @@ defmodule Faber.DetectTest do
       events = [user("proceed"), asst([{"Bash", %{"command" => "pip install requests"}}])]
       assert %{type: "maintenance"} = Detect.fingerprint(events, adapter)
 
-      # ...and the engine's default `mix deps → maintenance` rule is NOT in play under this
-      # adapter: adapter-free it classifies as maintenance, but the python adapter has no such
-      # rule, so only the generic bash-heavy `bug-fix` bonus remains.
+      # ...and there is no `mix deps → maintenance` rule anywhere but the faber-elixir pack:
+      # with this adapter AND adapter-free (stack-neutral defaults) only the generic bash-heavy
+      # `bug-fix` bonus remains.
       mix = [user("proceed"), asst([{"Bash", %{"command" => "mix deps.get"}}])]
-      assert %{type: "maintenance"} = Detect.fingerprint(mix)
+      assert %{type: "bug-fix"} = Detect.fingerprint(mix)
       assert %{type: "bug-fix"} = Detect.fingerprint(mix, adapter)
+    end
+
+    test "fingerprint tool-prefix bonuses come from the adapter (tools: vocab)" do
+      adapter = %Adapter{
+        fingerprint_rules: [
+          %{type: "bug-fix", commands: [], tools: ["mcp__tidewave"], bonus: 1.5}
+        ]
+      }
+
+      events = [user("look at this thing"), asst([{"mcp__tidewave__project_eval", %{}}])]
+
+      # "look at" scores exploration 2.0; the tidewave PREFIX rule adds bug-fix 1.5 →
+      # exploration wins at 2.0/3.5. Adapter-free the engine knows nothing about tidewave,
+      # so exploration is the only signal (confidence 1.0).
+      assert %{type: "exploration", confidence: 0.57} = Detect.fingerprint(events, adapter)
+      assert %{type: "exploration", confidence: 1.0} = Detect.fingerprint(events)
     end
 
     test "fingerprint can select an adapter-introduced novel type" do
@@ -259,7 +289,9 @@ defmodule Faber.DetectTest do
       assert %{missed: missed} = Detect.opportunity(pytest, adapter)
       assert "py-verify" in missed
 
-      # The engine's default `mix test → verify` rule does NOT fire under this adapter.
+      # No `mix test → verify` rule fires under this adapter (nor adapter-free — that rule
+      # lives in the faber-elixir pack). 3x the same `mix test` prefix would trip the neutral
+      # `investigate` rule, but THIS adapter's vocab has no such rule either.
       mix = [asst(List.duplicate({"Bash", %{"command" => "mix test"}}, 3))]
       assert %{missed: []} = Detect.opportunity(mix, adapter)
     end
@@ -290,7 +322,7 @@ defmodule Faber.DetectTest do
       events = [user("let me run /py:lint and also /phx:verify")]
       assert %{used: used} = Detect.opportunity(events, adapter)
       assert "lint" in used
-      # `phx:` is the engine default — NOT this adapter's namespace, so it's not extracted.
+      # `phx:` is the faber-elixir pack's namespace — NOT this adapter's, so it's not extracted.
       refute "verify" in used
     end
 
@@ -312,10 +344,12 @@ defmodule Faber.DetectTest do
     end
   end
 
-  # P0-T5: the faber-elixir adapter migrates the engine's historical Elixir/plugin defaults into
-  # detect/signatures.yaml. Running WITH it must reproduce the adapter-free path byte-for-byte —
-  # this is the guard that the migration didn't regress detection.
-  describe "faber-elixir adapter parity (P0-T5)" do
+  # P0-T5, updated for the neutral-defaults change: the faber-elixir adapter carries the
+  # engine's historical Elixir/plugin vocabulary (including the Tidewave bonus, now a `tools:`
+  # rule). The engine defaults became stack-neutral, so parity is pinned as ABSOLUTE snapshots
+  # of the adapter-selected outputs, captured on the pre-change code — the adapter-selected
+  # path must never drift.
+  describe "faber-elixir adapter detection snapshots (P0-T5)" do
     setup do
       assert {:ok, adapter} = Adapter.load(@reference_adapter)
       %{adapter: adapter}
@@ -323,8 +357,9 @@ defmodule Faber.DetectTest do
 
     test "the migrated detection vocab loaded onto the struct", %{adapter: a} do
       assert a.fingerprint_rules == [
-               %{type: "maintenance", commands: ["mix deps", "mix hex"], bonus: 3.0},
-               %{type: "review", commands: ["gh pr", "gh issue"], bonus: 3.0}
+               %{type: "maintenance", commands: ["mix deps", "mix hex"], tools: [], bonus: 3.0},
+               %{type: "review", commands: ["gh pr", "gh issue"], tools: [], bonus: 3.0},
+               %{type: "bug-fix", commands: [], tools: ["mcp__tidewave"], bonus: 1.5}
              ]
 
       assert Enum.map(a.opportunity_rules, & &1.skill) ==
@@ -333,43 +368,60 @@ defmodule Faber.DetectTest do
       assert a.skill_namespaces == ["phx", "ecto", "lv"]
     end
 
-    test "fingerprint + opportunity match the adapter-free defaults on every probe session",
+    test "fingerprint + opportunity reproduce the historical outputs on every probe",
          %{adapter: a} do
-      # One probe per leaked rule, plus the file fixtures — each must score identically with and
-      # without the adapter (the adapter restates exactly the engine defaults).
+      # One probe per vocab rule, plus the file fixtures. Expected values are snapshots of the
+      # adapter-selected outputs BEFORE the engine defaults were neutralized (when the pack
+      # restated them 1:1) — this is the regression guard for the adapter path.
       probes = [
-        load("sample_session.jsonl"),
-        load("smooth_session.jsonl"),
-        [user("update the deps"), asst([{"Bash", %{"command" => "mix deps.get"}}])],
-        [user("check the PR"), asst([{"Bash", %{"command" => "gh pr view 42"}}])],
-        [
-          asst([
-            {"Bash", %{"command" => "mix test"}},
-            {"Bash", %{"command" => "mix compile"}},
-            {"Bash", %{"command" => "mix test"}}
-          ])
-        ],
-        [asst(List.duplicate({"Bash", %{"command" => "gh pr view"}}, 2))],
-        [asst(List.duplicate({"Read", %{}}, 51))],
-        [asst(for i <- 1..11, do: {"Edit", %{"file_path" => "/f#{i}.ex"}})],
-        [
-          user("ran /phx:verify already"),
-          asst(List.duplicate({"Bash", %{"command" => "git x"}}, 3))
-        ]
+        {load("sample_session.jsonl"), %{type: "bug-fix", confidence: 0.67},
+         %{used: [], score: 0.4, missed: ["investigate", "verify"]}},
+        {load("smooth_session.jsonl"), %{type: "exploration", confidence: 1.0},
+         %{used: [], score: 0.0, missed: []}},
+        {[user("update the deps"), asst([{"Bash", %{"command" => "mix deps.get"}}])],
+         %{type: "maintenance", confidence: 0.78}, %{used: [], score: 0.0, missed: []}},
+        {[user("check the PR"), asst([{"Bash", %{"command" => "gh pr view 42"}}])],
+         %{type: "review", confidence: 0.71}, %{used: [], score: 0.0, missed: []}},
+        {[
+           asst([
+             {"Bash", %{"command" => "mix test"}},
+             {"Bash", %{"command" => "mix compile"}},
+             {"Bash", %{"command" => "mix test"}}
+           ])
+         ], %{type: "bug-fix", confidence: 1.0}, %{used: [], score: 0.2, missed: ["verify"]}},
+        {[asst(List.duplicate({"Bash", %{"command" => "gh pr view"}}, 2))],
+         %{type: "review", confidence: 0.6}, %{used: [], score: 0.2, missed: ["pr-review"]}},
+        {[asst(List.duplicate({"Read", %{}}, 51))], %{type: "exploration", confidence: 1.0},
+         %{used: [], score: 0.2, missed: ["plan"]}},
+        {[asst(for i <- 1..11, do: {"Edit", %{"file_path" => "/f#{i}.ex"}})],
+         %{type: "feature", confidence: 0.6}, %{used: [], score: 0.2, missed: ["review"]}},
+        {[
+           user("ran /phx:verify already"),
+           asst(List.duplicate({"Bash", %{"command" => "git x"}}, 3))
+         ], %{type: "bug-fix", confidence: 1.0},
+         %{used: ["verify"], score: 0.2, missed: ["investigate"]}},
+        # The Tidewave bonus survives the engine→pack migration as a `tools:` prefix rule.
+        {[user("look at this thing"), asst([{"mcp__tidewave__project_eval", %{}}])],
+         %{type: "exploration", confidence: 0.57}, %{used: [], score: 0.0, missed: []}}
       ]
 
-      for events <- probes do
-        assert Detect.fingerprint(events, a) == Detect.fingerprint(events)
-        assert Detect.opportunity(events, a) == Detect.opportunity(events)
+      for {events, expected_fp, expected_op} <- probes do
+        assert Detect.fingerprint(events, a) == expected_fp
+        assert Detect.opportunity(events, a) == expected_op
       end
+    end
+  end
 
-      # Absolute snapshots so a JOINT regression (both paths breaking identically) can't pass the
-      # equality checks above — anchor at least one probe to its known result.
-      mix_deps = Enum.at(probes, 2)
-      assert %{type: "maintenance"} = Detect.fingerprint(mix_deps, a)
+  # 5.3: the engine carries NO stack vocabulary — everything Elixir/plugin-flavored lives in
+  # the faber-elixir pack. Guards against a stack-specific default sneaking back in.
+  describe "engine defaults are stack-neutral" do
+    test "adapter-free vocab has no commands, tools, or namespaces" do
+      assert Detect.fingerprint_rules(nil) == []
+      assert Detect.skill_namespaces(nil) == []
 
-      verify_loop = Enum.at(probes, 4)
-      assert %{missed: ["verify"]} = Detect.opportunity(verify_loop, a)
+      rules = Detect.opportunity_rules(nil)
+      assert Enum.map(rules, & &1.skill) == ["investigate", "plan", "review"]
+      assert Enum.all?(rules, &(&1.commands == []))
     end
   end
 

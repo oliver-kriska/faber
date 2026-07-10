@@ -261,10 +261,16 @@ defmodule Faber.Adapter do
     %{id: m["id"], severity: m["severity"], weight: m["weight"], body: m["body"]}
   end
 
-  # A fingerprint command-bonus rule (contract §4.1): when any `commands` substring appears in
-  # the session's Bash calls, add `bonus` to `type`'s fingerprint score.
+  # A fingerprint bonus rule (contract §4.1): when any `commands` substring appears in the
+  # session's Bash calls, or any tool name starts with a `tools` prefix (MCP tool families),
+  # add `bonus` to `type`'s fingerprint score.
   defp fingerprint_rule(m) when is_map(m) do
-    %{type: m["type"], commands: m["commands"] || [], bonus: m["bonus"]}
+    %{
+      type: m["type"],
+      commands: m["commands"] || [],
+      tools: m["tools"] || [],
+      bonus: m["bonus"]
+    }
   end
 
   # An opportunity→skill rule (contract §4.1). `when` is mapped to a closed set of atoms the
@@ -317,11 +323,27 @@ defmodule Faber.Adapter do
     |> check(is_list(sym), "playbook #{id || "?"} symptoms must be a list")
   end
 
-  defp fingerprint_problems(%{type: type, bonus: bonus}) do
+  # `commands`/`tools` are untrusted pack input fed to `String.contains?`/`starts_with?` —
+  # validate the shapes here (load boundary) so a malformed pack fails closed, not mid-scan.
+  defp fingerprint_problems(%{type: type, bonus: bonus} = rule) do
     []
     |> req(type, "fingerprint rule missing type")
     |> check(is_number(bonus), "fingerprint rule #{type || "?"} bonus must be a number")
+    |> check(
+      string_list?(rule[:commands]),
+      "fingerprint rule #{type || "?"} commands must be a list of strings"
+    )
+    |> check(
+      string_list?(rule[:tools]),
+      "fingerprint rule #{type || "?"} tools must be a list of strings"
+    )
+    |> check(
+      rule[:commands] != [] or rule[:tools] != [],
+      "fingerprint rule #{type || "?"} must declare commands or tools"
+    )
   end
+
+  defp string_list?(v), do: is_list(v) and Enum.all?(v, &is_binary/1)
 
   @opportunity_whens [:retry_loops, :tool_count, :edit_count, :commands]
 

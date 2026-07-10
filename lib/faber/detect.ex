@@ -28,37 +28,30 @@ defmodule Faber.Detect do
 
   # ── adapter-overridable detection vocab (contract §4.1) ─────────────────────
   #
-  # These three module attributes are the engine's **generic defaults** — what the original
-  # plugin port hardcoded. They apply ONLY when `Scan` runs adapter-free (the byte-for-byte
-  # parity path). When an adapter is selected it supplies its own vocab via `detect/signatures.yaml`
-  # (`fingerprint_rules` / `opportunity_rules` / `skill_namespaces` on the `Faber.Adapter`), so the
-  # engine itself stays domain-free. The reference adapter `faber-elixir` restates these.
+  # These three module attributes are the engine's **stack-neutral defaults**, applied ONLY when
+  # `Scan` runs adapter-free. When an adapter is selected it supplies its own vocab via
+  # `detect/signatures.yaml` (`fingerprint_rules` / `opportunity_rules` / `skill_namespaces` on
+  # the `Faber.Adapter`). The engine carries NO stack-specific vocabulary — the historical
+  # Elixir/plugin command bonuses (`mix`/`gh`/Tidewave) and `phx|ecto|lv` namespaces live in
+  # the reference adapter `faber-elixir` (`detect/signatures.yaml`).
 
-  # Command → session-type bonus. When ANY listed command is a substring of a Bash call, add
-  # `bonus` to that fingerprint type. (Elixir/plugin-specific — `mix deps`/`mix hex`, `gh pr`/`issue`.)
-  @default_fingerprint_rules [
-    %{type: "maintenance", commands: ["mix deps", "mix hex"], bonus: 3.0},
-    %{type: "review", commands: ["gh pr", "gh issue"], bonus: 3.0}
-  ]
+  # Command/tool → session-type bonuses are inherently stack vocabulary, so adapter-free there
+  # are none (only the generic tool-ratio/keyword fingerprinting applies).
+  @default_fingerprint_rules []
 
-  # Missed-automation → suggested skill rules, in report order. See `Faber.Detect.Opportunity`
-  # for the `when` semantics. `unless_used: false` (investigate) suggests even when already used.
+  # Missed-automation → suggested skill rules, in report order — only the conditions that need
+  # no stack vocabulary (retry loops and tool counts). See `Faber.Detect.Opportunity` for the
+  # `when` semantics. `unless_used: false` (investigate) suggests even when already used.
   @default_opportunity_rules [
     %{skill: "investigate", when: :retry_loops, commands: [], threshold: nil, unless_used: false},
     %{skill: "plan", when: :tool_count, commands: [], threshold: 50, unless_used: true},
-    %{
-      skill: "verify",
-      when: :commands,
-      commands: ["mix test", "mix compile"],
-      threshold: 3,
-      unless_used: true
-    },
-    %{skill: "pr-review", when: :commands, commands: ["gh pr"], threshold: 2, unless_used: true},
     %{skill: "review", when: :edit_count, commands: [], threshold: 10, unless_used: true}
   ]
 
-  # Namespace prefixes scanned as `(?:ns):skill` in session text to detect skills already used.
-  @default_skill_namespaces ~w(phx ecto lv)
+  # Namespace prefixes scanned as `(?:ns):skill` in session text to detect skills already used —
+  # stack-specific by nature, so none adapter-free (Skill tool calls and `attributionSkill`
+  # detection still work; only the text-regex extraction is namespace-driven).
+  @default_skill_namespaces []
 
   @type signals :: Friction.signals()
   @type friction :: Friction.friction()
@@ -116,9 +109,9 @@ defmodule Faber.Detect do
   each) plus tool-profile, files-edited, Tidewave, and **command-bonus rules**. Confidence =
   winning score / total score.
 
-  `adapter` (a `Faber.Adapter` or `nil`) supplies the command-bonus rules. When `nil`, the
-  engine uses its generic defaults (`mix deps`/`hex` → maintenance, `gh pr`/`issue` → review),
-  keeping the adapter-free path byte-identical to the original port.
+  `adapter` (a `Faber.Adapter` or `nil`) supplies the command/tool-bonus rules. When `nil`
+  there are none (the engine defaults are stack-neutral) — only the generic keyword and
+  tool-ratio fingerprinting applies.
   """
   defdelegate fingerprint(events, adapter \\ nil), to: Fingerprint
 
@@ -127,15 +120,14 @@ defmodule Faber.Detect do
   helped but weren't used.
 
   Port of `compute_plugin_opportunity`, generalized to **rules**: each rule maps a friction
-  condition (`when`) to a suggested skill. The generic defaults reproduce the original port —
-  retry loops → `investigate`; >50 tools without `plan` → `plan`; 3+ `mix test`/`compile`
-  without `verify` → `verify`; 2+ `gh pr` without `pr-review` → `pr-review`; >10 edits without
-  `review` → `review`. score = min(n×0.2, 1.0).
+  condition (`when`) to a suggested skill. The stack-neutral defaults keep only the rules
+  needing no command vocabulary — retry loops → `investigate`; >50 tools without `plan` →
+  `plan`; >10 edits without `review` → `review`. score = min(n×0.2, 1.0).
 
   `adapter` (a `Faber.Adapter` or `nil`) supplies the rules and the skill namespaces used to
-  detect already-used skills. When `nil`, the engine uses its generic defaults, keeping the
-  adapter-free path byte-identical. Skills already used (Skill calls, `attributionSkill`,
-  `/ns:cmd` in text) are excluded unless a rule sets `unless_used: false`.
+  detect already-used skills; the historical `verify`/`pr-review` command rules live in the
+  faber-elixir pack. Skills already used (Skill calls, `attributionSkill`, `/ns:cmd` in text)
+  are excluded unless a rule sets `unless_used: false`.
   """
   defdelegate opportunity(events, adapter \\ nil), to: Opportunity
 
@@ -158,9 +150,9 @@ defmodule Faber.Detect do
     |> Enum.map(fn tu -> to_string(tu.input["command"] || "") end)
   end
 
-  # `nil` adapter ⇒ engine defaults (the adapter-free parity path). An adapter that IS selected
-  # owns its detection vocab verbatim — including an empty list, which means "none for this
-  # stack" (e.g. a stack with no skill namespaces). The reference adapter restates the defaults.
+  # `nil` adapter ⇒ the stack-neutral engine defaults. An adapter that IS selected owns its
+  # detection vocab verbatim — including an empty list, which means "none for this stack"
+  # (e.g. a stack with no skill namespaces).
 
   @doc false
   @spec fingerprint_rules(Adapter.t() | nil) :: [map()]

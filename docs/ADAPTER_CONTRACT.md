@@ -118,16 +118,20 @@ same fields plus a `body` (the prose). See §5.1 for the general bulk-form rule.
 The friction *signatures* above tune the friction **score** (how painful a session was).
 Three further, **optional** top-level keys in `detect/signatures.yaml` make the engine's
 **fingerprint** (what kind of work the session was) and **opportunity** (which skills could
-have helped) outputs stack-aware too. Without them the engine uses its built-in,
-agent-generic defaults — so v0.1 packs are unaffected. The reference adapter (`faber-elixir`)
-migrates its Elixir/plugin command vocabulary into these keys.
+have helped) outputs stack-aware too. Without them the engine falls back to its built-in
+defaults, which are **stack-neutral**: no fingerprint bonuses, no skill namespaces, and only
+the opportunity rules that need no command vocabulary (`retry_loops` → investigate,
+`tool_count` → plan, `edit_count` → review). ALL stack vocabulary — commands, tool prefixes,
+namespaces — lives in adapters; the reference adapter (`faber-elixir`) carries the historical
+Elixir/plugin vocabulary.
 
 ```yaml
 # detect/signatures.yaml — alongside the `signatures:` list
 
-# fingerprints: command → session-type bonus. Each rule adds `bonus` to a fingerprint
+# fingerprints: command/tool → session-type bonus. Each rule adds `bonus` to a fingerprint
 # type's score when ANY of its `commands` appears (substring match) in the session's Bash
-# calls. Layers on top of the engine's generic tool-ratio/keyword fingerprinting.
+# calls, OR any tool name starts with one of its `tools` prefixes (e.g. an MCP tool family).
+# Layers on top of the engine's generic tool-ratio/keyword fingerprinting.
 fingerprints:
   - type: maintenance          # the session-type this bonus credits (free-form string)
     commands: ["mix deps", "mix hex"]
@@ -135,6 +139,9 @@ fingerprints:
   - type: review
     commands: ["gh pr", "gh issue"]
     bonus: 3.0
+  - type: bug-fix
+    tools: ["mcp__tidewave"]   # tool-name PREFIX match — fires on mcp__tidewave__project_eval etc.
+    bonus: 1.5
 
 # opportunities: a missed-automation rule → a suggested skill name. Order is preserved in
 # the reported `missed` list. Each rule fires on ONE `when` condition (below) and, unless
@@ -159,8 +166,10 @@ opportunities:
 skill_namespaces: ["phx", "ecto", "lv"]
 ```
 
-**`fingerprints[]`** — `type` (string, required), `commands` (string[], required, substring
-matched against Bash command text), `bonus` (number, required). A `type` need not be one of
+**`fingerprints[]`** — `type` (string, required), `bonus` (number, required), and at least
+one of `commands` (string[], substring matched against Bash command text) or `tools`
+(string[], **prefix** matched against tool names — the way to credit MCP tool families like
+`mcp__tidewave`). A rule with both fires when either matches. A `type` need not be one of
 the engine's built-in types; novel types are scored and selectable.
 
 **`opportunities[]`** — `skill` (string, required, the suggested skill name) and `when` (one
@@ -171,13 +180,13 @@ of `retry_loops` | `tool_count` | `edit_count` | `commands`, required). `tool_co
 `true`) suppresses the suggestion when the skill is already in the session's used set.
 
 **`skill_namespaces`** — string[]. The namespace prefixes matched as `(?:ns1|ns2):skill` in
-session text. Absent (no adapter) → the engine default; an adapter that supplies the key
-owns it (an empty list means "this stack has no skill namespaces").
+session text. The engine default (no adapter) is **none** — text-based used-skill detection
+is entirely adapter-supplied (an empty list means "this stack has no skill namespaces").
 
 All three keys are **optional**. An adapter may supply any subset; each absent key falls back
-to engine defaults only when **no adapter** is in play. When an adapter *is* selected it owns
-its detection vocab — so the reference adapter must restate the defaults it wants to keep
-(see `adapters/faber-elixir/detect/signatures.yaml`).
+to the stack-neutral engine defaults only when **no adapter** is in play. When an adapter *is*
+selected it owns its detection vocab — the engine contributes nothing stack-specific either
+way (see `adapters/faber-elixir/detect/signatures.yaml` for the full reference vocab).
 
 ## 5. `laws/` — the stack's non-negotiables
 
@@ -340,7 +349,9 @@ contract version they target via an optional top-level `contract: "0.2"` key in 
 manifest; if omitted, the engine assumes the latest it supports and may warn.
 
 **v0.1 → v0.2.** Added the optional detection-vocab keys to `detect/signatures.yaml`
-(§4.1: `fingerprints`, `opportunities`, `skill_namespaces`) and the optional
-`metadata.example_step` generation hint (§3). All additions are **optional** and
-backward-compatible — a v0.1 pack is a valid v0.2 pack, and an engine running adapter-free
-behaves exactly as before.
+(§4.1: `fingerprints` — including the `tools:` prefix-list form — `opportunities`,
+`skill_namespaces`) and the optional `metadata.example_step` generation hint (§3). All
+additions are **optional** and backward-compatible — a v0.1 pack is a valid v0.2 pack.
+Alongside v0.2 the engine's own adapter-free defaults were neutralized (no stack vocabulary);
+packs wanting the historical Elixir/plugin detection behavior restate it, as `faber-elixir`
+does.

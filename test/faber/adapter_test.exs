@@ -30,7 +30,7 @@ defmodule Faber.AdapterTest do
     end
 
     test "loads the migrated detection vocab (contract §4.1)", %{adapter: a} do
-      assert length(a.fingerprint_rules) == 2
+      assert length(a.fingerprint_rules) == 3
       assert length(a.opportunity_rules) == 5
       assert a.skill_namespaces == ["phx", "ecto", "lv"]
       assert "example_step" in Map.keys(a.metadata)
@@ -123,7 +123,7 @@ defmodule Faber.AdapterTest do
       assert Adapter.validate(a) == []
 
       assert a.fingerprint_rules == [
-               %{type: "maintenance", commands: ["pip install", "uv add"], bonus: 3.0}
+               %{type: "maintenance", commands: ["pip install", "uv add"], tools: [], bonus: 3.0}
              ]
 
       assert [investigate, verify, review] = a.opportunity_rules
@@ -165,6 +165,11 @@ defmodule Faber.AdapterTest do
       fingerprints:
         - commands: ["x"]
           bonus: "high"
+        - type: telemetry
+          tools: [42]
+          bonus: 1.0
+        - type: vacuous
+          bonus: 1.0
       opportunities:
         - skill: plan
           when: tool_count
@@ -178,6 +183,8 @@ defmodule Faber.AdapterTest do
 
       assert Enum.any?(problems, &(&1 =~ "fingerprint rule missing type"))
       assert Enum.any?(problems, &(&1 =~ "bonus must be a number"))
+      assert Enum.any?(problems, &(&1 =~ "telemetry tools must be a list of strings"))
+      assert Enum.any?(problems, &(&1 =~ "vacuous must declare commands or tools"))
       assert Enum.any?(problems, &(&1 =~ "requires an integer threshold"))
       assert Enum.any?(problems, &(&1 =~ "'when' must be one of"))
       assert Enum.any?(problems, &(&1 =~ "skill_namespaces must be a list of strings"))

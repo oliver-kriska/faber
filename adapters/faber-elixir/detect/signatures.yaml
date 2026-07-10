@@ -63,7 +63,8 @@ signatures:
 # the engine's historical Elixir/plugin defaults as adapter data, so the engine itself stays
 # domain-free while faber-elixir's behavior is unchanged (proven by the parity test).
 
-# Command → session-type bonus (compute_fingerprint's mix-deps/hex and gh-pr/issue bonuses).
+# Command/tool → session-type bonus (compute_fingerprint's mix-deps/hex and gh-pr/issue
+# command bonuses, plus its Tidewave-MCP → bug-fix bonus as a `tools:` prefix rule).
 fingerprints:
   - type: maintenance
     commands: ["mix deps", "mix hex"]
@@ -71,6 +72,9 @@ fingerprints:
   - type: review
     commands: ["gh pr", "gh issue"]
     bonus: 3.0
+  - type: bug-fix
+    tools: ["mcp__tidewave"] # Tidewave MCP usage = live runtime debugging
+    bonus: 1.5
 
 # Missed-automation → plugin skill (compute_plugin_opportunity). Order is the reported order.
 opportunities:
