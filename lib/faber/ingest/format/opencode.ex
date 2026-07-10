@@ -49,21 +49,35 @@ defmodule Faber.Ingest.Format.OpenCode do
   @default_base "~/.local/share/opencode"
   @db_name "opencode.db"
 
+  # sqlite3 -json buffers its whole result as one binary before we decode it. Per-session queries
+  # keep that bounded, but a pathological single session must still fail closed (same 50 MB class
+  # of cap as the Cline/Gemini whole-file formats) rather than balloon into a multi-GB string.
+  @max_output_bytes 50 * 1024 * 1024
+
   # One row per (message, part), ordered so a message's parts are contiguous. The `part` column is a
-  # JSON-text blob (decoded in Elixir); a LEFT JOIN keeps part-less messages.
-  @query "SELECT m.id AS id, m.session_id AS session_id, " <>
-           "json_extract(m.data,'$.role') AS role, p.data AS part " <>
-           "FROM message m LEFT JOIN part p ON p.message_id = m.id " <>
-           "ORDER BY m.time_created, m.id, p.time_created"
+  # JSON-text blob (decoded in Elixir); a LEFT JOIN keeps part-less messages. The WHERE slot scopes
+  # the read to one session (see `discover/1`) — without it the whole history decodes at once.
+  @query_select "SELECT m.id AS id, m.session_id AS session_id, " <>
+                  "json_extract(m.data,'$.role') AS role, p.data AS part " <>
+                  "FROM message m LEFT JOIN part p ON p.message_id = m.id "
+  @query_order "ORDER BY m.time_created, m.id, p.time_created"
+
+  @sessions_query "SELECT id FROM session ORDER BY id"
 
   @impl true
   def default_base, do: @default_base
 
   @doc """
-  Discover the OpenCode DB under `base` (default `#{@default_base}`).
+  Discover per-session handles in the OpenCode DB under `base` (default `#{@default_base}`).
 
-  Returns `[<base>/#{@db_name}]` when it exists (OpenCode keeps a single global DB), else `[]`. If
-  `base` itself points at a `.db` file, it's returned as-is. `~` is expanded.
+  OpenCode keeps a single global DB, so a naive `[db]` would make the entire history one giant
+  pseudo-session: the whole `message ⋈ part` join buffered in memory at once, and nothing for
+  `Faber.Scan`'s per-session fan-out to parallelize. Instead each session becomes one handle —
+  `"<db>#<session_id>"` — bounding memory to a session and making every `Scan.Result` a real one.
+
+  If `base` itself points at a `.db` file it's used as the DB; `~` is expanded. When `sqlite3`
+  isn't on PATH (or the session listing fails), degrades to `[db]` so `stream_file!/1` surfaces
+  the error instead of discovery silently returning nothing.
   """
   @impl true
   def discover(base \\ @default_base) do
@@ -72,37 +86,107 @@ defmodule Faber.Ingest.Format.OpenCode do
     db =
       if String.ends_with?(expanded, ".db"), do: expanded, else: Path.join(expanded, @db_name)
 
-    if File.exists?(db), do: [db], else: []
-  end
-
-  @doc """
-  Stream an OpenCode `opencode.db` as `{:ok, Event.t()} | {:error, map()}` per logical message.
-
-  Reads the message⋈part join via the `sqlite3` CLI (`-json`), groups rows into logical messages,
-  and emits one event each, stamped with the session id. A missing `sqlite3`, a query failure, or a
-  decode error surfaces as a single `{:error, _}` rather than crashing the run.
-  """
-  @impl true
-  def stream_file!(path) do
-    case System.find_executable("sqlite3") do
-      nil -> [{:error, %{line: path, reason: :sqlite3_unavailable}}]
-      sqlite3 -> run_query(sqlite3, path)
+    case {File.exists?(db), System.find_executable("sqlite3")} do
+      {false, _} -> []
+      {true, nil} -> [db]
+      {true, sqlite3} -> session_handles(sqlite3, db)
     end
   end
 
-  defp run_query(sqlite3, path) do
-    case Faber.Subprocess.run(sqlite3, ["-json", "-readonly", path, @query],
+  defp session_handles(sqlite3, db) do
+    case Faber.Subprocess.run(sqlite3, ["-json", "-readonly", db, @sessions_query],
            stderr_to_stdout: true,
            timeout: :timer.seconds(30)
          ) do
-      {:error, :timeout} -> [{:error, %{line: path, reason: :sqlite3_timeout}}]
-      {"", 0} -> []
-      {output, 0} -> decode_rows(output, path)
-      {output, status} -> [{:error, %{line: path, reason: {:sqlite3_exit, status, output}}}]
+      {"", 0} ->
+        []
+
+      {output, 0} ->
+        case Jason.decode(output, keys: :strings) do
+          {:ok, rows} when is_list(rows) ->
+            for %{"id" => id} when is_binary(id) <- rows, do: db <> "#" <> id
+
+          _ ->
+            [db]
+        end
+
+      _ ->
+        [db]
     end
   rescue
-    e -> [{:error, %{line: path, reason: Exception.message(e)}}]
+    _ -> [db]
   end
+
+  @doc """
+  Stream one OpenCode session — a `"<db>#<session_id>"` handle from `discover/1` — as
+  `{:ok, Event.t()} | {:error, map()}` per logical message. A bare DB path (the degraded handle)
+  streams the whole DB.
+
+  Reads the message⋈part join via the `sqlite3` CLI (`-json`), groups rows into logical messages,
+  and emits one event each, stamped with the session id. A missing `sqlite3`, a query failure, an
+  oversized result, or a decode error surfaces as a single `{:error, _}` rather than crashing the
+  run.
+  """
+  @impl true
+  def stream_file!(handle) do
+    case System.find_executable("sqlite3") do
+      nil ->
+        [{:error, %{line: handle, reason: :sqlite3_unavailable}}]
+
+      sqlite3 ->
+        {db, session_id} = split_handle(handle)
+        run_query(sqlite3, db, session_id)
+    end
+  end
+
+  @doc false
+  # A handle is the bare DB path (degraded discovery) or `"<db>#<session_id>"`. A real on-disk
+  # path wins outright (a filename may contain `#`); otherwise split on the LAST `#` — session
+  # ids (`ses_<hex>`) never contain one. Exposed (@doc false) so the disambiguation is testable
+  # without a sqlite3 dependency.
+  @spec split_handle(String.t()) :: {Path.t(), String.t() | nil}
+  def split_handle(handle) do
+    with false <- File.exists?(handle),
+         [_ | _] = matches <- :binary.matches(handle, "#") do
+      {pos, 1} = List.last(matches)
+      {binary_part(handle, 0, pos), binary_part(handle, pos + 1, byte_size(handle) - pos - 1)}
+    else
+      _ -> {handle, nil}
+    end
+  end
+
+  defp run_query(sqlite3, db, session_id) do
+    case Faber.Subprocess.run(sqlite3, ["-json", "-readonly", db, build_query(session_id)],
+           stderr_to_stdout: true,
+           timeout: :timer.seconds(30)
+         ) do
+      {:error, :timeout} ->
+        [{:error, %{line: db, reason: :sqlite3_timeout}}]
+
+      {"", 0} ->
+        []
+
+      {output, 0} when byte_size(output) > @max_output_bytes ->
+        [{:error, %{line: db, reason: {:too_large, byte_size(output), @max_output_bytes}}}]
+
+      {output, 0} ->
+        decode_rows(output, db)
+
+      {output, status} ->
+        [{:error, %{line: db, reason: {:sqlite3_exit, status, output}}}]
+    end
+  rescue
+    e -> [{:error, %{line: db, reason: Exception.message(e)}}]
+  end
+
+  defp build_query(nil), do: @query_select <> @query_order
+
+  defp build_query(session_id),
+    do: @query_select <> "WHERE m.session_id = " <> quote_str(session_id) <> " " <> @query_order
+
+  # Session ids come from the DB itself, but it's still untrusted input inlined into SQL (the
+  # sqlite3 CLI has no bound parameters) — single-quote-escape, same hygiene as Source.Ccrider.
+  defp quote_str(s), do: "'" <> String.replace(s, "'", "''") <> "'"
 
   defp decode_rows(output, path) do
     case Jason.decode(output, keys: :strings) do

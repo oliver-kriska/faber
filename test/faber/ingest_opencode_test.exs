@@ -92,6 +92,27 @@ defmodule Faber.Ingest.Format.OpenCodeTest do
     end
   end
 
+  # Handle disambiguation is pure filesystem logic — hermetic, no sqlite3 needed.
+  describe "split_handle/1 (pure, no DB)" do
+    @describetag :tmp_dir
+
+    test "a session handle splits on the last '#'", %{tmp_dir: dir} do
+      db = Path.join(dir, "opencode.db")
+      File.write!(db, "")
+      assert OpenCode.split_handle(db <> "#ses_abc") == {db, "ses_abc"}
+    end
+
+    test "an existing path wins outright, even when it contains '#'", %{tmp_dir: dir} do
+      weird = Path.join(dir, "open#code.db")
+      File.write!(weird, "")
+      assert OpenCode.split_handle(weird) == {weird, nil}
+    end
+
+    test "a bare (missing) path without '#' passes through" do
+      assert OpenCode.split_handle("/nope/opencode.db") == {"/nope/opencode.db", nil}
+    end
+  end
+
   # Shells out to the sqlite3 CLI against a fixture opencode.db — excluded from the hermetic run.
   describe "discover/1 + stream_file!/1 (reads the SQLite DB)" do
     @describetag :opencode
@@ -105,13 +126,13 @@ defmodule Faber.Ingest.Format.OpenCodeTest do
       %{dir: dir, db: db}
     end
 
-    test "discover finds opencode.db under the base dir", %{dir: dir, db: db} do
-      assert OpenCode.discover(dir) == [db]
+    test "discover yields ONE HANDLE PER SESSION, not the whole DB", %{dir: dir, db: db} do
+      assert OpenCode.discover(dir) == [db <> "#ses_aux", db <> "#ses_demo"]
     end
 
-    test "streams one event per message, stamping the session_id; 3 Bash uses", %{db: db} do
+    test "a session handle streams ONLY that session's messages", %{db: db} do
       events =
-        db
+        (db <> "#ses_demo")
         |> OpenCode.stream_file!()
         |> Enum.map(fn {:ok, e} -> e end)
 
@@ -119,6 +140,18 @@ defmodule Faber.Ingest.Format.OpenCodeTest do
       assert Enum.all?(events, &(&1.session_id == "ses_demo"))
       bash = events |> Enum.flat_map(& &1.tool_uses) |> Enum.filter(&(&1.name == "Bash"))
       assert length(bash) == 3
+
+      aux = (db <> "#ses_aux") |> OpenCode.stream_file!() |> Enum.map(fn {:ok, e} -> e end)
+      assert length(aux) == 2
+      assert Enum.all?(aux, &(&1.session_id == "ses_aux"))
+    end
+
+    test "the degraded bare-DB handle still streams the whole history", %{db: db} do
+      events = db |> OpenCode.stream_file!() |> Enum.map(fn {:ok, e} -> e end)
+      assert length(events) == 8
+
+      assert events |> Enum.map(& &1.session_id) |> Enum.uniq() |> Enum.sort() ==
+               ["ses_aux", "ses_demo"]
     end
 
     test "a non-database file surfaces as a single {:error, _}, not a crash", %{dir: dir} do
@@ -143,7 +176,11 @@ defmodule Faber.Ingest.Format.OpenCodeTest do
     test "an OpenCode session scores as friction with canonical signals and file paths", %{
       dir: dir
     } do
-      assert [%Scan.Result{} = r | _] = Scan.run(base: dir, format: :opencode, min_messages: 0)
+      results = Scan.run(base: dir, format: :opencode, min_messages: 0)
+
+      # One Result PER SESSION (the whole-DB read collapsed the history into a single row).
+      assert length(results) == 2
+      assert [%Scan.Result{} = r | _] = results
 
       assert r.session_id == "ses_demo"
       assert r.friction > 0.0
@@ -154,12 +191,16 @@ defmodule Faber.Ingest.Format.OpenCodeTest do
     end
   end
 
-  # A minimal real-shaped OpenCode DB: `message`/`part` tables with JSON `data` blobs. Models a
-  # retry loop (two failing `mix test`) then a patch fixing lib/parser.ex, then a passing run.
+  # A minimal real-shaped OpenCode DB: `session`/`message`/`part` tables with JSON `data` blobs.
+  # ses_demo models a retry loop (two failing `mix test`) then a patch fixing lib/parser.ex, then
+  # a passing run; ses_aux is a second tiny session proving per-session handle isolation.
   defp seed_sql do
     """
+    CREATE TABLE session (id TEXT PRIMARY KEY, data TEXT);
     CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
     CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT);
+
+    INSERT INTO session VALUES ('ses_demo','{}'), ('ses_aux','{}');
 
     INSERT INTO message VALUES
       ('m1','ses_demo',1,'{"role":"user"}'),
@@ -167,9 +208,13 @@ defmodule Faber.Ingest.Format.OpenCodeTest do
       ('m3','ses_demo',3,'{"role":"assistant"}'),
       ('m4','ses_demo',4,'{"role":"assistant"}'),
       ('m5','ses_demo',5,'{"role":"assistant"}'),
-      ('m6','ses_demo',6,'{"role":"assistant"}');
+      ('m6','ses_demo',6,'{"role":"assistant"}'),
+      ('n1','ses_aux',7,'{"role":"user"}'),
+      ('n2','ses_aux',8,'{"role":"assistant"}');
 
     INSERT INTO part VALUES
+      ('q1','n1','ses_aux',9,'{"type":"text","text":"hello there"}'),
+      ('q2','n2','ses_aux',10,'{"type":"text","text":"hi"}'),
       ('p1','m1','ses_demo',1,'{"type":"text","text":"fix the failing parser test in lib/parser.ex"}'),
       ('p2','m2','ses_demo',2,'{"type":"text","text":"I''ll run the tests."}'),
       ('p3','m2','ses_demo',3,'{"type":"tool","tool":"bash","callID":"c1","state":{"status":"error","input":{"command":"mix test test/parser_test.exs"},"error":"FunctionClauseError"}}'),
