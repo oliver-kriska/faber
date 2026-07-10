@@ -87,10 +87,10 @@ defmodule Faber.Eval do
   # Resolve HOW to score: explicit :eval wins, then an adapter's stack-specific criteria, else the
   # built-in default. This is the moat — a skill is judged by its stack's bar, not a generic one.
   defp run_eval(skill_md, opts) do
-    cond do
-      opts[:eval] != nil -> run_engine(engine(opts), skill_md, opts[:eval], opts)
-      adapter_eval(opts) != nil -> run_adapter_eval(skill_md, adapter_eval(opts), opts)
-      true -> run_engine(engine(opts), skill_md, nil, opts)
+    case {opts[:eval], adapter_eval(opts)} do
+      {eval, _} when eval != nil -> run_engine(engine(opts), skill_md, eval, opts)
+      {_, adapter_eval} when adapter_eval != nil -> run_adapter_eval(skill_md, adapter_eval, opts)
+      _ -> run_engine(engine(opts), skill_md, nil, opts)
     end
   end
 

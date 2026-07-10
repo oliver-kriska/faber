@@ -342,8 +342,10 @@ defmodule Faber.Adapter do
     )
   end
 
+  # Prepend-then-reverse (the caller reverses once at the end of validate/1) — `acc ++ …` here
+  # copied the whole accumulator per entry.
   defp validate_entries(acc, entries, _label, fun) do
-    Enum.reduce(entries, acc, fn entry, acc -> acc ++ fun.(entry) end)
+    Enum.reduce(entries, acc, fn entry, acc -> fun.(entry) ++ acc end)
   end
 
   defp unique_ids(acc, entries, label) do

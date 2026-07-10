@@ -49,14 +49,19 @@ defmodule Faber.Consolidate do
     proposals
     |> Enum.map(&{&1, tokens(&1)})
     |> Enum.reduce([], fn {p, toks}, clusters ->
-      case Enum.split_while(clusters, fn members ->
-             not Enum.any?(members, fn {_mp, mtoks} -> jaccard(toks, mtoks) >= threshold end)
-           end) do
-        {_all, []} -> clusters ++ [[{p, toks}]]
-        {before, [hit | rest]} -> before ++ [hit ++ [{p, toks}] | rest]
+      # Find-or-place without rebuilding the cluster list (the previous split_while + `++`
+      # version copied the whole prefix per proposal on top of the O(n) scan). Members prepend;
+      # materialization below reverses, preserving the documented input-order determinism.
+      hit? = fn members ->
+        Enum.any?(members, fn {_mp, mtoks} -> jaccard(toks, mtoks) >= threshold end)
+      end
+
+      case Enum.find_index(clusters, hit?) do
+        nil -> clusters ++ [[{p, toks}]]
+        idx -> List.update_at(clusters, idx, &[{p, toks} | &1])
       end
     end)
-    |> Enum.map(fn members -> Enum.map(members, &elem(&1, 0)) end)
+    |> Enum.map(fn members -> members |> Enum.reverse() |> Enum.map(&elem(&1, 0)) end)
   end
 
   @doc """
