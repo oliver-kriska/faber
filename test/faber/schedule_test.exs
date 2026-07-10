@@ -187,6 +187,7 @@ defmodule Faber.ScheduleTest do
     # Wedge guard: a run that never finishes (hung subprocess) must be killed at :max_run_ms and
     # recorded as a failed run — otherwise `running: true` sticks forever and every future tick is
     # silently skipped (the scheduler stops doing anything, with no crash and no log).
+    @tag capture_log: true
     test "a hung run is killed at max_run_ms; the scheduler recovers and can run again" do
       pid =
         start_supervised!(
@@ -219,6 +220,7 @@ defmodule Faber.ScheduleTest do
 
     # async_nolink isolation: a job that hard-crashes must NOT take down the scheduler — it lands as
     # a :DOWN, is recorded as a failed run, and the scheduler keeps serving.
+    @tag capture_log: true
     test "a hard-crashing job is isolated: recorded as :job_crashed, scheduler survives" do
       pid =
         start_supervised!(

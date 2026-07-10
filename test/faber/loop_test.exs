@@ -440,7 +440,10 @@ defmodule Faber.LoopTest do
           target: 0.99
         )
 
-      assert %Loop.State{holdout: %{composite: hold, behavioral: 0.0, fixtures: 2}} = state
+      assert %Loop.State{holdout: %{composite: hold, behavioral: behavioral, fixtures: 2}} =
+               state
+
+      assert behavioral == 0.0
       # Train-optimized composite (behavioral 1.0 folded) strictly beats the holdout score.
       assert hold < state.best_composite
     end
