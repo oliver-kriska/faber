@@ -36,44 +36,77 @@ defmodule Faber.LLM.ClaudeCLI do
     end
   end
 
-  # Redirect stdin from /dev/null so `claude -p` doesn't wait 3s for piped input that never comes
-  # (the prompt is on the command line). `System.cmd/3` can't close the child's stdin, so wrap in
-  # `sh -c`; every dynamic value goes through the ENVIRONMENT, never the command string, so prompt /
-  # system content can't be word-split or shell-injected. `${VAR:+--flag "$VAR"}` omits empty flags.
+  # The prompt and the (loop-grown) system prompt are passed through FILES, never argv/env: the
+  # reflective loop grows the skill unboundedly, and both argv and the environment count against the
+  # exec `ARG_MAX` (plus a per-string `MAX_ARG_STRLEN` cap), so a large system prompt on the command
+  # line would eventually fail with E2BIG (Windows: WinError 206 past ~30 KB). Instead the prompt is
+  # redirected onto `claude -p`'s stdin from a temp file, and the system prompt is handed over via
+  # `--append-system-prompt-file` — only tiny *paths* travel through env/argv. `System.cmd/3` can't
+  # feed stdin or close it, so we wrap in `sh -c`; every dynamic value still goes through the
+  # ENVIRONMENT (never the command string) so it can't be word-split or shell-injected, and
+  # `${VAR:+--flag "$VAR"}` omits empty flags. The temp dir is removed on every exit path.
   defp run(bin, prompt, system, model, timeout) do
-    script =
-      ~s(exec "$FB_BIN" -p "$FB_PROMPT" --output-format json) <>
-        ~s( ${FB_SYS:+--append-system-prompt "$FB_SYS"}) <>
-        ~s( ${FB_MODEL:+--model "$FB_MODEL"} < /dev/null)
+    dir = make_tmp_dir()
 
-    env = [
-      {"FB_BIN", bin},
-      {"FB_PROMPT", prompt},
-      {"FB_SYS", system},
-      {"FB_MODEL", to_string(model || "")}
-    ]
+    try do
+      prompt_file = Path.join(dir, "prompt.txt")
+      File.write!(prompt_file, prompt)
 
-    case Faber.Subprocess.run("sh", ["-c", script],
-           env: env,
-           stderr_to_stdout: false,
-           timeout: timeout
-         ) do
-      {:error, :timeout} ->
-        {:error, {:claude_cli_timeout, timeout}}
-
-      {out, 0} ->
-        with {:ok, text} <- parse_envelope(out),
-             {:ok, object} <- extract_json(text) do
-          {:ok, object}
+      sys_file =
+        if is_binary(system) and system != "" do
+          path = Path.join(dir, "system.txt")
+          File.write!(path, system)
+          path
         else
-          _ -> {:error, {:claude_cli_parse, out}}
+          ""
         end
 
-      {out, code} ->
-        {:error, {:claude_cli_exit, code, out}}
+      script =
+        ~s(exec "$FB_BIN" -p --output-format json) <>
+          ~s( ${FB_SYS_FILE:+--append-system-prompt-file "$FB_SYS_FILE"}) <>
+          ~s( ${FB_MODEL:+--model "$FB_MODEL"}) <>
+          ~s( < "$FB_PROMPT_FILE")
+
+      env = [
+        {"FB_BIN", bin},
+        {"FB_PROMPT_FILE", prompt_file},
+        {"FB_SYS_FILE", sys_file},
+        {"FB_MODEL", to_string(model || "")}
+      ]
+
+      case Faber.Subprocess.run("sh", ["-c", script],
+             env: env,
+             stderr_to_stdout: false,
+             timeout: timeout
+           ) do
+        {:error, :timeout} ->
+          {:error, {:claude_cli_timeout, timeout}}
+
+        {out, 0} ->
+          with {:ok, text} <- parse_envelope(out),
+               {:ok, object} <- extract_json(text) do
+            {:ok, object}
+          else
+            _ -> {:error, {:claude_cli_parse, out}}
+          end
+
+        {out, code} ->
+          {:error, {:claude_cli_exit, code, out}}
+      end
+    rescue
+      e in ErlangError -> {:error, {:claude_cli_unavailable, e}}
+    after
+      File.rm_rf(dir)
     end
-  rescue
-    e in ErlangError -> {:error, {:claude_cli_unavailable, e}}
+  end
+
+  # Per-call scratch dir for the prompt/system temp files; 0700 since prompts can carry mined
+  # session excerpts. `unique_integer` is node-unique, so concurrent loop calls don't collide.
+  defp make_tmp_dir do
+    dir = Path.join(System.tmp_dir!(), "faber_claude_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    _ = File.chmod(dir, 0o700)
+    dir
   end
 
   @doc "Append the JSON-shape instruction (from `schema`) to the caller's system prompt."
