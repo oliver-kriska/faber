@@ -15,6 +15,7 @@ defmodule Faber.CLI do
   """
 
   alias Faber.{Adapter, Consolidate, Eval, Install, Loop, Proposal, Propose, Scan}
+  alias Faber.Ingest.Format
 
   @default_port 4710
 
@@ -321,8 +322,8 @@ defmodule Faber.CLI do
       |> put_if(:source, normalize_source(opts[:source]))
       |> put_if(:format, normalize_format(opts[:format]))
 
-    results = Scan.run(scan_opts)
-    IO.puts(render_table(results))
+    {elapsed_us, results} = :timer.tc(fn -> Scan.run(scan_opts) end)
+    IO.puts(render_table(results, div(elapsed_us, 1000)))
     0
   end
 
@@ -345,24 +346,20 @@ defmodule Faber.CLI do
     trigger? = opts[:trigger] == true
 
     with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
-         %Scan.Result{} = result <- Enum.at(Scan.run(scan_opts), rank - 1),
+         {:ok, result} <- select_session(Scan.run(scan_opts), rank, scan_opts),
          :ok <- stack_gate(adapter, result, opts[:force]),
-         {:ok, proposal} <- Propose.propose(result, adapter),
+         {:ok, proposal} <- propose_with_status(result, adapter),
          {:ok, eval} <- Eval.score(proposal, adapter: adapter, trigger: trigger?) do
       IO.puts(render_proposal(proposal, eval, adapter))
       maybe_install(proposal, adapter, opts[:install])
       0
     else
-      nil ->
-        IO.puts(:stderr, "faber: no session at rank #{rank}")
-        1
-
       {:error, {:stack_mismatch, adapter, result}} ->
         IO.puts(:stderr, stack_mismatch_message(adapter, result))
         1
 
       {:error, reason} ->
-        IO.puts(:stderr, "faber propose failed: #{inspect(reason)}")
+        IO.puts(:stderr, "faber propose failed: #{humanize_error(reason)}")
         1
     end
   end
@@ -393,23 +390,19 @@ defmodule Faber.CLI do
       |> put_if(:trigger_holdout, opts[:holdout])
 
     with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
-         %Scan.Result{} = result <- Enum.at(Scan.run(scan_opts), rank - 1),
+         {:ok, result} <- select_session(Scan.run(scan_opts), rank, scan_opts),
          :ok <- stack_gate(adapter, result, opts[:force]),
-         %Loop.State{} = state <- Loop.refine(result, adapter, refine_opts) do
+         %Loop.State{} = state <- refine_with_status(result, adapter, refine_opts) do
       IO.puts(render_refinement(state, adapter))
       maybe_install_best(state, adapter, opts[:install])
       0
     else
-      nil ->
-        IO.puts(:stderr, "faber: no session at rank #{rank}")
-        1
-
       {:error, {:stack_mismatch, adapter, result}} ->
         IO.puts(:stderr, stack_mismatch_message(adapter, result))
         1
 
       {:error, reason} ->
-        IO.puts(:stderr, "faber refine failed: #{inspect(reason)}")
+        IO.puts(:stderr, "faber refine failed: #{humanize_error(reason)}")
         1
     end
   end
@@ -430,27 +423,14 @@ defmodule Faber.CLI do
       |> put_if(:threshold, opts[:cluster_threshold])
       |> put_if(:trigger, opts[:trigger])
 
-    case Adapter.load(Faber.adapter_dir()) do
-      {:ok, adapter} ->
-        {candidates, skipped} =
-          scan_opts
-          |> Scan.run()
-          |> Enum.take(top)
-          |> Enum.split_with(fn r ->
-            opts[:force] == true or Adapter.matches_session?(adapter, r.file_paths)
-          end)
-
-        if skipped != [] do
-          IO.puts(
-            :stderr,
-            "skipping #{length(skipped)} stack-mismatched session(s) — --force includes them"
-          )
-        end
-
-        consolidate_proposals(candidates, adapter, consolidate_opts, top)
-
+    with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
+         {:ok, sessions} <- consolidate_sessions(Scan.run(scan_opts), scan_opts, top) do
+      {candidates, skipped} = Enum.split_with(sessions, &stack_match?(adapter, &1, opts[:force]))
+      report_skipped(skipped)
+      consolidate_proposals(candidates, adapter, consolidate_opts, top)
+    else
       {:error, reason} ->
-        IO.puts(:stderr, "faber consolidate failed: #{inspect(reason)}")
+        IO.puts(:stderr, "faber consolidate failed: #{humanize_error(reason)}")
         1
     end
   end
@@ -512,15 +492,44 @@ defmodule Faber.CLI do
   defp format_sync(agent, {:error, :block_modified}),
     do: "#{agent}: block hand-edited — re-run with --force to overwrite"
 
-  defp format_sync(agent, {:error, {:unknown_agent, a}}), do: "#{agent}: unknown agent '#{a}'"
+  # Every other error shape routes through the shared mapping rather than growing a second set of
+  # sync-specific sentences (`:block_modified` above keeps its own because it names a sync flag).
+  defp format_sync(agent, {:error, reason}), do: "#{agent}: #{humanize_error(reason)}"
   defp format_sync(agent, other), do: "#{agent}: #{inspect(other)}"
+
+  # Two failures that used to render identically as "no session at rank 1": an EMPTY corpus (faber
+  # found nothing at all — almost always the wrong root, and the user's actual first-run experience)
+  # and a rank past the end of a real corpus. Only the second one is about the rank, and telling a
+  # first-time user their rank is wrong sends them to fix the one thing that isn't.
+  defp select_session([], _rank, scan_opts), do: {:error, {:no_sessions, scan_root(scan_opts)}}
+
+  defp select_session(results, rank, _scan_opts) do
+    case Enum.at(results, rank - 1) do
+      %Scan.Result{} = result -> {:ok, result}
+      nil -> {:error, {:rank_out_of_range, rank, length(results)}}
+    end
+  end
+
+  # The root actually searched, so the message can name a directory rather than a flag. Resolved
+  # through the format registry (not a literal) — `--base` overrides, else it's the format's own
+  # default_base/0, which is the whole point of the message when the two disagree.
+  defp scan_root(scan_opts) do
+    scan_opts[:base] || Format.resolve(scan_opts).default_base()
+  end
+
+  # The single stack-match decision, including what `--force` means. propose/refine *gate* on it
+  # (one session — a mismatch is a refusal); consolidate *partitions* on it (a batch — a mismatch is
+  # a skip). Different consequences, but they must never disagree about the question itself, which
+  # they did while consolidate asked it inline (audit item 9).
+  defp stack_match?(_adapter, _result, true), do: true
+
+  defp stack_match?(adapter, result, _force),
+    do: Adapter.matches_session?(adapter, result.file_paths)
 
   # Stack-aware gate: refuse to draft a skill when the chosen session doesn't belong to the
   # adapter's stack (e.g. proposing an Elixir skill for a Codex/Next.js session). `--force` skips it.
-  defp stack_gate(_adapter, _result, true), do: :ok
-
-  defp stack_gate(adapter, result, _force) do
-    if Adapter.matches_session?(adapter, result.file_paths),
+  defp stack_gate(adapter, result, force) do
+    if stack_match?(adapter, result, force),
       do: :ok,
       else: {:error, {:stack_mismatch, adapter, result}}
   end
@@ -579,34 +588,297 @@ defmodule Faber.CLI do
   defp pluralize(word, [_one]), do: word
   defp pluralize(word, _many), do: word <> "s"
 
+  # ── errors ─────────────────────────────────────────────────────────────────
+
+  @doc false
+  # Render the error shapes the pipeline actually returns as the sentences docs/GUIDE.md §21 already
+  # explains them with. A bare `{:claude_cli_unavailable, "claude"}` on someone's terminal is a
+  # support question waiting to happen: the fix is one PATH export, and the tuple conveys that only
+  # to a reader with the source open. Public (with @doc false) so the mapping is unit-testable, the
+  # same reason `guarded/1` is.
+  #
+  # Unknown shapes still fall through to `inspect/1`. That fallback is the point: inventing a
+  # friendly sentence for an error we haven't actually seen would trade an honest dump for a
+  # confident guess, and a wrong explanation costs more debugging time than a raw tuple.
+  @spec humanize_error(term()) :: String.t()
+  def humanize_error({:no_sessions, root}),
+    do: "no sessions found under #{root}. Three things usually cause this:\n" <> scan_causes()
+
+  def humanize_error({:rank_out_of_range, rank, 1}),
+    do: "no session at rank #{rank} — only 1 session matched."
+
+  def humanize_error({:rank_out_of_range, rank, n}),
+    do: "no session at rank #{rank} — only #{n} sessions matched."
+
+  def humanize_error({:claude_cli_unavailable, bin}) when is_binary(bin),
+    do:
+      "the `#{bin}` CLI isn't on PATH. Install Claude Code, or point faber at it with " <>
+        "`config :faber, :claude_bin, \"/path/to/claude\"`."
+
+  def humanize_error({:claude_cli_unavailable, reason}),
+    do:
+      "could not start the `claude` CLI (#{inspect(reason)}). Is Claude Code installed and on " <>
+        "PATH?"
+
+  def humanize_error({:claude_cli_timeout, ms}),
+    do:
+      "the `claude` CLI didn't answer within #{ms}ms and was killed. Re-run, or raise " <>
+        "`config :faber, :claude_timeout_ms`."
+
+  def humanize_error({:claude_cli_exit, code, out}),
+    do: "the `claude` CLI exited #{code}: #{first_line(out)}"
+
+  def humanize_error({:claude_cli_parse, out}),
+    do: "the `claude` CLI returned something faber could not read as JSON: #{first_line(out)}"
+
+  def humanize_error({:exists, path}),
+    do:
+      "a skill is already installed at #{path}. Overwrite it with --force, or `faber refine` the " <>
+        "installed one instead."
+
+  def humanize_error({:invalid_name, name}),
+    do: "#{inspect(name)} is not a usable skill name (letters, digits and dashes only)."
+
+  def humanize_error({:invalid_adapter, reasons}) when is_list(reasons),
+    do: "the adapter is invalid:\n" <> Enum.map_join(reasons, "\n", &"  - #{&1}")
+
+  def humanize_error({:yaml_error, path, reason}),
+    do: "#{path} is not valid YAML: #{inspect(reason)}"
+
+  def humanize_error({:not_a_mapping, path, _other}),
+    do: "#{path} must be a YAML mapping (`key: value`), not a list or a scalar."
+
+  # Known agents come from Install's registry rather than a second list here, which would drift the
+  # first time an agent is added (same reason normalize_format/1 defers to the format registry).
+  def humanize_error({:unknown_agent, agent}),
+    do:
+      "unknown agent #{inspect(agent)} — known: " <>
+        (Install.agent_context_files() |> Map.keys() |> Enum.sort() |> Enum.join(", ")) <> "."
+
+  def humanize_error(:insufficient_fixtures_for_holdout),
+    do:
+      "--holdout needs at least 2 should_trigger AND 2 should_not_trigger fixtures to split them. " <>
+        "Re-propose (the proposer normally emits 2+2), or drop --holdout."
+
+  # The adapter's exec-in-place scorer: an adapter/machine problem, so point at the adapter's own
+  # config rather than at faber.
+  def humanize_error({:exec_in_place_timeout, ms}),
+    do: "the adapter's eval scorer did not finish within #{ms}ms."
+
+  def humanize_error({:exec_in_place_unavailable, reason}),
+    do: "could not run the adapter's eval scorer (#{inspect(reason)}). Check `eval/eval.yaml`."
+
+  def humanize_error({:exec_in_place_exit, code, out}),
+    do: "the adapter's eval scorer exited #{code}: #{first_line(out)}"
+
+  def humanize_error({:exec_in_place_root_missing, root}),
+    do: "the adapter's eval root #{root} does not exist on this machine."
+
+  def humanize_error(other), do: inspect(other)
+
+  defp first_line(out) when is_binary(out) do
+    out
+    |> String.split("\n", trim: true)
+    |> List.first("(no output)")
+    |> String.slice(0, 200)
+  end
+
+  defp first_line(other), do: inspect(other)
+
+  # The three causes of an empty corpus, written once. `scan` renders them under its own table and
+  # propose/refine render them via humanize_error/1 — the same user, the same wrong root, and
+  # previously two different (or absent) explanations. The format list is derived from the ingest
+  # registry so it can't drift behind a newly-added agent.
+  defp scan_causes do
+    formats = Format.known() |> Enum.map_join(", ", &to_string/1)
+
+    """
+      - --min-messages is filtering every session out — try --min-messages 0
+      - --base points at the wrong transcript root (docs/GUIDE.md §13 lists each format's default)
+      - --format doesn't match the agent whose sessions you want (known: #{formats})
+    """
+  end
+
+  # ── status ─────────────────────────────────────────────────────────────────
+
+  # Progress lines go to stderr, never stdout. A propose is one `claude -p` call — a minute of
+  # total silence in which a run and a hang look identical. stderr because these are diagnostics,
+  # not results: stdout stays a clean data stream for anything piping a command's output.
+  @spec status(iodata()) :: :ok
+  defp status(line), do: IO.puts(:stderr, line)
+
+  # The short backend name (`ClaudeCLI`) rather than `inspect/1`'s fully-qualified `Faber.LLM.
+  # ClaudeCLI` — the module prefix is noise in a status line. String-split rather than
+  # `Module.split/1`, which raises for a non-Elixir module.
+  defp impl_label, do: Faber.LLM.impl() |> inspect() |> String.split(".") |> List.last()
+
+  defp signal_label(%Scan.Result{dominant_signal: nil}), do: "—"
+  defp signal_label(%Scan.Result{dominant_signal: s}), do: to_string(s)
+
+  # Mirrors the dev mix task's pre-flight line (lib/mix/tasks/faber.propose.ex), which the release
+  # CLI never had — the one surface where a user is most likely to be waiting on a cold LLM call.
+  defp propose_with_status(result, adapter) do
+    status(
+      "Proposing for #{result.fingerprint} session (raw #{fmt(result.raw)}, " <>
+        "dominant #{signal_label(result)}) via #{impl_label()}…"
+    )
+
+    Propose.propose(result, adapter)
+  end
+
+  defp refine_with_status(result, adapter, refine_opts) do
+    max = refine_opts[:max_iterations]
+
+    status(
+      "Refining #{result.fingerprint} session (raw #{fmt(result.raw)}, " <>
+        "dominant #{signal_label(result)}) via #{impl_label()} — up to " <>
+        "#{max} #{refine_opts[:strategy]} iterations…"
+    )
+
+    # `max` is closed over rather than carried in the entry: the loop reports what happened, and the
+    # bound is the caller's own opt — it has no business round-tripping through the journal.
+    on_progress = fn entry -> status(refine_progress_line(entry, max)) end
+
+    Loop.refine(result, adapter, Keyword.put(refine_opts, :on_progress, on_progress))
+  end
+
+  defp refine_progress_line(entry, max) do
+    verdict = if entry.kept, do: "KEEP", else: "discard"
+
+    note =
+      case entry.reason do
+        nil -> ""
+        reason -> " (#{reason})"
+      end
+
+    "  iteration #{entry.iteration}/#{max}: composite #{fmt4(entry.new_composite)} #{verdict}#{note}"
+  end
+
+  defp consolidate_progress({:merging, %{index: i, total: n, members: members}}),
+    do: status("merging cluster #{i}/#{n} — #{names(members)}…")
+
   # ── rendering ──────────────────────────────────────────────────────────────
 
-  defp render_table([]), do: "No sessions matched."
-
+  # One spec drives both the header and every row. A hand-aligned header string drifts from the pads
+  # it labels the first time a column moves — and this table just gained four.
+  #
   # `events` is the transcript line count (what the old `msgs` column actually showed); `turns` is
   # what a person typed. Showing only the former overstated human involvement by 20-70x.
-  defp render_table(results) do
-    header = "  #  friction  fingerprint            signal           events  turns  t2  session"
+  @scan_columns [
+    {"#", 3, :right},
+    {"friction(raw)", 13, :right},
+    {"fingerprint", 12, :left},
+    {"signal", 18, :left},
+    {"events", 7, :right},
+    {"turns", 6, :right},
+    {"tools", 6, :right},
+    {"errs", 5, :right},
+    {"ctx", 5, :right},
+    {"opp", 5, :right},
+    {"t2", 3, :right}
+  ]
+
+  @scan_legend "friction(raw) = raw weighted friction (the rank metric); opp = missed-automation " <>
+                 "score; ctx = peak context used; t2 = tier-2 eligible."
+
+  # Everything the row spends before `session`, which is last and variable-width: the padded cells,
+  # their separators, and the two-space gutter. Computed from the spec so adding a column can't
+  # leave a stale literal behind.
+  @scan_gutter Enum.sum(Enum.map(@scan_columns, fn {_l, w, _a} -> w end)) +
+                 length(@scan_columns) - 1 + 2
+
+  # A floor, because the arithmetic goes negative on a narrow terminal (the fixed columns alone
+  # exceed 80). A clipped-but-present session label beats a column that vanishes.
+  @min_session_width 12
+
+  # An empty scan is the single most common first-run outcome, and "No sessions matched." told the
+  # user nothing they could act on. The three causes are GUIDE §21's, and the format list comes from
+  # the ingest registry so it can't drift behind a newly-added agent.
+  defp render_table([], ms),
+    do:
+      "No sessions matched (scanned in #{ms}ms). Three things usually cause this:\n" <>
+        scan_causes()
+
+  defp render_table(results, ms) do
+    # Resolved once per table, not once per row: :io.columns/0 is a syscall, and a width that
+    # changed mid-table would misalign it anyway.
+    session_w = session_width()
 
     rows =
       results
       |> Enum.with_index(1)
-      |> Enum.map_join("\n", fn {r, i} ->
-        [
-          String.pad_leading(to_string(i), 3),
-          String.pad_leading(fmt(r.raw), 9),
-          String.pad_trailing(to_string(r.fingerprint), 22),
-          String.pad_trailing(to_string(r.dominant_signal || "—"), 16),
-          String.pad_leading(to_string(r.message_count), 7),
-          String.pad_leading(to_string(r.human_turns), 6),
-          String.pad_leading(if(r.tier2, do: "✓", else: ""), 3),
-          "  " <> session(r)
-        ]
-        |> Enum.join(" ")
-      end)
+      |> Enum.map_join("\n", fn {r, i} -> scan_row(r, i, session_w) end)
 
-    "#{header}\n#{rows}\n\n#{length(results)} sessions shown."
+    "#{scan_summary(results, ms)}\n\n#{scan_header()}\n#{rows}\n\n#{@scan_legend}"
   end
+
+  defp scan_header do
+    @scan_columns
+    |> Enum.map_join(" ", fn {label, w, align} -> pad_cell(label, w, align) end)
+    |> Kernel.<>("  session")
+  end
+
+  defp scan_row(r, i, session_w) do
+    values = [
+      to_string(i),
+      fmt(r.raw),
+      to_string(r.fingerprint),
+      signal_label(r),
+      to_string(r.message_count),
+      to_string(r.human_turns),
+      to_string(r.tool_count),
+      to_string(r.error_count),
+      ctx_label(r.max_ctx_pct),
+      fmt_opp(r.opportunity),
+      if(r.tier2, do: "✓", else: "")
+    ]
+
+    @scan_columns
+    |> Enum.zip(values)
+    |> Enum.map_join(" ", fn {{_label, w, align}, v} -> pad_cell(v, w, align) end)
+    |> Kernel.<>("  " <> truncate(session(r), session_w))
+  end
+
+  defp scan_summary(results, ms) do
+    projects =
+      results |> Enum.map(&project_label(&1, &1.path)) |> Enum.uniq() |> length()
+
+    "#{length(results)} #{pluralize("session", results)} across #{projects} " <>
+      "#{if(projects == 1, do: "project", else: "projects")} in #{ms}ms"
+  end
+
+  defp pad_cell(s, w, :right), do: String.pad_leading(s, w)
+  defp pad_cell(s, w, :left), do: String.pad_trailing(s, w)
+
+  # `:io.columns/0` answers `{:error, :enotsup}` for a non-tty — piped to `head`, redirected to a
+  # file, running in CI. That is not "assume 80": it means there is no width to fit, and clipping
+  # would corrupt the output for the one consumer that can actually use the full name. So the cap
+  # lifts entirely instead. Truncation exists to stop a terminal from WRAPPING a row; a pipe does
+  # not wrap. (80 stays the floor for a tty that reports an unusably narrow width.)
+  defp session_width do
+    case :io.columns() do
+      {:ok, cols} -> max(cols - @scan_gutter, @min_session_width)
+      _ -> :infinity
+    end
+  end
+
+  # Clip to `w`, marking the cut with `…`. A truncated name must LOOK truncated: silently dropping
+  # the tail of a project path yields a label that reads as real and isn't.
+  defp truncate(s, :infinity) when is_binary(s), do: s
+
+  defp truncate(s, w) when is_binary(s) do
+    if String.length(s) <= w, do: s, else: String.slice(s, 0, max(w - 1, 0)) <> "…"
+  end
+
+  # Mirrors the dashboard's ctx/1 — a session with no context reading is "—", not "0%", which would
+  # read as "used no context" rather than "we don't know".
+  defp ctx_label(nil), do: "—"
+  defp ctx_label(pct) when is_number(pct), do: "#{round(pct)}%"
+
+  defp fmt_opp(score) when is_number(score),
+    do: :erlang.float_to_binary(score * 1.0, decimals: 2)
+
+  defp fmt_opp(_), do: "—"
 
   defp render_proposal(proposal, eval, adapter) do
     verdict = if eval.passed, do: "PASS", else: "below threshold #{eval.threshold}"
@@ -623,17 +895,39 @@ defmodule Faber.CLI do
   defp maybe_install(proposal, adapter, true) do
     case Install.install(proposal, adapter: adapter) do
       {:ok, path} -> IO.puts("installed → #{path}")
-      {:error, reason} -> IO.puts(:stderr, "install failed: #{inspect(reason)}")
+      {:error, reason} -> IO.puts(:stderr, "install failed: #{humanize_error(reason)}")
     end
   end
 
   # ── consolidate ─────────────────────────────────────────────────────────────
 
+  # An empty corpus is not "no proposals to consolidate" — nothing was ever drafted, because nothing
+  # was found. Same distinction select_session/3 draws for propose/refine.
+  defp consolidate_sessions([], scan_opts, _top),
+    do: {:error, {:no_sessions, scan_root(scan_opts)}}
+
+  defp consolidate_sessions(results, _scan_opts, top), do: {:ok, Enum.take(results, top)}
+
+  defp report_skipped([]), do: :ok
+
+  defp report_skipped(skipped) do
+    status(
+      "skipping #{length(skipped)} stack-mismatched #{pluralize("session", skipped)} " <>
+        "(#{Enum.map_join(skipped, ", ", &session/1)}) — --force includes them"
+    )
+  end
+
   # Draft one proposal per candidate session (reporting per-session failures without aborting
   # the batch), then cluster + merge + gate the survivors and print one line per outcome.
   defp consolidate_proposals(candidates, adapter, consolidate_opts, top) do
+    total = length(candidates)
+
     {proposals, failures} =
-      Enum.reduce(candidates, {[], []}, fn r, {oks, errs} ->
+      candidates
+      |> Enum.with_index(1)
+      |> Enum.reduce({[], []}, fn {r, i}, {oks, errs} ->
+        status("drafting #{i}/#{total} #{session(r)}…")
+
         case Propose.propose(r, adapter) do
           {:ok, p} -> {[p | oks], errs}
           {:error, reason} -> {oks, [{r, reason} | errs]}
@@ -643,7 +937,7 @@ defmodule Faber.CLI do
     failures
     |> Enum.reverse()
     |> Enum.each(fn {r, reason} ->
-      IO.puts(:stderr, "propose failed for #{session(r)}: #{inspect(reason)}")
+      IO.puts(:stderr, "propose failed for #{session(r)}: #{humanize_error(reason)}")
     end)
 
     case Enum.reverse(proposals) do
@@ -652,7 +946,13 @@ defmodule Faber.CLI do
         1
 
       proposals ->
-        outcomes = Consolidate.run(proposals, adapter, consolidate_opts)
+        outcomes =
+          Consolidate.run(
+            proposals,
+            adapter,
+            Keyword.put(consolidate_opts, :on_progress, &consolidate_progress/1)
+          )
+
         IO.puts(render_outcomes(outcomes))
         0
     end
@@ -681,7 +981,7 @@ defmodule Faber.CLI do
     do: "  kept-originals  #{fmt4(eval.composite)}  merge below gate — #{names(originals)}"
 
   defp render_outcome({:error, originals, reason}),
-    do: "  error           —       #{names(originals)}: #{inspect(reason)}"
+    do: "  error           —       #{names(originals)}: #{humanize_error(reason)}"
 
   defp names(proposals), do: Enum.map_join(proposals, " + ", & &1.name)
 
@@ -722,7 +1022,7 @@ defmodule Faber.CLI do
   defp render_holdout(nil), do: ""
 
   defp render_holdout(%{error: reason}),
-    do: "\nholdout: validation scoring failed — #{inspect(reason)}\n"
+    do: "\nholdout: validation scoring failed — #{humanize_error(reason)}\n"
 
   defp render_holdout(%{composite: comp, behavioral: behavioral, fixtures: n}) do
     "\nholdout: composite #{fmt4(comp)}, behavioral #{fmt4(behavioral)} " <>
@@ -759,7 +1059,9 @@ defmodule Faber.CLI do
     rows =
       Enum.map_join(reports, "\n", fn r ->
         [
-          "  " <> String.pad_trailing(r.skill, 32),
+          # Truncated, not just padded: pad_trailing/2 leaves an over-long name at full length, so
+          # one 40-char skill wraps the row and every column after it stops lining up.
+          "  " <> String.pad_trailing(truncate(r.skill, 32), 32),
           String.pad_leading(to_string(r.sessions), 8),
           String.pad_leading(to_string(r.sessions_used), 5),
           String.pad_leading(fmt_rate(r.usage_rate), 6),
@@ -821,7 +1123,7 @@ defmodule Faber.CLI do
   # hand-maintained whitelist that drifts behind newly-added agents. Unknown/blank → nil, so it
   # falls back to the default format (parity with normalize_source/normalize_rank_by above).
   defp normalize_format(f) do
-    case f && Faber.Ingest.Format.cast(f) do
+    case f && Format.cast(f) do
       {:ok, format} -> format
       _ -> nil
     end

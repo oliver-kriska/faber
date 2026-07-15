@@ -221,11 +221,109 @@ defmodule Faber.CLITest do
     end
   end
 
+  describe "humanize_error/1" do
+    test "names the fix, not the tuple, for a missing claude CLI" do
+      msg = CLI.humanize_error({:claude_cli_unavailable, "claude"})
+
+      assert msg =~ "isn't on PATH"
+      assert msg =~ ":claude_bin"
+      refute msg =~ "claude_cli_unavailable"
+    end
+
+    test "a timeout reports the bound that was exceeded and how to raise it" do
+      msg = CLI.humanize_error({:claude_cli_timeout, 300_000})
+
+      assert msg =~ "300000ms"
+      assert msg =~ ":claude_timeout_ms"
+    end
+
+    # The exact case from GUIDE §21 / the plan: an already-installed skill must offer the three
+    # ways out rather than dumping {:exists, path}.
+    test "an already-installed skill offers --force and refine" do
+      msg = CLI.humanize_error({:exists, "/tmp/skills/foo/SKILL.md"})
+
+      assert msg =~ "/tmp/skills/foo/SKILL.md"
+      assert msg =~ "--force"
+      assert msg =~ "faber refine"
+    end
+
+    test "an invalid adapter lists each reason on its own line" do
+      msg = CLI.humanize_error({:invalid_adapter, ["missing name", "no file_globs"]})
+
+      assert msg =~ "  - missing name"
+      assert msg =~ "  - no file_globs"
+    end
+
+    # Derived from Install's registry, so adding an agent can't leave this message behind.
+    test "an unknown sync agent lists the known ones from Install's registry" do
+      msg = CLI.humanize_error({:unknown_agent, "emacs"})
+
+      assert msg =~ ~s("emacs")
+
+      for agent <- Map.keys(Faber.Install.agent_context_files()) do
+        assert msg =~ agent
+      end
+    end
+
+    test "multi-line subprocess output collapses to its first line" do
+      msg =
+        CLI.humanize_error({:claude_cli_exit, 2, "boom: bad flag\nstack line 1\nstack line 2"})
+
+      assert msg =~ "exited 2"
+      assert msg =~ "boom: bad flag"
+      refute msg =~ "stack line 1"
+    end
+
+    # The fallback is deliberate: an unrecognized shape must stay honest rather than get a
+    # confidently-wrong sentence invented for it.
+    test "an unknown shape falls back to inspect/1" do
+      assert CLI.humanize_error({:some_future_error, 42}) == "{:some_future_error, 42}"
+    end
+  end
+
   describe "run/2" do
     test "scan prints a ranked table" do
       out = capture_io(fn -> assert CLI.run(:scan, @fixtures ++ [limit: 5]) == 0 end)
       assert out =~ "friction"
-      assert out =~ "sessions shown"
+      assert out =~ ~r/\d+ sessions? across \d+ projects? in \d+ms/
+    end
+
+    # Parity with the mix task and the dashboard, which have shown these signals all along — the
+    # release CLI ranked on friction while hiding every input that produced it.
+    test "scan shows the signal columns, not just the score" do
+      out = capture_io(fn -> assert CLI.run(:scan, @fixtures ++ [limit: 5]) == 0 end)
+
+      for column <- ["friction(raw)", "tools", "errs", "ctx", "opp"] do
+        assert out =~ column, "scan table is missing the #{column} column"
+      end
+
+      # The friction column says which scale it's on; a bare "friction" invites reading a raw
+      # weighted score as a normalized one.
+      refute out =~ ~r/\bfriction\s+fingerprint/
+    end
+
+    test "scan's header counts sessions AND distinct projects" do
+      out = capture_io(fn -> assert CLI.run(:scan, @fixtures ++ [limit: 5]) == 0 end)
+
+      # test/fixtures spans fixtures/, nonelixir/ and codex/ — a count of 1 would mean the project
+      # label collapsed, which is what made the scribe-run scope surprise invisible.
+      assert out =~ ~r/5 sessions across 3 projects/
+    end
+
+    # The first-run outcome for anyone whose transcripts aren't where faber looked. "No sessions
+    # matched." named none of the three things that cause it.
+    test "an empty scan names the three causes instead of just reporting nothing" do
+      out =
+        capture_io(fn ->
+          assert CLI.run(:scan, base: "test/fixtures", min_messages: 99_999) == 0
+        end)
+
+      assert out =~ "No sessions matched"
+      assert out =~ "--min-messages"
+      assert out =~ "--base"
+      assert out =~ "--format"
+      # The known-format list is derived from the ingest registry, not retyped here.
+      assert out =~ "claude"
     end
 
     test "scan labels a codex session by its cwd project, not the rollout date dir" do
@@ -307,8 +405,58 @@ defmodule Faber.CLITest do
       assert out =~ "1 cluster(s): 1 merged, 0 kept, 0 kept-originals, 0 errors."
     end
 
-    test "consolidate reports when there is nothing to consolidate" do
-      # An empty transcript base yields no sessions → no proposals → actionable failure (1).
+    # The first-run failure this fixes: faber pointed at an empty or wrong root answered "no session
+    # at rank 1", which sends a new user to fix a rank that was never the problem.
+    test "propose on an empty corpus blames the corpus, not the rank" do
+      empty =
+        Path.join(System.tmp_dir!(), "faber-cli-prop-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(empty)
+      on_exit(fn -> File.rm_rf(empty) end)
+
+      err =
+        capture_io(:stderr, fn ->
+          capture_io(fn -> assert CLI.run(:propose, base: empty, min_messages: 0) == 1 end)
+        end)
+
+      assert err =~ "no sessions found under #{empty}"
+      assert err =~ "--min-messages"
+      refute err =~ "rank"
+    end
+
+    test "refine on an empty corpus blames the corpus too" do
+      empty =
+        Path.join(System.tmp_dir!(), "faber-cli-ref-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(empty)
+      on_exit(fn -> File.rm_rf(empty) end)
+
+      err =
+        capture_io(:stderr, fn ->
+          capture_io(fn -> assert CLI.run(:refine, base: empty, min_messages: 0) == 1 end)
+        end)
+
+      assert err =~ "no sessions found under #{empty}"
+      refute err =~ "rank"
+    end
+
+    # ...but a rank past the end of a REAL corpus is genuinely about the rank, and says so with the
+    # count that makes it obvious.
+    test "propose past the end of a real corpus still names the rank" do
+      err =
+        capture_io(:stderr, fn ->
+          capture_io(fn -> assert CLI.run(:propose, @fixtures ++ [rank: 99]) == 1 end)
+        end)
+
+      assert err =~ "no session at rank 99"
+      assert err =~ ~r/only \d+ sessions matched/
+      refute err =~ "no sessions found"
+    end
+
+    test "consolidate on an empty corpus blames the corpus, not the proposals" do
+      # An empty transcript base yields no sessions → actionable failure (1). It must NOT say "no
+      # proposals to consolidate": nothing was ever drafted, because nothing was found, and the
+      # user's real problem is the root faber searched.
       empty =
         Path.join(System.tmp_dir!(), "faber-cli-cons-#{System.unique_integer([:positive])}")
 
@@ -322,7 +470,64 @@ defmodule Faber.CLITest do
           end)
         end)
 
+      assert err =~ "no sessions found under #{empty}"
+      assert err =~ "--min-messages"
+      refute err =~ "no proposals to consolidate"
+    end
+
+    test "consolidate reports when there is nothing to consolidate" do
+      # The other way to reach zero candidates, and the one that IS about proposals: sessions were
+      # found, but every one of them failed the stack gate (no --force), so none was ever drafted.
+      err =
+        capture_io(:stderr, fn ->
+          capture_io(fn ->
+            assert CLI.run(:consolidate, base: "test/fixtures/nonelixir", min_messages: 0) == 1
+          end)
+        end)
+
       assert err =~ "no proposals to consolidate"
+    end
+
+    # A pipe has no width to fit, so there is nothing to truncate FOR — and clipping here would
+    # corrupt the output for the only consumer that can use the full label. Truncation exists to
+    # stop a terminal wrapping a row; captured IO (like a pipe or a file) is not a tty.
+    test "piped output keeps full session labels" do
+      out = capture_io(fn -> assert CLI.run(:scan, @fixtures ++ [limit: 5]) == 0 end)
+
+      assert out =~ "fixtures/malformed_session"
+      refute out =~ "…"
+    end
+
+    test "feedback truncates an over-long skill name instead of wrapping the row" do
+      dir = Path.join(System.tmp_dir!(), "faber-cli-fb-#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      long = "investigate-retry-loops-before-escalating-to-a-rewrite"
+      {:ok, path} = Faber.Install.install({long, "---\nname: #{long}\n---\n# D\n"}, dir: dir)
+
+      marker = path |> Path.dirname() |> Path.join(".faber.json")
+      data = marker |> File.read!() |> Jason.decode!()
+
+      File.write!(
+        marker,
+        Jason.encode!(Map.put(data, "installed_at", "2000-01-01T00:00:00Z")) <> "\n"
+      )
+
+      out = capture_io(fn -> assert CLI.run(:feedback, @fixtures ++ [dir: dir]) == 0 end)
+      lines = String.split(out, "\n")
+      header = Enum.find(lines, &(&1 =~ "verdict"))
+      row = Enum.find(lines, &(&1 =~ "investigate-retry-loops-before-"))
+
+      # Clipped to the 32-wide column, and visibly so — a silent clip reads as a real name.
+      assert row =~ "…"
+      refute row =~ long
+
+      # The row still lines up: an untruncated 53-char name would push every column past the header.
+      assert String.length(row) <= String.length(header)
+
+      # The hint below the table is prose, not a column, and names the skill in full — truncating
+      # there would leave the user unable to act on what it tells them to do.
+      assert out =~ "unused: #{long}"
     end
 
     test "feedback reports installed-skill usage across scanned sessions" do

@@ -214,14 +214,35 @@ faber scan --format codex                  # scan OpenAI Codex sessions instead
 faber scan --source ccrider --db ~/.config/ccrider/sessions.db
 ```
 
-Output: a ranked table — friction score, fingerprint, dominant signal, `events`, `turns`, a `t2`
-tier marker, and a `project/session` label.
+Output: a header line (`12 sessions across 3 projects in 84ms`), then a ranked table:
+
+```
+  # friction(raw) fingerprint  signal              events  turns  tools  errs   ctx   opp  t2  session
+  1           9.0 bug-fix      retry_loops             11      3      4     2   62%  0.20   ✓  faber/a1b2c3d4
+```
+
+| Column | Meaning |
+|---|---|
+| `friction(raw)` | raw weighted friction — the metric rows are ranked by (see §7 for the scale) |
+| `fingerprint` | session type, read off the first ten human messages |
+| `signal` | the dominant friction signal that drove the score |
+| `events` / `turns` | see below |
+| `tools` / `errs` | tool calls made, and errors hit |
+| `ctx` | peak context used; `—` means the transcript never reported it (not `0%`) |
+| `opp` | missed-automation score |
+| `t2` | tier-2 eligible |
 
 **`events` vs `turns`.** `events` counts transcript lines (every user + assistant message,
 including the agent's own tool traffic); `turns` counts messages *you* actually typed. They differ
 by 20–70× on real sessions — a 9,000-event session is often fewer than 100 human turns — so a
 single "messages" number badly overstates how involved a person was. Note `--min-messages` and the
 tier-2 gate still count **events**.
+
+**On a terminal** the `session` column is clipped with `…` to fit the width. Piped or redirected
+(`faber scan > out.txt`, `| less`), nothing is clipped — there is no width to fit.
+
+**Nothing matched?** The empty result names the three things that cause it (`--min-messages` too
+strict, wrong `--base` root, wrong `--format` for the agent) — see §21.
 
 | Flag | Meaning | Default |
 |---|---|---|
@@ -259,6 +280,11 @@ What happens:
 3. One structured-output LLM call produces the proposal.
 4. The eval gate scores the rendered `SKILL.md` and prints the composite + verdict.
 5. With `--install`, the skill lands in your skills dir with a provenance marker.
+
+**Progress.** Step 3 is a real `claude -p` call and can take a minute, so a pre-flight line goes to
+**stderr** before it — `Proposing for bug-fix session (raw 9.0, dominant retry_loops) via ClaudeCLI…`
+— naming the session, its score, and the backend about to be spent. Progress and diagnostics always
+go to stderr; **stdout carries only results**, so `faber propose > skill.md` stays clean.
 
 Dev mode has a few extras:
 
@@ -332,6 +358,10 @@ improvements** (`composite > best`, plus an optional `--min-improvement` margin)
 otherwise. The run stops at the target composite (default 0.95), the iteration cap, or a
 patience plateau. Output: the per-iteration keep/reject history, the holdout report (if any),
 and the final best `SKILL.md`.
+
+**Progress.** Each iteration is a real `claude -p` call, so the loop reports each one to stderr as
+it is decided — `iteration 2/5: composite 0.8130 KEEP` — rather than printing nothing until the
+whole run ends. (Library callers get the same via `Faber.Loop.refine/3`'s `:on_progress` option.)
 
 | Flag | Meaning | CLI default |
 |---|---|---|
@@ -467,6 +497,11 @@ same as `faber propose`.) Output is one line per cluster outcome — `MERGED` (w
 eval composite), `kept` (singleton), `kept-originals` (merge scored below the gate), `error`
 (merge LLM call failed) — plus a summary count. Nothing is installed automatically; install
 winners with `faber propose --install` or the library API.
+
+**Progress.** A `--top 10` run is ~10 LLM calls for the drafts plus one per cluster merge, so each
+step reports to stderr as it happens: `drafting 3/10 faber/a1b2c3d4…`, then `merging cluster 2/4 —
+investigate-retry-loops + investigate-failing-commands…`. Sessions that fail the stack gate are
+skipped and **named** (`--force` includes them) rather than silently dropped.
 
 The same pipeline as a library:
 
@@ -722,17 +757,24 @@ from tags (`.github/workflows/release.yml`).
 
 ## 21. Troubleshooting
 
-**`faber scan` shows "No sessions matched."**
-Wrong root or too-strict filter. Try `--min-messages 0`, check `--base` (see §13 for each
-format's default location), and confirm the format matches the agent whose sessions you want.
+The CLI explains these itself now — it maps known failures to plain English rather than dumping an
+Elixir tuple. This section is the longer form (and covers what an unrecognized error, which still
+prints as a raw tuple, might mean).
+
+**`faber scan` shows "No sessions matched." / `propose` says "no sessions found under …".**
+Wrong root or too-strict filter — both commands list the three causes inline. Try `--min-messages 0`,
+check `--base` (see §13 for each format's default location), and confirm the format matches the
+agent whose sessions you want. Note "no sessions found" (an empty corpus) is a *different* problem
+from "no session at rank N — only M sessions matched" (a rank past the end of a real corpus).
 
 **`faber propose` fails with `stack mismatch`.**
 Working as intended: the session's files don't match the adapter's globs. Either switch the
-adapter (§14) or `--force` if you really want an off-stack draft.
+adapter (§14) or `--force` if you really want an off-stack draft. `consolidate` *skips* mismatched
+sessions and names them rather than failing, since it works on a batch.
 
-**`{:claude_cli_unavailable, "claude"}` or propose hangs then times out.**
-The `claude` CLI isn't on PATH (set `config :faber, :claude_bin`) or is hung —
-`:claude_timeout_ms` kills it after 5 min and surfaces `{:claude_cli_timeout, ms}`.
+**"the `claude` CLI isn't on PATH" or propose hangs then times out.**
+The `claude` CLI isn't installed/on PATH (set `config :faber, :claude_bin`) or is hung —
+`:claude_timeout_ms` kills it after 5 min and reports the bound it exceeded.
 
 **`--format opencode` / `--source ccrider` errors mentioning sqlite3.**
 Install the `sqlite3` CLI; for ccrider also check the `--db` path. A corrupt/missing DB

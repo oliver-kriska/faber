@@ -81,10 +81,24 @@ defmodule Faber.Consolidate do
     end
   end
 
+  @typedoc """
+  Progress event passed to the optional `:on_progress` callback.
+
+  `index`/`total` count only the clusters that actually merge (singletons are returned as `:kept`
+  without an LLM call), so `merging cluster 2/4` means what it says.
+  """
+  @type progress ::
+          {:merging, %{index: pos_integer(), total: pos_integer(), members: [Proposal.t()]}}
+
   @doc """
   Cluster, merge every multi-proposal cluster, and gate each merge through `Faber.Eval.gate/2`
   (opts are forwarded — `:threshold` here is the CLUSTER threshold; pass `:eval_threshold` to
   override the gate's bar). Returns one `t:outcome/0` per cluster, in input order.
+
+  `:on_progress` is an optional 1-arity fun receiving a `t:progress/0` event before each merge.
+  It defaults to a no-op, so nothing about this function's behavior changes when it is absent —
+  it exists because each merge is a real LLM call, and a caller (the CLI) needs to be able to say
+  so rather than going silent for a minute per cluster.
   """
   @spec run([Proposal.t()], Adapter.t(), keyword()) :: [outcome()]
   def run(proposals, %Adapter{} = adapter, opts \\ []) do
@@ -99,25 +113,36 @@ defmodule Faber.Consolidate do
         end
       end)
 
-    proposals
-    |> cluster(opts)
-    |> Enum.map(fn
-      [only] ->
-        {:kept, only}
+    on_progress = Keyword.get(opts, :on_progress, fn _event -> :ok end)
+    clusters = cluster(proposals, opts)
+    mergeable = Enum.count(clusters, &match?([_, _ | _], &1))
 
-      members ->
-        case merge(members, adapter, opts) do
-          {:ok, merged} ->
-            case Eval.gate(merged, gate_opts) do
-              {:pass, eval} -> {:merged, merged, eval, members}
-              {:fail, eval} -> {:kept_originals, members, eval}
-              {:error, reason} -> {:error, members, reason}
-            end
+    clusters
+    |> Enum.map_reduce(0, fn
+      [only], merged_so_far ->
+        {{:kept, only}, merged_so_far}
 
-          {:error, reason} ->
-            {:error, members, reason}
-        end
+      members, merged_so_far ->
+        index = merged_so_far + 1
+        on_progress.({:merging, %{index: index, total: mergeable, members: members}})
+
+        {merge_cluster(members, adapter, opts, gate_opts), index}
     end)
+    |> elem(0)
+  end
+
+  defp merge_cluster(members, adapter, opts, gate_opts) do
+    case merge(members, adapter, opts) do
+      {:ok, merged} ->
+        case Eval.gate(merged, gate_opts) do
+          {:pass, eval} -> {:merged, merged, eval, members}
+          {:fail, eval} -> {:kept_originals, members, eval}
+          {:error, reason} -> {:error, members, reason}
+        end
+
+      {:error, reason} ->
+        {:error, members, reason}
+    end
   end
 
   # ── similarity ──────────────────────────────────────────────────────────────

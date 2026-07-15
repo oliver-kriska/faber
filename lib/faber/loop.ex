@@ -77,6 +77,9 @@ defmodule Faber.Loop do
               propose_fn: nil,
               eval_fn: nil,
               checks_fn: nil,
+              # Optional 1-arity fun called with each journal entry as it happens. A side channel
+              # for callers that must not go silent (the CLI) — never read by the loop itself.
+              on_progress: nil,
               history: []
   end
 
@@ -131,9 +134,12 @@ defmodule Faber.Loop do
       min_improvement: Keyword.get(opts, :min_improvement, 0.0),
       propose_fn: Keyword.fetch!(opts, :propose_fn),
       eval_fn: eval_fn,
-      checks_fn: Keyword.get(opts, :checks_fn, &default_checks/1)
+      checks_fn: Keyword.get(opts, :checks_fn, &default_checks/1),
+      on_progress: Keyword.get(opts, :on_progress, &noop_progress/1)
     }
   end
+
+  defp noop_progress(_entry), do: :ok
 
   # Score the seed when no :composite was supplied. An arity-2 eval_fn (proposal-aware) gets a
   # synthetic candidate map built from the seed opts, mirroring what propose_fn will emit.
@@ -233,7 +239,7 @@ defmodule Faber.Loop do
     case commit_best(state, composite) do
       :ok ->
         entry = entry(state, iteration, composite, true, desc, nil)
-        log(state, entry)
+        record(state, entry)
 
         %{
           state
@@ -262,7 +268,7 @@ defmodule Faber.Loop do
   defp reject(state, iteration, composite, desc, reason) do
     restore(state)
     entry = entry(state, iteration, composite, false, desc, reason)
-    log(state, entry)
+    record(state, entry)
 
     %{
       state
@@ -289,6 +295,15 @@ defmodule Faber.Loop do
   end
 
   defp restore(_state), do: :ok
+
+  # The two side channels an iteration writes to, neither of which the loop reads back: the journal
+  # (a file, opt-in via :journal_path) and the progress callback (opt-in via :on_progress). Kept
+  # together so a new iteration outcome can't be journaled but not reported, or vice versa.
+  defp record(%State{} = state, entry) do
+    log(state, entry)
+    state.on_progress.(entry)
+    :ok
+  end
 
   defp log(%State{journal_path: nil}, _entry), do: :ok
   defp log(%State{journal_path: path}, entry), do: Journal.append(path, entry)
@@ -356,6 +371,14 @@ defmodule Faber.Loop do
   `{:error, :insufficient_fixtures_for_holdout}`) splits the seed's fixtures: the loop optimizes
   against the train half only, and the returned state carries `holdout` — the final best scored
   on the never-optimized validation half (see the moduledoc).
+
+  `:on_progress` is an optional 1-arity fun called with each iteration's journal entry (`:iteration`,
+  `:new_composite`, `:kept`, `:description`, `:reason`) the moment it is decided, rather than only in
+  the `%State{}` returned at the end. It defaults to a no-op and the loop never reads it back, so
+  behavior is identical when it is absent — it exists because a default 5-iteration CLI refine is
+  five `claude -p` round-trips, and printing nothing until the last one is indistinguishable from a
+  hang. The entry carries no `max_iterations`; a caller that wants `2/5` already knows the bound it
+  passed in.
   """
   @spec refine(Scan.Result.t(), Adapter.t(), keyword()) :: State.t() | {:error, term()}
   def refine(%Scan.Result{} = result, %Adapter{} = adapter, opts \\ []) do
