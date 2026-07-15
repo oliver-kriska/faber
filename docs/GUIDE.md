@@ -648,6 +648,7 @@ is a valid setup.
 | `:web_allow_propose` | `true` | dashboard Propose button |
 | `PORT` (env, release) | `4710` | serve port (`faber serve --port` overrides) |
 | `FABER_HOME` (env, release) | `~/.faber` | where the release keeps its secret |
+| `FABER_LOG_LEVEL` (env, release) | `info` | the release ships quiet (no per-request/per-event framework logs); set `debug` to get them back |
 
 ---
 

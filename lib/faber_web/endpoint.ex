@@ -22,7 +22,14 @@ defmodule FaberWeb.Endpoint do
   )
 
   plug(Plug.RequestId)
-  plug(Plug.Telemetry, event_prefix: [:phoenix, :endpoint])
+
+  # `log: false` in prod (see config/prod.exs): `faber serve` logs to the user's terminal, where
+  # Plug.Telemetry's "GET / … Sent 200 in 41ms" pair is aggregator-shaped noise rather than
+  # anything a local CLI user asked for. Dev keeps it at :info.
+  plug(Plug.Telemetry,
+    event_prefix: [:phoenix, :endpoint],
+    log: Application.compile_env(:faber, :request_logging, :info)
+  )
 
   plug(Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
