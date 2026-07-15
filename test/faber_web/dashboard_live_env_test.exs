@@ -69,6 +69,8 @@ defmodule FaberWeb.DashboardLiveEnvTest do
     render_async(view, @async_timeout)
 
     # The scan still uses the default fixture sessions, so i=1 is a valid row; only the LLM fails.
+    # First select the session to open the detail pane where the error will render.
+    render_click(view, "select", %{"i" => "1"})
     render_click(view, "propose", %{"i" => "1"})
     html = render_async(view, @async_timeout)
 

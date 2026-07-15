@@ -118,6 +118,41 @@ defmodule Faber.InstallTest do
     end
   end
 
+  describe "provenance/1" do
+    # THE marker reader — the dashboard reads `"source_session"` off this to show a session as
+    # already-installed after a browser refresh, and `installed_at/1` reads its timestamp off it.
+    @tag :tmp_dir
+    test "returns the decoded marker install/2 wrote", %{tmp_dir: dir} do
+      p = %Proposal{
+        name: "from-session",
+        description: "d",
+        rationale: "r",
+        iron_laws: ["a", "b", "c"],
+        adapter: "faber-elixir",
+        source: %{session_id: "sess-abc", fingerprint: "bug-fix"}
+      }
+
+      {:ok, path} = Install.install(p, dir: dir)
+      data = Install.provenance(path)
+
+      assert data["installed_by"] == "faber"
+      assert data["source_session"] == "sess-abc"
+      assert data["adapter"] == "faber-elixir"
+    end
+
+    @tag :tmp_dir
+    test "empty map for a skill with no marker (the user's own) or unreadable JSON", %{
+      tmp_dir: dir
+    } do
+      write_unmanaged_skill(dir, "users-own", "Theirs.")
+      assert Install.provenance(Path.join([dir, "users-own", "SKILL.md"])) == %{}
+
+      {:ok, path} = Install.install({"corrupt", "---\nname: corrupt\n---\n"}, dir: dir)
+      path |> Path.dirname() |> Path.join(".faber.json") |> File.write!("{not json")
+      assert Install.provenance(path) == %{}
+    end
+  end
+
   describe "installed_at/1" do
     # THE marker-timestamp reader — Faber.Feedback delegates here, so this pins the write→read
     # round-trip that used to be two independently-hardcoded copies of the marker convention.

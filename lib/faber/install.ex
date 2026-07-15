@@ -170,20 +170,34 @@ defmodule Faber.Install do
   end
 
   @doc """
-  When Faber installed the skill at `skill_path` (its `SKILL.md` path), read from the `#{@marker}`
-  provenance marker beside it — `nil` for a missing or older-shape marker ("unknown install
-  time", which `Faber.Feedback` treats as "count every session").
+  The decoded provenance marker (`#{@marker}`) beside the `SKILL.md` at `skill_path`, or `%{}` when
+  it is absent or unreadable.
 
-  This is THE reader for the marker's timestamp: the marker filename and its
-  dirname-of-`SKILL.md` location are private to this module, so callers must go through here
-  rather than restating the convention.
+  This is THE reader for the marker: its filename and its dirname-of-`SKILL.md` location are
+  private to this module, so callers go through here (e.g. `installed_at/1` reads its timestamp off
+  this, and the dashboard reads `"source_session"` to show a session as already-installed) rather
+  than restating the convention.
   """
-  @spec installed_at(Path.t()) :: DateTime.t() | nil
-  def installed_at(skill_path) do
+  @spec provenance(Path.t()) :: map()
+  def provenance(skill_path) do
     marker = skill_path |> Path.dirname() |> Path.join(@marker)
 
     with {:ok, body} <- File.read(marker),
-         {:ok, %{"installed_at" => iso}} when is_binary(iso) <- Jason.decode(body),
+         {:ok, map} when is_map(map) <- Jason.decode(body) do
+      map
+    else
+      _ -> %{}
+    end
+  end
+
+  @doc """
+  When Faber installed the skill at `skill_path` (its `SKILL.md` path), read from the `#{@marker}`
+  provenance marker beside it — `nil` for a missing or older-shape marker ("unknown install
+  time", which `Faber.Feedback` treats as "count every session").
+  """
+  @spec installed_at(Path.t()) :: DateTime.t() | nil
+  def installed_at(skill_path) do
+    with iso when is_binary(iso) <- Map.get(provenance(skill_path), "installed_at"),
          {:ok, dt, _offset} <- DateTime.from_iso8601(iso) do
       dt
     else

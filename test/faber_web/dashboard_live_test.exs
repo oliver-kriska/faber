@@ -1,5 +1,6 @@
 defmodule FaberWeb.DashboardLiveTest do
-  # Safe to run async: no shared global state (server: false endpoint, no DB, no put_env).
+  # Safe to run async: no shared global state (server: false endpoint, no DB, no put_env). The
+  # install tests deliberately never drive a *valid* agent, so nothing is written to ~/.claude.
   use ExUnit.Case, async: true
 
   import Phoenix.ConnTest
@@ -18,67 +19,140 @@ defmodule FaberWeb.DashboardLiveTest do
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
 
-  test "the disconnected (first-paint) render shows a loading state, no scan", %{conn: conn} do
+  test "the disconnected (first-paint) render shows a loading state, no table", %{conn: conn} do
     html = conn |> get("/") |> html_response(200)
     assert html =~ "Faber"
     assert html =~ "scanning sessions"
     refute html =~ "<table"
   end
 
-  test "the connected render runs the scan and renders the ranked table", %{conn: conn} do
+  test "the connected render runs the scan and lands on the overview table", %{conn: conn} do
     {:ok, view, html} = live(conn, "/")
 
     # The connected mount shows the loading state first; the scan runs asynchronously.
     assert html =~ "scanning sessions"
 
     html = render_async(view, @async_timeout)
-    assert html =~ "Friction"
+    # Overview mode: the full ranked table, no detail pane open yet.
+    assert html =~ ~s(class="stage")
+    assert html =~ ~s(data-mode="overview")
+    assert html =~ ~s(<table class="ranked")
     assert html =~ "sessions scanned"
-    # The dashboard scans test/fixtures (see config/test.exs), so the project column shows it.
-    assert html =~ "fixtures/"
+    # The dashboard scans test/fixtures (see config/test.exs), so a row shows it (a name span
+    # plus a muted id span).
+    assert html =~ ~s(<span class="proj-name">fixtures</span>)
 
     assert render_click(view, "rescan") =~ "Faber"
   end
 
-  test "Propose shows an inline loading state, then the skill card under its row", %{conn: conn} do
+  test "the facet filters narrow the table and can be cleared", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+    html = render_async(view, @async_timeout)
+
+    # The filter bar renders three custom combo dropdowns (project is searchable).
+    assert html =~ ~s(class="filters")
+    assert html =~ ~s(data-combo-toggle)
+    assert html =~ ~s(phx-value-facet="project")
+    assert html =~ ~s(phx-value-facet="type")
+    assert html =~ ~s(phx-value-facet="signal")
+    assert html =~ ~s(data-combo-search)
+
+    # Picking a project that matches nothing filters the table out → the filtered-empty state, not
+    # the "no scan results" one, and the table is gone.
+    filtered =
+      render_click(view, "pick_filter", %{"facet" => "project", "value" => "does-not-exist"})
+
+    assert filtered =~ "No sessions match these filters"
+    refute filtered =~ ~s(<table class="ranked")
+
+    # An unknown facet is a safe no-op (guard falls through).
+    assert render_click(view, "pick_filter", %{"facet" => "bogus", "value" => "x"}) =~
+             "No sessions match these filters"
+
+    # Clearing restores the full table.
+    assert render_click(view, "clear_filters") =~ ~s(<table class="ranked")
+  end
+
+  test "clicking a row collapses to detail mode and opens that session in the pane", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
     render_async(view, @async_timeout)
 
-    # The click sets the in-flight state synchronously (before the async resolves), so the
-    # inline "Proposing…" row + progress bar render immediately — the loading feedback the
-    # detached-panel version lacked.
+    html = render_click(view, "select", %{"i" => "2"})
+    assert html =~ ~s(data-mode="detail")
+    assert html =~ ~s(class="detail")
+    assert html =~ ~s(id="session-2" class="srow selected")
+    # The pane explains the row in prose (the "explain the row" affordance).
+    assert html =~ "Friction here"
+
+    # Escape returns to the overview table; a malformed/out-of-range select is a safe no-op.
+    assert render_click(view, "nav", %{"key" => "Escape"}) =~ ~s(data-mode="overview")
+    render_click(view, "select", %{"i" => "2"})
+
+    assert render_click(view, "select", %{"i" => "999"}) =~
+             ~s(id="session-2" class="srow selected")
+
+    assert render_click(view, "select", %{"i" => "abc"}) =~
+             ~s(id="session-2" class="srow selected")
+  end
+
+  test "Propose (from the open detail pane) shows a loading state, then the skill card", %{
+    conn: conn
+  } do
+    {:ok, view, _html} = live(conn, "/")
+    render_async(view, @async_timeout)
+    render_click(view, "select", %{"i" => "1"})
+
+    # The click sets the in-flight state synchronously (before the async resolves), so the inline
+    # "Proposing…" line + progress bar render immediately — the loading feedback.
     loading = render_click(view, "propose", %{"i" => "1"})
     assert loading =~ "Proposing"
     assert loading =~ ~s(class="progress")
 
-    # When the async completes (stub LLM + native eval — hermetic), the inline result card
-    # replaces the loading row with the skill, its eval verdict, and a copy affordance.
+    # When the async completes (stub LLM + native eval — hermetic), the result card shows the
+    # skill, its eval verdict, and the act-in-place controls (copy + install menu).
     html = render_async(view, @async_timeout)
     assert html =~ "composite"
     assert html =~ "Iron Laws"
     assert html =~ "Copy skill"
     assert html =~ ~s(class="proposal-card")
+    assert html =~ ~s(data-install-toggle)
+    assert html =~ "Claude Code"
+    assert html =~ "Codex"
   end
 
-  test "Rescan clears a shown proposal so no stale card lingers under a changed row", %{
-    conn: conn
-  } do
+  test "an install with an unknown agent is a safe no-op (writes nothing)", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
     render_async(view, @async_timeout)
+    render_click(view, "select", %{"i" => "1"})
+    render_click(view, "propose", %{"i" => "1"})
+    assert render_async(view, @async_timeout) =~ "proposal-card"
+
+    # An agent Faber has no context file for is rejected by the handler's guard — no crash, no
+    # write, the card is still there. (The happy-path write is covered by Faber.Install's tests,
+    # which sandbox the skills dir; the LiveView test never drives a real agent.)
+    assert render_click(view, "install", %{"agent" => "bogus", "i" => "1"}) =~ "proposal-card"
+  end
+
+  test "Rescan clears a shown proposal and returns to the overview table", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+    render_async(view, @async_timeout)
+    render_click(view, "select", %{"i" => "1"})
 
     render_click(view, "propose", %{"i" => "1"})
     assert render_async(view, @async_timeout) =~ "proposal-card"
 
-    # Rescanning re-ranks the rows, so the inline card must drop immediately.
-    refute render_click(view, "rescan") =~ "proposal-card"
+    # Rescanning re-ranks the rows, so the detail pane (and its card) must drop immediately.
+    html = render_click(view, "rescan")
+    refute html =~ "proposal-card"
+    assert html =~ "Faber"
   end
 
   test "the ranked table renders rows in descending friction order", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
     html = render_async(view, @async_timeout)
 
-    # The friction cell carries `data-friction="<raw>"` — pull that column out and confirm the
-    # view preserves Scan's friction-descending order (decoupled from the cell's styling).
+    # Each row carries `data-friction="<raw>"` — pull that out and confirm the view preserves
+    # Scan's friction-descending order (decoupled from the row's styling).
     frictions =
       ~r/data-friction="([\d.]+)"/
       |> Regex.scan(html, capture: :all_but_first)
@@ -92,9 +166,10 @@ defmodule FaberWeb.DashboardLiveTest do
   test "a malformed or out-of-range propose index is a safe no-op", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
     render_async(view, @async_timeout)
+    render_click(view, "select", %{"i" => "1"})
 
-    # Out-of-range index → Enum.at/2 yields nil; non-integer → Integer.parse fails. Both must
-    # fall through the `else` clause without opening a panel or crashing the LiveView.
+    # Out-of-range index → Enum.at/2 yields nil; non-integer → Integer.parse fails. Both must fall
+    # through the `else` clause without starting a proposal or crashing the LiveView.
     html = render_click(view, "propose", %{"i" => "999"})
     refute html =~ "Proposing a skill"
     refute html =~ "composite"

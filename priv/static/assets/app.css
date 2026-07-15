@@ -1,165 +1,735 @@
+/* Faber — friction dashboard. Graphite-editorial: cool graphite neutrals, hairlines (not
+   shadows), one restrained gold accent reserved for the friction signal + the active row, and a
+   sans/mono split (prose in sans, numbers in mono). See
+   .claude/research/2026-07-15-graphite-editorial-palette.md for the why. */
 :root {
-  --bg: #0f1115;
-  --panel: #171a21;
-  --fg: #e6e9ef;
-  --muted: #8b93a7;
-  --accent: #f0a500;
-  --line: #262b36;
-  --heat: rgba(240, 165, 0, 0.16);
-  --ok: #46c07a;
-  --bad: #e5644e;
+  --bg: #101216; /* cool graphite near-black */
+  --panel: #171a20; /* raised surface: selected row, cards */
+  --panel-2: #1b1f27; /* higher: detail pane, dropdown */
+  --fg: #e7eaf0; /* ink */
+  --fg-dim: #c3c8d2; /* secondary ink */
+  --muted: #9aa2b1; /* labels / meta — AA ~7:1 on --bg */
+  --line: #232833; /* hairline border */
+  --line-soft: #191d25; /* row divider / hover fill */
+  --accent: #d8a34a; /* gold — friction + active only */
+  --accent-ink: #14110b; /* text on an accent fill */
+  --heat: rgba(216, 163, 74, 0.11); /* proportional row friction wash */
+  --ok: #5faa7f;
+  --bad: #d4795f;
+
+  /* 4pt spacing scale — every structural gap resolves here, nothing ad-hoc. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* Semantic z-index scale — no arbitrary 999s. */
+  --z-dropdown: 50;
+  --z-tooltip: 60;
+
+  --shadow: rgba(0, 0, 0, 0.5);
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  --ease: cubic-bezier(0.22, 1, 0.36, 1); /* ease-out-expo-ish; no bounce */
 }
 
-* { box-sizing: border-box; }
+/* Light editorial theme — ink on a faint cool-grey canvas with white cards. A crisp *document*,
+   deliberately NOT the warm cream/beige AI default: warmth lives only in the ochre accent, never
+   in the paper. Toggled via `data-theme="light"` on <html> (app.js persists the choice). */
+[data-theme="light"] {
+  --bg: #f6f7f9; /* faint cool-grey canvas */
+  --panel: #ffffff; /* raised: cards, selected row */
+  --panel-2: #ffffff; /* detail pane */
+  --fg: #181a20; /* ink */
+  --fg-dim: #3c424e;
+  --muted: #5c6470; /* AA ≥5.5:1 on canvas + white */
+  --line: #e3e6ec; /* hairline */
+  --line-soft: #edeff3; /* hover fill / row divider */
+  --accent: #9a6a0d; /* deep ochre — gold stays legible on white */
+  --accent-ink: #ffffff;
+  --heat: rgba(154, 106, 13, 0.1);
+  --ok: #2f8a5b;
+  --bad: #c0472b;
+  --shadow: rgba(24, 28, 38, 0.12);
+}
+
+* {
+  box-sizing: border-box;
+}
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font: 14px/1.55 var(--font-sans);
+  -webkit-font-smoothing: antialiased;
 }
 
-.container { max-width: 1240px; margin: 0 auto; padding: 2rem 1.5rem; }
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: clamp(var(--space-6), 5vw, var(--space-8)) var(--space-6);
+}
 
-h1 { font-size: 1.4rem; margin: 0 0 0.25rem; }
-h1 .accent { color: var(--accent); }
+/* Numbers everywhere read as mono + tabular, so columns of counts align to the digit. */
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
 
+h1 {
+  font-family: var(--font-sans);
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0 0 var(--space-2);
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+h1 .accent {
+  color: var(--accent);
+}
+
+/* Editorial header: the title block and controls sit on a hairline baseline, with generous air
+   before the stage so it reads as a report header, not a toolbar. */
 .masthead {
   display: flex;
-  align-items: flex-start;
+  align-items: flex-end;
   justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: 1.25rem;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+  padding-bottom: var(--space-5);
+  border-bottom: 1px solid var(--line);
+}
+.masthead-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex: 0 0 auto;
 }
 
-.summary { color: var(--muted); margin: 0; }
-.summary strong { color: var(--fg); }
+.summary {
+  color: var(--muted);
+  margin: 0;
+  line-height: 1.6;
+}
+.summary strong {
+  color: var(--fg);
+  font-weight: 600;
+}
 
 button {
   background: var(--accent);
-  color: #1a1300;
+  color: var(--accent-ink);
   border: 0;
-  border-radius: 4px;
-  padding: 0.45rem 0.9rem;
-  font: inherit;
-  font-weight: 600;
+  border-radius: 5px;
+  padding: 0.5rem 0.9rem;
+  font: 600 0.86rem/1 var(--font-sans);
   cursor: pointer;
+  transition: filter 0.14s ease, border-color 0.14s ease, background 0.14s ease;
 }
-button:hover { filter: brightness(1.08); }
-button:disabled { opacity: 0.5; cursor: default; filter: none; }
+button:hover {
+  filter: brightness(1.06);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+  filter: none;
+}
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
-/* Secondary/ghost variants: not every action deserves the loud accent fill. */
+/* Secondary/ghost variants — not every action deserves the accent fill. */
 button.secondary {
   background: transparent;
-  color: var(--fg);
+  color: var(--fg-dim);
   border: 1px solid var(--line);
-  flex: 0 0 auto;
 }
-button.secondary:hover { border-color: var(--muted); filter: none; }
+button.secondary:hover {
+  border-color: var(--muted);
+  color: var(--fg);
+  filter: none;
+}
 
 button.ghost {
   background: transparent;
-  color: var(--accent);
+  color: var(--fg-dim);
   border: 1px solid var(--line);
-  padding: 0.25rem 0.6rem;
+  padding: 0.3rem 0.65rem;
   font-size: 0.78rem;
 }
-button.ghost:hover { border-color: var(--accent); filter: none; }
-button.ghost.copied { color: var(--ok); border-color: var(--ok); }
-
-table { width: 100%; border-collapse: collapse; }
-th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid var(--line); }
-th {
-  color: var(--muted);
-  font-weight: 600;
-  text-transform: uppercase;
-  font-size: 0.72rem;
-  letter-spacing: 0.04em;
+button.ghost:hover {
+  border-color: var(--muted);
+  color: var(--fg);
+  filter: none;
 }
-th.num { text-align: right; }
-tbody tr:hover { background: var(--panel); }
+button.ghost.copied {
+  color: var(--ok);
+  border-color: var(--ok);
+}
 
-/* Header hover tooltips — instant, dark-themed (native `title` is delayed and off-theme).
-   `.tip-end` right-anchors the tooltip so right-edge columns don't clip off-screen. */
-thead th[data-tip] { position: relative; cursor: help; }
-thead th[data-tip]::after {
-  content: attr(data-tip);
-  position: absolute;
-  top: calc(100% + 5px);
-  left: 0;
-  z-index: 20;
-  width: max-content;
-  max-width: 260px;
+.theme-toggle {
+  padding: 0.5rem 0.6rem;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+/* ── Facet filter bar ─────────────────────────────────────────────────────── */
+.filters {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-5);
+}
+.filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.filter-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+/* Custom combo dropdown (trigger + searchable menu). */
+.combo {
+  position: relative;
+}
+.combo-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 160px;
+  max-width: 240px;
   background: var(--panel);
   color: var(--fg);
   border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.42rem 0.6rem;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+.combo-trigger:hover {
+  border-color: var(--muted);
+  filter: none;
+}
+.combo.open .combo-trigger {
+  border-color: var(--muted);
+}
+.combo-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.combo-value.is-placeholder {
+  color: var(--muted);
+}
+.combo-caret {
+  color: var(--muted);
+  font-size: 0.65rem;
+  flex: 0 0 auto;
+}
+
+.combo-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: var(--z-dropdown);
+  min-width: 100%;
+  width: max-content;
+  max-width: 320px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 10px 26px var(--shadow);
+  padding: var(--space-1);
+}
+.combo.open .combo-menu {
+  display: block;
+}
+.combo-search-wrap {
+  padding: var(--space-1) var(--space-1) var(--space-2);
+}
+.combo-search {
+  width: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
   border-radius: 5px;
-  padding: 0.45rem 0.6rem;
-  font: 400 0.72rem/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  padding: 0.35rem 0.5rem;
+  font: inherit;
+  font-size: 0.82rem;
+}
+.combo-search::placeholder {
+  color: var(--muted);
+}
+.combo-search:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+.combo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.combo-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: var(--fg-dim);
+  border: 0;
+  border-radius: 5px;
+  padding: 0.4rem 0.5rem;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.combo-option:hover {
+  background: var(--line-soft);
+  color: var(--fg);
+  filter: none;
+}
+.combo-option.selected {
+  color: var(--accent);
+}
+.combo-option.selected::after {
+  content: " ✓";
+}
+.combo-empty {
+  margin: 0;
+  padding: 0.4rem 0.5rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.filter-clear {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.42rem 0.7rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+.filter-clear:hover {
+  border-color: var(--muted);
+  color: var(--fg);
+  filter: none;
+}
+
+.filter-count {
+  margin-left: auto;
+  align-self: center;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.muted {
+  color: var(--muted);
+}
+.proj-name {
+  color: var(--fg);
+}
+.proj-id {
+  color: var(--muted);
+}
+/* Row-level "installed" marker in the ranked table: a quiet success tag next to the project. */
+.row-skill {
+  margin-left: 0.5ch;
+  padding: 0.02rem 0.32rem;
+  border-radius: 3px;
+  background: rgba(95, 170, 127, 0.16);
+  color: var(--ok);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.empty {
+  color: var(--muted);
+  padding: var(--space-6) 0;
+}
+
+/* ── Stage: overview table ⇄ detail sidebar ───────────────────────────────────
+   One grid, two modes. Overview = the full ranked table at full width. Detail = the same table
+   shrinks (a container query on `.index` drops its metric columns to a sidebar) while the pane
+   reveals on the right. These two rules are the *end states* (and the reduced-motion / narrow
+   fallback). The continuous morph between them is done in JS: CSS can't interpolate `fr` tracks
+   (`1fr 0fr` → `30fr 70fr` stalls), so the `StageMorph` hook FLIP-tweens the resolved pixel
+   tracks + gap frame by frame. The pane's content just fades in over the widening column. */
+.stage {
+  display: grid;
+  grid-template-columns: 1fr 0fr;
+  gap: 0;
+  align-items: start;
+}
+.stage[data-mode="detail"] {
+  grid-template-columns: 30fr 70fr;
+  gap: var(--space-6);
+}
+
+.index {
+  min-width: 0;
+  overflow: hidden;
+  container-type: inline-size;
+}
+
+/* ── The ranked table ─────────────────────────────────────────────────────── */
+table.ranked {
+  width: 100%;
+  border-collapse: collapse;
+}
+.ranked th,
+.ranked td {
+  text-align: left;
+  padding: var(--space-3) var(--space-4);
+}
+.ranked th.num,
+.ranked td.num {
+  text-align: right;
+}
+.ranked th {
+  padding-top: 0;
+  padding-bottom: var(--space-3);
+  color: var(--muted);
+  font: 600 0.7rem/1 var(--font-sans);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.ranked td {
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--fg-dim);
+}
+.ranked .col-rank {
+  color: var(--muted);
+  width: 2.5rem;
+}
+.ranked .col-friction {
+  color: var(--accent);
+  font-weight: 600;
+}
+.ranked .col-num {
+  color: var(--muted);
+  font-size: 0.92em;
+}
+.ranked .ctx.hot {
+  color: var(--bad);
+}
+.ranked .col-tier2 {
+  color: var(--accent);
+  text-align: center;
+}
+.ranked .col-project {
+  max-width: 24ch;
+}
+.proj-line {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The type · signal line — hidden in the wide table (dedicated columns carry it), shown in the
+   narrow sidebar where those columns are gone. */
+.srow-meta {
+  display: none;
+  color: var(--muted);
+  font-size: 0.76rem;
+  margin-top: 2px;
+}
+
+/* Each row carries a proportional friction wash across its full width (`--w` set inline) — the
+   heat bar, now legible because it spans the row. Hover and selection layer a solid tint on top. */
+tbody tr.srow {
+  cursor: pointer;
+  background-image: linear-gradient(90deg, var(--heat) var(--w, 0%), transparent var(--w, 0%));
+  transition: background-color 0.14s ease;
+}
+tbody tr.srow:hover {
+  background-color: var(--line-soft);
+}
+tbody tr.srow.selected {
+  background-color: var(--panel);
+}
+tbody tr.srow.selected .proj-name {
+  color: var(--accent);
+}
+
+/* Container query: when `.index` is squeezed to the sidebar, drop the metric columns and the
+   header, surface the meta line. Motion masks the one-time column pop. */
+@container (max-width: 460px) {
+  .ranked thead,
+  .ranked .col-type,
+  .ranked .col-signal,
+  .ranked .col-missed,
+  .ranked .col-num,
+  .ranked .col-tier2 {
+    display: none;
+  }
+  .ranked .col-project {
+    max-width: none;
+  }
+  .ranked .srow-meta {
+    display: block;
+  }
+  .ranked td {
+    padding-top: var(--space-2);
+    padding-bottom: var(--space-2);
+  }
+}
+
+/* ── Detail pane ──────────────────────────────────────────────────────────── */
+.detail {
+  min-width: 0;
+  overflow: hidden;
+}
+.detail-inner {
+  min-width: 360px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: var(--space-5) var(--space-5) var(--space-6);
+  /* The `StageMorph` hook widens the column continuously; the content just fades in over it (a
+     translate would fight the width reveal). Reduced motion disables this — see the media query. */
+  animation: detailIn 0.34s var(--ease);
+}
+@keyframes detailIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.detail-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+.detail-id {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+.detail-score {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.detail-friction {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.45rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+.detail-friction-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.detail-tags {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin: var(--space-3) 0 var(--space-4);
+}
+.tag {
+  color: var(--fg-dim);
+  background: var(--line-soft);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.76rem;
+}
+
+/* The plain-language read of the row. Editorial: a real sentence, capped for readability. */
+.detail-explain {
+  color: var(--fg-dim);
+  margin: 0 0 var(--space-5);
+  line-height: 1.65;
+  max-width: 62ch;
+  text-wrap: pretty;
+}
+
+/* Metrics as a quiet meta-line: numbers in ink (mono/tabular), labels muted. Present, not shouted. */
+.detail-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.stat {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.stat b {
+  color: var(--fg);
+  font-weight: 600;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.stat b.hot {
+  color: var(--bad);
+}
+
+.detail-missed {
+  margin: var(--space-5) 0;
+}
+.detail-label {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-2);
+}
+
+.detail-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.detail-actions code,
+.detail-actions .muted code {
+  font-family: var(--font-mono);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 0 0.3rem;
+  font-size: 0.85em;
+}
+.propose-btn {
+  padding: 0.55rem 1rem;
+}
+.proposing-block {
+  margin-top: var(--space-4);
+}
+
+/* ── Hover tooltips + affordance ──────────────────────────────────────────────
+   Instant, dark-themed (native `title` is delayed and off-theme). Tooltipped things advertise
+   themselves: headers get a dotted underline, the friction score a circled "?". */
+[data-tip] {
+  position: relative;
+  cursor: help;
+}
+.ranked th[data-tip],
+.stat[data-tip],
+.summary [data-tip] {
+  text-decoration: underline dotted color-mix(in srgb, var(--muted) 55%, transparent);
+  text-underline-offset: 4px;
+}
+.summary [data-tip] {
+  color: var(--fg-dim);
+}
+.q {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.05em;
+  height: 1.05em;
+  margin-left: 0.2em;
+  border: 1px solid var(--muted);
+  border-radius: 50%;
+  font-size: 0.7em;
+  line-height: 1;
+  color: var(--muted);
+  vertical-align: middle;
+}
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: var(--z-tooltip);
+  width: max-content;
+  max-width: 280px;
+  background: var(--panel-2);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.5rem 0.65rem;
+  font: 400 0.74rem/1.5 var(--font-sans);
   text-transform: none;
+  text-decoration: none;
   letter-spacing: normal;
   white-space: normal;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 8px 22px var(--shadow);
   opacity: 0;
-  transform: translateY(-2px);
+  transform: translateY(-3px);
   pointer-events: none;
   transition: opacity 0.12s ease, transform 0.12s ease;
 }
-thead th.tip-end[data-tip]::after { left: auto; right: 0; }
-thead th[data-tip]:hover::after { opacity: 1; transform: translateY(0); }
-@media (prefers-reduced-motion: reduce) {
-  thead th[data-tip]::after { transition: none; }
+/* Right-edge tooltips (detail score, last table columns) anchor to the right so they don't clip. */
+.detail-score[data-tip]::after,
+.ranked th.col-tier2[data-tip]::after {
+  left: auto;
+  right: 0;
 }
-td.num { text-align: right; font-variant-numeric: tabular-nums; }
-.tier2 { color: var(--accent); }
-.muted { color: var(--muted); }
-.empty { color: var(--muted); padding: 2rem 0; }
-
-/* Friction cell: a proportional heat bar behind the tabular number (`--w` set inline). */
-td.friction {
-  position: relative;
-  font-weight: 600;
-  background:
-    linear-gradient(90deg, var(--heat) var(--w, 0%), transparent var(--w, 0%));
+[data-tip]:hover::after {
+  opacity: 1;
+  transform: translateY(0);
 }
-
-td.project { max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-td.ctx.hot { color: var(--bad); }
 
 /* Missed-skill chips — the actionable "which skill would have helped" signal. */
-td.chips { white-space: nowrap; }
 .chip {
   display: inline-block;
+  font-family: var(--font-mono);
   background: var(--line);
-  color: var(--fg);
+  color: var(--fg-dim);
   border-radius: 3px;
-  padding: 0 0.35rem;
+  padding: 0.05rem 0.35rem;
   margin: 0.1rem 0.25rem 0.1rem 0;
   font-size: 0.72rem;
 }
 
-/* Proposal panel. */
-/* Inline expansion rows: the proposing state and the result card render *under* their session
-   row, so the proposal reads as belonging to it (not a detached panel far below the table). */
-tbody tr.active > td { background: var(--panel); }
-tbody tr.active > td.friction {
-  background:
-    linear-gradient(90deg, var(--heat) var(--w, 0%), transparent var(--w, 0%)),
-    var(--panel);
+/* ── Proposal + proposing state ───────────────────────────────────────────── */
+.proposing {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--muted);
+  padding-top: var(--space-3);
 }
-tr.expand > td {
-  background: var(--panel);
-  padding: 0 1rem 1rem;
-  border-bottom: 2px solid var(--line);
+.proposing strong {
+  color: var(--fg);
 }
-
-.proposing { display: flex; align-items: center; gap: 0.6rem; color: var(--muted); padding-top: 0.9rem; }
-.proposing strong { color: var(--fg); }
 
 /* Indeterminate progress bar while the LLM runs. */
 .progress {
   height: 3px;
-  margin-top: 0.7rem;
+  margin-top: var(--space-2);
   background: var(--line);
   border-radius: 2px;
   overflow: hidden;
@@ -173,41 +743,126 @@ tr.expand > td {
   animation: indet 1.1s ease-in-out infinite;
 }
 @keyframes indet {
-  0% { margin-left: -35%; }
-  100% { margin-left: 100%; }
+  0% {
+    margin-left: -35%;
+  }
+  100% {
+    margin-left: 100%;
+  }
 }
 
-.proposal-card { padding-top: 0.9rem; }
+.proposal-card {
+  padding-top: var(--space-4);
+}
 .proposal-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: var(--space-4);
   flex-wrap: wrap;
-  margin-bottom: 0.6rem;
+  margin-bottom: var(--space-3);
 }
-.proposal-meta { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
-.proposal-name { font-weight: 700; color: var(--fg); }
-.proposal-error { color: var(--bad); padding: 0.9rem 0 0.2rem; }
-.composite { color: var(--muted); font-size: 0.85rem; }
+.proposal-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.proposal-name {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--fg);
+}
+.proposal-buttons {
+  display: flex;
+  gap: var(--space-2);
+}
+.proposal-error {
+  color: var(--bad);
+  padding: var(--space-3) 0 0.2rem;
+}
+.composite {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.install-result {
+  color: var(--ok);
+  font-size: 0.82rem;
+  margin: 0 0 var(--space-3);
+  word-break: break-word;
+}
 
 .badge {
   display: inline-block;
   border-radius: 3px;
-  padding: 0.05rem 0.45rem;
+  padding: 0.08rem 0.45rem;
   font-size: 0.72rem;
   font-weight: 700;
   letter-spacing: 0.03em;
   vertical-align: middle;
 }
-.badge.pass { background: rgba(70, 192, 122, 0.16); color: var(--ok); }
-.badge.fail { background: rgba(229, 100, 78, 0.16); color: var(--bad); }
+.badge.pass {
+  background: rgba(95, 170, 127, 0.16);
+  color: var(--ok);
+}
+.badge.fail {
+  background: rgba(212, 121, 95, 0.16);
+  color: var(--bad);
+}
+.badge.tier {
+  background: rgba(216, 163, 74, 0.14);
+  color: var(--accent);
+}
+/* Persistent "a skill from this session is installed" — read back from disk, so it survives a
+   refresh. Quiet success green, distinct from the accent (which is reserved for friction). */
+.badge.installed {
+  background: rgba(95, 170, 127, 0.16);
+  color: var(--ok);
+}
+
+/* ── Install dropdown ─────────────────────────────────────────────────────── */
+.install {
+  position: relative;
+}
+.install-menu {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: var(--z-dropdown);
+  min-width: 160px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: var(--space-1);
+  box-shadow: 0 10px 26px var(--shadow);
+}
+.install.open > .install-menu {
+  display: block;
+}
+.install-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  color: var(--fg-dim);
+  border: 0;
+  border-radius: 4px;
+  padding: 0.45rem 0.6rem;
+  font-weight: 500;
+}
+.install-menu button:hover {
+  background: var(--line-soft);
+  color: var(--fg);
+  filter: none;
+}
 
 .skill {
   margin: 0;
+  font-family: var(--font-mono);
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: 6px;
   padding: 0.9rem 1rem;
   max-height: 60vh;
   overflow: auto;
@@ -217,32 +872,54 @@ tr.expand > td {
   line-height: 1.55;
   cursor: text;
 }
-.skill code { font: inherit; color: inherit; background: none; }
-
-/* Inline spinner for the proposing state. */
-.spinner {
-  display: inline-block;
-  width: 0.8em;
-  height: 0.8em;
-  border: 2px solid var(--line);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 0.7s linear infinite;
-  vertical-align: -0.1em;
+.skill code {
+  font: inherit;
+  color: inherit;
+  background: none;
 }
-@keyframes spin { to { transform: rotate(360deg); } }
 
-/* Flash messages (styled here — previously unstyled). Click to dismiss. */
+/* Flash messages. Click to dismiss. */
 .flash {
   border: 1px solid var(--line);
-  border-radius: 4px;
+  border-radius: 6px;
   padding: 0.6rem 0.9rem;
-  margin-bottom: 1rem;
+  margin-bottom: var(--space-4);
   cursor: pointer;
 }
-.flash-error { border-color: var(--bad); color: var(--bad); background: rgba(229, 100, 78, 0.1); }
-.flash-info { border-color: var(--accent); color: var(--accent); background: rgba(240, 165, 0, 0.1); }
+.flash-error {
+  border-color: var(--bad);
+  color: var(--bad);
+  background: rgba(212, 121, 95, 0.1);
+}
+.flash-info {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(216, 163, 74, 0.1);
+}
+
+/* ── Responsive: stack on narrow viewports ────────────────────────────────── */
+@media (max-width: 720px) {
+  .stage,
+  .stage[data-mode="detail"] {
+    display: block;
+    gap: 0;
+  }
+  .detail-inner {
+    min-width: 0;
+    margin-top: var(--space-5);
+  }
+  .stage[data-mode="detail"] .index {
+    display: none;
+  }
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .spinner { animation: none; }
+  .detail-inner,
+  .progress > span {
+    animation: none;
+  }
+  tbody tr.srow,
+  [data-tip]::after {
+    transition: none;
+  }
 }
