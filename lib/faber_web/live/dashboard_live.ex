@@ -48,7 +48,12 @@ defmodule FaberWeb.DashboardLive do
     do: {:noreply, socket}
 
   def handle_event("rescan", _params, socket) do
-    {:noreply, socket |> assign(:scanned, false) |> start_scan()}
+    # Clear any shown/in-flight proposal: after a rescan the rows change, so an inline card left
+    # under "row 1" would belong to a different (or gone) session.
+    {:noreply,
+     socket
+     |> assign(scanned: false, proposing_i: nil, proposal: nil, proposal_i: nil)
+     |> start_scan()}
   end
 
   # Present (not install): propose + eval a skill for one session, async, rendered inline under

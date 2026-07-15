@@ -60,6 +60,19 @@ defmodule FaberWeb.DashboardLiveTest do
     assert html =~ ~s(class="proposal-card")
   end
 
+  test "Rescan clears a shown proposal so no stale card lingers under a changed row", %{
+    conn: conn
+  } do
+    {:ok, view, _html} = live(conn, "/")
+    render_async(view, @async_timeout)
+
+    render_click(view, "propose", %{"i" => "1"})
+    assert render_async(view, @async_timeout) =~ "proposal-card"
+
+    # Rescanning re-ranks the rows, so the inline card must drop immediately.
+    refute render_click(view, "rescan") =~ "proposal-card"
+  end
+
   test "the ranked table renders rows in descending friction order", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
     html = render_async(view, @async_timeout)
