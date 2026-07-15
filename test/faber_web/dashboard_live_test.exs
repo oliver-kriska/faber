@@ -40,26 +40,34 @@ defmodule FaberWeb.DashboardLiveTest do
     assert render_click(view, "rescan") =~ "Faber"
   end
 
-  test "the Propose action presents a generated skill and its eval verdict", %{conn: conn} do
+  test "Propose shows an inline loading state, then the skill card under its row", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
     render_async(view, @async_timeout)
 
-    # Propose for the top-ranked session (stub LLM + native eval — hermetic).
-    render_click(view, "propose", %{"i" => "1"})
-    html = render_async(view, @async_timeout)
+    # The click sets the in-flight state synchronously (before the async resolves), so the
+    # inline "Proposing…" row + progress bar render immediately — the loading feedback the
+    # detached-panel version lacked.
+    loading = render_click(view, "propose", %{"i" => "1"})
+    assert loading =~ "Proposing"
+    assert loading =~ ~s(class="progress")
 
+    # When the async completes (stub LLM + native eval — hermetic), the inline result card
+    # replaces the loading row with the skill, its eval verdict, and a copy affordance.
+    html = render_async(view, @async_timeout)
     assert html =~ "composite"
     assert html =~ "Iron Laws"
+    assert html =~ "Copy skill"
+    assert html =~ ~s(class="proposal-card")
   end
 
   test "the ranked table renders rows in descending friction order", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
     html = render_async(view, @async_timeout)
 
-    # Each row is `<td muted>#</td><td num>friction</td>` — pull the friction column out and
-    # confirm the view preserves Scan's friction-descending order.
+    # The friction cell carries `data-friction="<raw>"` — pull that column out and confirm the
+    # view preserves Scan's friction-descending order (decoupled from the cell's styling).
     frictions =
-      ~r|<td class="muted">\d+</td>\s*<td class="num">([\d.]+)</td>|
+      ~r/data-friction="([\d.]+)"/
       |> Regex.scan(html, capture: :all_but_first)
       |> List.flatten()
       |> Enum.map(&String.to_float/1)
