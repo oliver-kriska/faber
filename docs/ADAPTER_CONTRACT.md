@@ -266,10 +266,13 @@ If `manifest.yaml` is absent, the engine infers `produces` from a `.<type>.tmpl`
 
 ## 7. `eval/` — domain matchers + trigger fixtures
 
-This is the only subdirectory that may contain **executable code**, and it is **Python**,
-run by the Faber eval sidecar (`python -m faber_eval score`) — never by the Elixir engine.
-It contributes the stack's notion of *correct* on top of generic structural/trigger
-scoring.
+This is the only subdirectory that may contain **executable code**, and it is **Python**. It
+contributes the stack's notion of *correct* on top of generic structural/trigger scoring.
+
+Who runs that Python depends on `mode` (§7.0): **vendored** matchers are run by the Faber
+eval sidecar (`python -m faber_eval score`); an **exec-in-place** adapter's `entrypoints` are
+spawned directly by the Elixir engine (`Faber.Eval.ExecInPlace`), because the referenced
+framework must run with cwd = its own repo, which is the sidecar's whole reason not to own it.
 
 ### 7.0 Reference modes — `eval/eval.yaml`
 
@@ -295,11 +298,27 @@ requirements: ["PyYAML>=6.0.3,<7.0"]            # what the referenced package ne
 - **`mode: vendored`** — matcher modules + trigger fixtures live under `eval/` and are run
   by Faber's own sidecar. Right for adapters authored from scratch. Subject to the validation
   in §8 (every `laws/*.check.ref` matcher must resolve here).
-- **`mode: exec-in-place`** — Faber's sidecar shells out to each `entrypoints` command with
-  cwd / `PYTHONPATH` = `root`, instead of importing vendored files. Right when referencing an
-  existing eval framework that is **rooted at its own repo** (package-relative imports,
-  `__file__`-relative paths). It keeps the upstream at **zero diffs** and avoids maintaining a
-  fork. `root` may be `${source_repo}` (resolved from the manifest) or an explicit path.
+- **`mode: exec-in-place`** — Faber's Elixir engine (`Faber.Eval.ExecInPlace`) spawns the
+  `entrypoints.score` command with cwd / `PYTHONPATH` = `root`, instead of importing vendored
+  files. Right when referencing an existing eval framework that is **rooted at its own repo**
+  (package-relative imports, `__file__`-relative paths). It keeps the upstream at **zero diffs**
+  and avoids maintaining a fork. `root` may be `${source_repo}` (resolved from the manifest's
+  `metadata.source_repo`) or an explicit path.
+
+  **Invocation contract.** The command is split on whitespace and executed **without a shell**
+  (a pack cannot smuggle `;` or globs into a subshell), then receives **one positional argument:
+  an absolute path to the rendered `SKILL.md`**. It must print a single JSON object to stdout and
+  exit 0. Faber writes the skill to `<tmp>/<skill-name>/SKILL.md`, because a scorer conventionally
+  derives the skill's name from the file's **parent directory**. Faber reads `composite`
+  (0..1, already weight-normalized) and `dimensions`; a `weight_total` is not expected. Assertions
+  may use either `check_type`/`evidence` or the legacy `type`/`desc`.
+
+  **Failure is never silent, and never claimed as yours.** If `root` is absent, the command exits
+  non-zero, or the output doesn't decode, Faber logs a warning and falls back to its generic native
+  eval, marking the result `engine: "native:fallback"` (vs `"adapter:exec-in-place"` on success).
+  A fallback PASS certifies generic markdown structure — **not** this adapter's stack-specific bar.
+  Validation of `entrypoints`/`root` happens at `Adapter.load/1`, so a malformed pack is a load
+  error rather than a silent downgrade at score time.
 
 The two content kinds below describe **`vendored`** mode. In `exec-in-place` mode the
 referenced package supplies them and `eval/` need contain only `eval.yaml`.

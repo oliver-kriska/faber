@@ -128,6 +128,7 @@ defmodule Faber.Adapter do
       "file_globs must each compile to a valid glob pattern"
     )
     |> validate_entries(a.playbooks, "playbook", &playbook_problems/1)
+    |> eval_problems(a)
     |> unique_ids(a.laws, "law")
     |> unique_ids(a.signatures, "signature")
     |> unique_ids(a.playbooks, "playbook")
@@ -369,6 +370,73 @@ defmodule Faber.Adapter do
   defp validate_entries(acc, entries, _label, fun) do
     Enum.reduce(entries, acc, fn entry, acc -> fun.(entry) ++ acc end)
   end
+
+  # `eval/eval.yaml` is untrusted declarative input that decides how a skill gets *scored*, so it is
+  # validated here, at load — not deep in `Faber.Eval`. A pack that names a scorer Faber can't run
+  # must say so loudly at load time; silently degrading to the generic native eval at score time
+  # hides the pack author's mistake behind a passing gate (that is finding F3 in miniature).
+  defp eval_problems(acc, %Adapter{eval: nil}), do: acc
+
+  defp eval_problems(acc, %Adapter{eval: eval}) when not is_map(eval),
+    do: ["eval/eval.yaml must be a mapping" | acc]
+
+  defp eval_problems(acc, %Adapter{eval: %{"mode" => "exec-in-place"} = eval} = a) do
+    entrypoints = eval["entrypoints"]
+
+    acc
+    |> check(is_map(entrypoints), "eval.yaml exec-in-place requires an `entrypoints` mapping")
+    |> check(
+      not is_map(entrypoints) or is_binary(entrypoints["score"]),
+      "eval.yaml exec-in-place requires `entrypoints.score` to be a string command"
+    )
+    |> check(
+      not is_map(entrypoints) or
+        Enum.all?(entrypoints, fn {_k, v} -> is_binary(v) and String.trim(v) != "" end),
+      "eval.yaml `entrypoints` values must each be a non-empty string command"
+    )
+    |> check(
+      is_binary(eval["root"]),
+      "eval.yaml exec-in-place requires a `root` (e.g. \"${source_repo}\")"
+    )
+    |> check(
+      not is_binary(eval["root"]) or resolvable_root?(eval["root"], a),
+      "eval.yaml `root` does not resolve: #{inspect(eval["root"])} — `${source_repo}` needs " <>
+        "`metadata.source_repo` in the manifest"
+    )
+  end
+
+  defp eval_problems(acc, %Adapter{eval: %{"mode" => mode}}) when is_binary(mode) do
+    check(
+      acc,
+      mode in ~w(vendored exec-in-place),
+      "eval.yaml `mode` must be vendored or exec-in-place"
+    )
+  end
+
+  # No `mode:` ⇒ vendored (ADAPTER_CONTRACT §7.0), which needs nothing extra here.
+  defp eval_problems(acc, %Adapter{}), do: acc
+
+  @doc """
+  Resolve an `eval.yaml` `root` to a concrete path: `${source_repo}` reads the manifest's
+  `metadata.source_repo`, anything else is taken literally. `nil` when it can't be resolved.
+
+  Existence is deliberately NOT checked here — the referenced repo is environment-bound, and a
+  machine without it must still load the adapter (the eval falls back to native at score time).
+  This only asks whether the pack *names* a resolvable root.
+  """
+  @spec eval_root(t()) :: String.t() | nil
+  def eval_root(%Adapter{eval: eval} = a) when is_map(eval), do: resolve_root(eval["root"], a)
+  def eval_root(%Adapter{}), do: nil
+
+  defp resolve_root("${source_repo}", %Adapter{metadata: %{"source_repo" => repo}})
+       when is_binary(repo) and repo != "",
+       do: Path.expand(repo)
+
+  defp resolve_root("${source_repo}", %Adapter{}), do: nil
+  defp resolve_root(root, _a) when is_binary(root) and root != "", do: Path.expand(root)
+  defp resolve_root(_root, _a), do: nil
+
+  defp resolvable_root?(root, a), do: resolve_root(root, a) != nil
 
   defp unique_ids(acc, entries, label) do
     dupes =

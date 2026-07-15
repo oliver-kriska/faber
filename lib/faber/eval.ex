@@ -16,16 +16,23 @@ defmodule Faber.Eval do
   require Logger
 
   alias Faber.{Adapter, Proposal, Propose, Sidecar}
-  alias Faber.Eval.Native
+  alias Faber.Eval.{ExecInPlace, Native}
 
   # `:trigger` is added dynamically when `trigger: true` (behavioral fold); not all callers see it.
+  @typedoc """
+  `:engine` records **which scorer actually produced this result** — `"adapter:exec-in-place"` when
+  the adapter's referenced scorer ran, `"native:fallback"` when it was attempted and failed, and
+  `"native"` otherwise. A fallback PASS certifies generic markdown structure, not the stack's bar,
+  so downstream must be able to tell them apart rather than infer it from the adapter being set.
+  """
   @type result :: %{
           schema_version: String.t(),
           composite: float(),
           dimensions: map(),
           threshold: float(),
           passed: boolean(),
-          weight_total: float()
+          weight_total: float(),
+          engine: String.t()
         }
 
   # Fallback contract version if a (legacy) scorer result omits it; the engines (Native +
@@ -44,8 +51,10 @@ defmodule Faber.Eval do
     * `:engine`    — `:native` (default, in-process) or `:sidecar` (Python). A `:sidecar`
       module option forces the sidecar engine (tests inject a stub).
     * `:adapter`   — a `%Faber.Adapter{}`; its `eval/eval.yaml` supplies the stack-specific bar.
-      `mode: vendored` dimensions drive native scoring; `mode: exec-in-place` dispatches to the
-      referenced scorer (env-bound) and falls back to the default native eval if unavailable.
+      `mode: vendored` dimensions drive native scoring; `mode: exec-in-place` runs the referenced
+      scorer via `Faber.Eval.ExecInPlace` (env-bound — it needs the referenced repo present) and
+      falls back to the default native eval if that fails, warning and recording
+      `engine: "native:fallback"` so the fallback is never mistaken for the adapter's verdict.
     * `:eval`      — an explicit eval definition (overrides `:adapter`)
     * `:eval_set`  — `:default` (6 structural dimensions, the gate baseline) or `:full` (8 — adds
       `accuracy`; `behavioral` is folded in when `:trigger`). Default `:default`, so adding the new
@@ -112,18 +121,36 @@ defmodule Faber.Eval do
   end
 
   # Exec-in-place: the adapter references an external scorer (e.g. the plugin's lab.eval, run with
-  # cwd = source_repo). That's environment-bound (needs the repo + its deps), so attempt it and fall
-  # back to the default native eval — never block the gate because a referenced repo is absent.
+  # cwd = source_repo). That's environment-bound (needs the repo + its deps), so genuinely attempt
+  # it and fall back to the default native eval — never block the gate because a referenced repo is
+  # absent, and never claim the adapter scored something it didn't.
   defp run_adapter_eval(skill_md, %{"mode" => "exec-in-place"}, opts) do
-    Logger.info(
-      "adapter eval is exec-in-place; using default native scoring (referenced scorer " <>
-        "integration is env-bound — see ADAPTER_CONTRACT §7)."
-    )
+    case adapter_exec(skill_md, opts) do
+      {:ok, result} ->
+        {:ok, Map.put(result, "engine", "adapter:exec-in-place")}
 
-    run_engine(:native, skill_md, nil, opts)
+      {:error, reason} ->
+        Logger.warning(
+          "adapter eval (exec-in-place) failed: #{inspect(reason)} — falling back to the generic " <>
+            "native eval. This score is NOT the adapter's stack-specific verdict."
+        )
+
+        with {:ok, result} <- run_engine(:native, skill_md, nil, opts) do
+          {:ok, Map.put(result, "engine", "native:fallback")}
+        end
+    end
   end
 
   defp run_adapter_eval(skill_md, _other, opts), do: run_engine(engine(opts), skill_md, nil, opts)
+
+  # Only a %Faber.Adapter{} carries the pack that names the scorer; an `:eval` map passed directly
+  # (tests, explicit definitions) has no root to run against.
+  defp adapter_exec(skill_md, opts) do
+    case opts[:adapter] do
+      %Adapter{} = adapter -> ExecInPlace.score(skill_md, adapter, opts)
+      _ -> {:error, :no_adapter}
+    end
+  end
 
   # An injected :sidecar module forces the Python path; otherwise honor :engine / config default.
   defp engine(opts) do
@@ -351,7 +378,8 @@ defmodule Faber.Eval do
       dimensions: result["dimensions"] || %{},
       threshold: threshold,
       passed: composite >= threshold,
-      weight_total: result["weight_total"] || 1.0
+      weight_total: result["weight_total"] || 1.0,
+      engine: result["engine"] || "native"
     }
   end
 

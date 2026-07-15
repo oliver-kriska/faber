@@ -68,13 +68,17 @@ defmodule Faber.MixProject do
   end
 
   # `mix test` skips the `@tag :sidecar` parity tests (they spawn python3); `mix test.full` runs
-  # them so native↔sidecar engine drift is caught. `mix test.live` runs the keyless real-model smoke
+  # them so native↔sidecar engine drift is caught, plus `:plugin_eval` — the adapter's
+  # exec-in-place eval against the real referenced plugin repo, which catches drift in that
+  # scorer's JSON shape that a fake scorer never would. `mix test.live` runs the keyless real-model smoke
   # test (shells out to `claude -p`; spends subscription quota). `mix test.live.api` runs the
   # API-backed (ReqLLM) live test — needs a key (`set -a; . ./.env; set +a` first) and costs money.
   # See CLAUDE.md / README.
   defp aliases do
     [
-      "test.full": ["test --include sidecar --include ccrider --include opencode"],
+      "test.full": [
+        "test --include sidecar --include ccrider --include opencode --include plugin_eval"
+      ],
       "test.live": ["test --include live"],
       "test.live.api": ["test --include live_api"],
       # The Iron Law #22 pre-commit gate, in one command (`make verify` calls this).

@@ -93,7 +93,9 @@ defmodule Faber.EvalTest do
       refute Map.has_key?(r.dimensions, "safety")
     end
 
-    test "an exec-in-place adapter falls back to the default native eval (never blocks the gate)" do
+    test "an unrunnable exec-in-place adapter falls back to native, and says it fell back" do
+      # Hermetic (no python3): the referenced root is absent, so the dispatch fails before it
+      # spawns anything. The real dispatch paths live in eval_exec_in_place_test.exs (`:sidecar`).
       adapter = %Faber.Adapter{
         name: "x",
         version: "0.1.0",
@@ -101,9 +103,17 @@ defmodule Faber.EvalTest do
       }
 
       {:ok, r} = Eval.score(@skill, adapter: adapter)
-      # The full default dimension set is used as the fallback.
+
+      # Never block the gate on an absent env...
       assert Map.has_key?(r.dimensions, "completeness")
       assert Map.has_key?(r.dimensions, "safety")
+      # ...but never let this PASS read as the adapter's stack-specific verdict either (F3).
+      assert r.engine == "native:fallback"
+    end
+
+    test "a native score reports its engine" do
+      {:ok, r} = Eval.score(@skill, [])
+      assert r.engine == "native"
     end
 
     test "an explicit :eval definition overrides the adapter" do

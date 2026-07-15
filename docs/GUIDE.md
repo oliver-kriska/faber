@@ -208,8 +208,14 @@ faber scan --format codex                  # scan OpenAI Codex sessions instead
 faber scan --source ccrider --db ~/.config/ccrider/sessions.db
 ```
 
-Output: a ranked table — friction score, fingerprint, dominant signal, message count, a `t2`
+Output: a ranked table — friction score, fingerprint, dominant signal, `events`, `turns`, a `t2`
 tier marker, and a `project/session` label.
+
+**`events` vs `turns`.** `events` counts transcript lines (every user + assistant message,
+including the agent's own tool traffic); `turns` counts messages *you* actually typed. They differ
+by 20–70× on real sessions — a 9,000-event session is often fewer than 100 human turns — so a
+single "messages" number badly overstates how involved a person was. Note `--min-messages` and the
+tier-2 gate still count **events**.
 
 | Flag | Meaning | Default |
 |---|---|---|
@@ -262,17 +268,27 @@ mix faber.propose --rank 2 --adapter adapters/faber-python \
 
 ## 7. Step 3 — The eval gate
 
-Every proposal is scored **deterministically, natively in Elixir** — no LLM, no Python — across
-structural dimensions (completeness, conciseness, safety, specificity, triggering, clarity in
-the default set; `eval_set: :full` opts into the extended set with accuracy checks). Each
-dimension runs matcher assertions (frontmatter present, ≥3 Iron Laws, a ≥2-line fenced example,
-description with "what + when", no vague filler, no dangerous live commands, …), and the
-weighted composite must clear the threshold (default **0.75**).
+Every proposal is scored **deterministically** — no LLM — across structural dimensions
+(completeness, conciseness, safety, specificity, triggering, clarity in the default set;
+`eval_set: :full` opts into the extended set with accuracy checks). Each dimension runs matcher
+assertions (frontmatter present, ≥3 Iron Laws, a ≥2-line fenced example, description with
+"what + when", no vague filler, no dangerous live commands, …), and the weighted composite must
+clear the threshold (default **0.75**).
 
 Three things to know:
 
 - **The bar is the adapter's.** A pack can vendor its own dimensions/checks
-  (`eval.mode: vendored`), so "good skill" means good *for this stack* — that's the moat.
+  (`eval.mode: vendored`, scored natively in Elixir — no Python on the hot path), or *reference*
+  an existing eval framework in place (`eval.mode: exec-in-place`), which Faber runs against that
+  framework's own repo. Either way "good skill" means good *for this stack* — that's the moat.
+  The reference `faber-elixir` adapter uses exec-in-place, so with the plugin repo present your
+  skills are judged by its full 8-dimension scorer.
+
+  If a referenced scorer can't run (its repo isn't on this machine, it exits non-zero, its output
+  doesn't decode), Faber **warns and falls back** to the generic native eval rather than blocking
+  the gate — and says so: the result is marked `engine: "native:fallback"` instead of
+  `"adapter:exec-in-place"`. A PASS from the fallback certifies generic markdown structure, not
+  your stack's bar. Check the engine before reading a composite as a stack-specific verdict.
 - **The behavioral dimension is opt-in** (`--trigger` / `trigger: true`): each
   `should_trigger` / `should_not_trigger` fixture is sent to the LLM asking "would this skill
   activate for this request?". The score folds in at weight **0.10** as the continuous mean of

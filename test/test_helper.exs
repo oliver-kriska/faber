@@ -11,5 +11,18 @@
 # `:live_api` calls the real Anthropic API via the ReqLLM backend — it costs money and needs a key,
 # so it's excluded from everything above too. Run it with the env loaded:
 #   set -a; . ./.env; set +a   &&   mix test.live.api   (alias for `--include live_api`)
-ExUnit.configure(exclude: [:sidecar, :ccrider, :opencode, :live, :live_api])
+#
+# `:plugin_eval` runs the faber-elixir adapter's exec-in-place eval against the REAL referenced
+# plugin repo (needs python3 + that repo on disk). It's environment-bound rather than hermetic, so
+# it's excluded from `mix test` and included in `mix test.full` — the fake-scorer tests prove our
+# dispatch logic, this one catches drift in the upstream scorer's JSON shape.
+#
+# `:calibration` asserts friction counts against a real local transcript in ~/.claude (the session
+# the 2026-07-15 audit hand-classified). Machine-local by nature — no CI runner has that file — so
+# it's excluded everywhere and run deliberately:
+#   mix test --include calibration test/faber/detect_calibration_test.exs
+ExUnit.configure(
+  exclude: [:sidecar, :ccrider, :opencode, :plugin_eval, :calibration, :live, :live_api]
+)
+
 ExUnit.start()
