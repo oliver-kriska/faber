@@ -9,6 +9,10 @@ defmodule FaberWeb.DashboardLiveEnvTest do
 
   @endpoint FaberWeb.Endpoint
 
+  # See FaberWeb.DashboardLiveTest — `render_async/1`'s 100ms default is too tight for the real
+  # scan/propose work on a loaded CI runner.
+  @async_timeout 2_000
+
   # An LLM impl that always fails, to drive Faber.Propose down its {:error, _} path.
   defmodule FailingLLM do
     @behaviour Faber.LLM
@@ -32,7 +36,7 @@ defmodule FaberWeb.DashboardLiveEnvTest do
     end)
 
     {:ok, view, _html} = live(conn, "/")
-    html = render_async(view)
+    html = render_async(view, @async_timeout)
 
     assert html =~ "No sessions matched."
     assert html =~ "sessions scanned"
@@ -44,7 +48,7 @@ defmodule FaberWeb.DashboardLiveEnvTest do
     on_exit(fn -> Application.delete_env(:faber, :web_allow_propose) end)
 
     {:ok, view, _html} = live(conn, "/")
-    html = render_async(view)
+    html = render_async(view, @async_timeout)
 
     # UI: no Propose button anywhere in the ranked table.
     refute html =~ "phx-click=\"propose\""
@@ -62,11 +66,11 @@ defmodule FaberWeb.DashboardLiveEnvTest do
     on_exit(fn -> Application.put_env(:faber, :llm, prev) end)
 
     {:ok, view, _html} = live(conn, "/")
-    render_async(view)
+    render_async(view, @async_timeout)
 
     # The scan still uses the default fixture sessions, so i=1 is a valid row; only the LLM fails.
     render_click(view, "propose", %{"i" => "1"})
-    html = render_async(view)
+    html = render_async(view, @async_timeout)
 
     assert html =~ "Proposal failed:"
     # The LiveView process survived the failed async and still re-renders.

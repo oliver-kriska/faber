@@ -7,6 +7,13 @@ defmodule FaberWeb.DashboardLiveTest do
 
   @endpoint FaberWeb.Endpoint
 
+  # `render_async/1` defaults to ExUnit's `assert_receive_timeout` (100ms). The awaited work here
+  # is real — the scan walks the fixture transcripts, and Propose additionally loads the adapter
+  # pack off disk, scores it, and renders. That is ~20ms on a warm dev machine, but a loaded CI
+  # runner with a cold file cache overruns 100ms and fails the test on timing alone. Wait
+  # explicitly instead: still fails fast if the async genuinely hangs.
+  @async_timeout 2_000
+
   setup do
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
@@ -24,7 +31,7 @@ defmodule FaberWeb.DashboardLiveTest do
     # The connected mount shows the loading state first; the scan runs asynchronously.
     assert html =~ "scanning sessions"
 
-    html = render_async(view)
+    html = render_async(view, @async_timeout)
     assert html =~ "Friction"
     assert html =~ "sessions scanned"
     # The dashboard scans test/fixtures (see config/test.exs), so the project column shows it.
@@ -35,11 +42,11 @@ defmodule FaberWeb.DashboardLiveTest do
 
   test "the Propose action presents a generated skill and its eval verdict", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
-    render_async(view)
+    render_async(view, @async_timeout)
 
     # Propose for the top-ranked session (stub LLM + native eval — hermetic).
     render_click(view, "propose", %{"i" => "1"})
-    html = render_async(view)
+    html = render_async(view, @async_timeout)
 
     assert html =~ "composite"
     assert html =~ "Iron Laws"
@@ -47,7 +54,7 @@ defmodule FaberWeb.DashboardLiveTest do
 
   test "the ranked table renders rows in descending friction order", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
-    html = render_async(view)
+    html = render_async(view, @async_timeout)
 
     # Each row is `<td muted>#</td><td num>friction</td>` — pull the friction column out and
     # confirm the view preserves Scan's friction-descending order.
@@ -63,7 +70,7 @@ defmodule FaberWeb.DashboardLiveTest do
 
   test "a malformed or out-of-range propose index is a safe no-op", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
-    render_async(view)
+    render_async(view, @async_timeout)
 
     # Out-of-range index → Enum.at/2 yields nil; non-integer → Integer.parse fails. Both must
     # fall through the `else` clause without opening a panel or crashing the LiveView.
