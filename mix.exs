@@ -143,7 +143,12 @@ defmodule Faber.MixProject do
       # crash on Elixir 1.20's sigil end-position tokens (`String.Chars` not implemented for
       # Tuple), and we pin `~> 1.20`. 1.7.19 backported the fix, so no github pin is needed.
       {:credo, "~> 1.7.19", only: [:dev, :test], runtime: false},
-      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      # Runtime introspection for the dev server (project_eval, get_logs, get_source_location).
+      # `only: :dev` is load-bearing, not hygiene: Tidewave evaluates arbitrary code against the
+      # running node, so it must never exist in the shipped binary. The endpoint plug is guarded
+      # by `Code.ensure_loaded?/1` so prod/test compile without it. Mounted at /tidewave/mcp.
+      {:tidewave, "~> 0.6.1", only: :dev}
     ]
   end
 end

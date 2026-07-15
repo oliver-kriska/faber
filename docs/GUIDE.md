@@ -137,7 +137,7 @@ below exists in both forms:
 | `faber consolidate` | — (library: `Faber.Consolidate.run/3`) |
 | `faber feedback` | — (library: `Faber.Feedback.report/1`) |
 | `faber sync` | — (library: `Faber.Install.sync_pointer/2`) |
-| `faber serve` | `iex -S mix` (dashboard on port 4000) |
+| `faber serve` | `iex -S mix phx.server` (dashboard on port 4010) |
 
 ---
 
@@ -473,7 +473,7 @@ session ids.
 ```sh
 faber serve                     # opens http://localhost:4710 (release) — Ctrl-C to stop
 faber serve --port 5000 --no-open
-iex -S mix                      # dev mode: http://localhost:4000
+iex -S mix phx.server           # dev mode: http://localhost:4010
 ```
 
 The **dashboard** is a LiveView table of ranked friction with a per-row **Propose** button.

@@ -21,6 +21,17 @@ defmodule FaberWeb.Endpoint do
     only: FaberWeb.static_paths()
   )
 
+  # Dev-only runtime introspection (mix.exs pins `only: :dev`), mounted at /tidewave/mcp. The guard
+  # is compile-time: in prod/test the module doesn't exist, so the plug is never inserted and the
+  # shipped binary carries no arbitrary-code-eval surface.
+  #
+  # Position is load-bearing and Tidewave raises if you get it wrong: it must see the raw request
+  # body, so it has to precede Plug.Parsers. Static comes first only so asset requests never enter
+  # it; everything Tidewave doesn't own passes straight through to the plugs below.
+  if Code.ensure_loaded?(Tidewave) do
+    plug(Tidewave)
+  end
+
   plug(Plug.RequestId)
 
   # `log: false` in prod (see config/prod.exs): `faber serve` logs to the user's terminal, where

@@ -116,10 +116,15 @@ mix verify                     # the pre-commit gate: format, compile, credo, di
 mix test                       # hermetic — Elixir suite incl. LiveView, no python3 needed
 mix test.full                  # also runs @tag :sidecar (needs python3) + :ccrider/:opencode (need sqlite3)
 mix faber.scan                 # rank your real ~/.claude sessions by friction
-iex -S mix                     # dashboard at http://localhost:4000 (mix phx.server style boot)
+iex -S mix phx.server          # dashboard at http://localhost:4010 (+ Tidewave MCP at /tidewave/mcp)
 ```
 
 The Python eval sidecar lives in `python/` (stdlib-only; `python3 -m unittest discover -s python/tests`).
+
+**Tidewave** (`only: :dev`) mounts runtime introspection at `/tidewave/mcp` on the dev server —
+`project_eval`, `get_logs`, `get_source_location`, `get_docs`. See
+[`docs/TIDEWAVE.md`](docs/TIDEWAVE.md) for setup and Faber-specific recipes. It never ships: the
+endpoint plug is behind a compile-time guard, so the release has no arbitrary-eval surface.
 
 ### MCP server
 
