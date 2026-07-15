@@ -123,3 +123,63 @@ jobs:
       # --format github emits ::warning file=...,line=... so findings land as inline PR annotations.
       # The job still fails on findings via dialyxir's halt(2) — the annotations are not the gate.
       - run: mix dialyzer --format github
+
+  # ── release: green main → tag → binaries → draft (a human publishes) ────────────────────────
+  # enaia's shape (tag_version → draft_release, publish is the manual gate), with the binary build
+  # spliced in between so the draft a human reviews already carries the artifacts.
+
+  tag_version:
+    name: Tag version
+    if: github.ref == 'refs/heads/main'
+    needs: [check, dialyzer]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      new_tag: ${{ steps.version.outputs.new_tag }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0 # tag history is how the action computes the next version
+
+      - id: version
+        uses: mathieudutour/github-tag-action@a22cf08638b34d5badda920f9daf6e72c477b07b # v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          release_branches: main
+          # No tag for a push that carries no feat:/fix:/BREAKING commit — the action would
+          # otherwise bump a patch for every chore:/docs:/test: push and cut a 3-target Burrito
+          # build each time. `new_tag` is empty on those runs and the two jobs below skip.
+          default_bump: false
+
+  release_binaries:
+    name: Release binaries
+    needs: [tag_version]
+    if: needs.tag_version.outputs.new_tag != ''
+    permissions:
+      contents: write
+    # Called, not triggered by the tag push: a tag created with GITHUB_TOKEN does not start a new
+    # workflow run, so `on: push: tags` in release.yml would never fire for an auto-cut tag.
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.tag_version.outputs.new_tag }}
+
+  draft_release:
+    name: Draft release notes
+    needs: [tag_version, release_binaries]
+    if: needs.tag_version.outputs.new_tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # Runs LAST on purpose: release_binaries' upload writes an empty body, so the notes are
+      # applied afterwards and win. NOTE: release-drafter derives $CHANGES from merged PRs, and
+      # Faber has none — expect an empty "What's Changed" until PRs are used. See
+      # .github/release-drafter.yml.
+      - uses: release-drafter/release-drafter@4d75298e00d9e34c483e5ff8c68d0ea1c1940c1e # v7.5.1
+        with:
+          config-name: release-drafter.yml
+          tag: ${{ needs.tag_version.outputs.new_tag }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

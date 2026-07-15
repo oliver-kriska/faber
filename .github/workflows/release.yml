@@ -1,20 +1,41 @@
 name: release
 
-# Build the single-binary distribution (mac + linux only) on tag push and attach to the GitHub
-# Release. Builds run on standard runners whose macOS/Linux SDKs Zig 0.15.2 supports — notably
-# macos-14, because newer macOS SDKs (≥ 26) outrun Zig 0.15.2's bundled libSystem stubs and break
-# Burrito's wrapper link. See .claude/research/2026-06-19-single-binary-distribution.md.
+# Build the single-binary distribution (mac + linux only) and attach it to a DRAFT GitHub Release.
+# The draft is never published automatically — a human reviews the notes + binaries and hits publish.
+# That mirrors enaia, where publishing a draft is the manual gate (there it triggers the Fly deploy).
+#
+# Builds run on standard runners whose macOS/Linux SDKs Zig 0.15.2 supports — notably macos-14,
+# because newer macOS SDKs (≥ 26) outrun Zig 0.15.2's bundled libSystem stubs and break Burrito's
+# wrapper link. See .claude/research/2026-06-19-single-binary-distribution.md.
 
 on:
+  # Called by ci.yml once tag_version cuts a tag on green main. This is not stylistic: a tag created
+  # by an Action using GITHUB_TOKEN does NOT trigger `on: push: tags` (GitHub suppresses it to avoid
+  # recursive runs), so an auto-cut tag would silently produce a draft with no binaries. Being called
+  # keeps the build in the same run as the tag. (enaia never hits this — its release workflow fires
+  # on `release: [released]`, a human publish, and it ships no assets.)
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag to build and attach binaries to (e.g. v0.2.0)
+        required: true
+        type: string
+  # Hand-cut tags still work: `git tag v0.2.0 && git push --tags`.
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build binaries for (e.g. v0.2.0)
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 jobs:
   build:
+    name: Build ${{ matrix.burrito_target }}
     strategy:
       fail-fast: false
       matrix:
@@ -28,17 +49,21 @@ jobs:
             burrito_target: macos
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          # Build the tagged commit, not whatever main points at: under workflow_call the ref is
+          # main, which may already have moved past the tag.
+          ref: ${{ inputs.tag || github.ref }}
 
       # Erlang + Elixir come from .tool-versions (single source of truth, shared with local mise).
-      - uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           version-file: .tool-versions
           version-type: strict
 
       # Zig isn't a BEAM tool, so setup-beam ignores it; pin it here to match the .tool-versions
       # `zig` line (Burrito 1.5.0 requires exactly 0.15.2 — keep the two in sync).
-      - uses: mlugg/setup-zig@v1
+      - uses: mlugg/setup-zig@53fc45b17fe98b52f92ee5ea08ff48a85a3e7eb7 # v1
         with:
           version: 0.15.2
 
@@ -58,13 +83,33 @@ jobs:
           BURRITO_TARGET: ${{ matrix.burrito_target }}
         run: mix release faber --overwrite
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: faber-${{ matrix.burrito_target }}
           path: burrito_out/*
+          if-no-files-found: error
 
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+  # One attach job, not a softprops call inside the matrix: three concurrent create-or-update calls
+  # against the same tag race to create the release and can duplicate it. Collect first, upload once.
+  attach:
+    name: Attach binaries to draft release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          files: burrito_out/*
+          path: dist
+          merge-multiple: true
+
+      - name: List binaries
+        run: ls -lh dist/
+
+      # draft: true — creates the draft if ci.yml's release-drafter hasn't yet, updates it if it has.
+      # ci.yml deliberately runs release-drafter AFTER this job so the notes are written last and
+      # can't be clobbered by this step's empty body.
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          draft: true
+          files: dist/*
+          fail_on_unmatched_files: true

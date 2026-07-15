@@ -1,0 +1,39 @@
+# Draft release notes — mirrors enaia's .github/release-drafter.yml (same template, same categories).
+#
+# KNOWN GAP, read before trusting these notes: release-drafter builds $CHANGES from merged PULL
+# REQUESTS and their labels. Faber currently commits straight to main and has no PRs at all, so
+# "What's Changed" renders EMPTY. The draft release, its tag and the attached binaries are all still
+# created correctly — only the notes body is bare. It starts populating itself the moment work lands
+# via labelled PRs (e.g. if Dependabot is enabled, `dependencies` is already wired up below).
+#
+# If you'd rather have notes today without adopting PRs, the alternative is a conventional-commit
+# changelog: ci.yml's tag_version step (mathieudutour/github-tag-action) already computes one as its
+# `changelog` output, which could be passed as the release body instead of using this file.
+template: |
+  ## What's Changed
+
+  $CHANGES
+
+  ## Install
+
+  Download the binary for your platform below, `chmod +x` it, and put it on your PATH:
+
+  | Platform | Asset |
+  |---|---|
+  | macOS (Apple Silicon) | `faber_macos_silicon` |
+  | macOS (Intel) | `faber_macos` |
+  | Linux (x86_64) | `faber_linux` |
+
+  Each binary bundles its own ERTS — no Erlang/Elixir install required.
+
+categories:
+  - title: "🚀 Features"
+    label: "feature"
+  - title: "🐛 Bug Fixes"
+    labels:
+      - "fix"
+      - "bugfix"
+      - "bug"
+  - title: ":package: Package Upgrades"
+    labels:
+      - "dependencies"
