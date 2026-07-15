@@ -176,9 +176,17 @@ defmodule Faber.CLI do
     end
   end
 
-  # `--help` wins over any other flag, valid or not: someone asking how a command works should get
-  # the answer, not a complaint about the flag they were unsure of.
-  defp help?(argv), do: Enum.any?(argv, &(&1 in ["--help", "-h", "help"]))
+  # `--help`/`-h` anywhere wins over any other flag, valid or not: someone asking how a command
+  # works should get the answer, not a complaint about the flag they were unsure of.
+  #
+  # A bare `help` only counts as the FIRST token (`faber propose help`, the `git help`-style form).
+  # Scanning every token for it — as this once did — misreads an ordinary option *value*: with
+  # `faber scan --base help`, `help` is the directory you asked to scan, and printing usage instead
+  # is simply wrong. `--help`/`-h` stay position-free because no option here takes them as a value.
+  defp help?([first | _] = argv),
+    do: first == "help" or Enum.any?(argv, &(&1 in ["--help", "-h"]))
+
+  defp help?([]), do: false
 
   @doc """
   Apply a `serve --port` override to the endpoint config BEFORE the endpoint child starts. Called
@@ -246,8 +254,11 @@ defmodule Faber.CLI do
 
   @doc "Run a one-shot command, returning a process exit status (0 ok / 1 error). No `halt`."
   @spec run(atom(), keyword()) :: non_neg_integer()
-  def run(:help, _opts) do
-    IO.puts(usage())
+  def run(:help, opts) do
+    # `parse/1` has carried the subcommand in `{:help, sub}` all along; this used to ignore it and
+    # print the whole manual, so `faber propose --help` buried propose's flags in six other
+    # commands' worth of text.
+    IO.puts(usage(opts[:subcommand]))
     0
   end
 
@@ -804,6 +815,60 @@ defmodule Faber.CLI do
       vsn when is_list(vsn) -> List.to_string(vsn)
       _ -> "dev"
     end
+  end
+
+  # Per-subcommand help is *sliced out of* usage/0 rather than kept as a second copy per command:
+  # duplicated help text drifts from the flags the first time one changes, and `parse_sub/3` is
+  # already the single source of truth for what a subcommand accepts. An unrecognized subcommand
+  # (or a block that can't be found) falls back to the full manual — help must never print nothing.
+  #
+  # This does couple to usage/0's layout, so cli_test.exs ("every subcommand slices a non-empty help
+  # block naming itself") asserts exactly that for every subcommand; reformat the heredoc and the
+  # test says so, instead of `faber scan --help` quietly going blank.
+  defp usage(nil), do: usage()
+
+  defp usage(sub) when is_atom(sub) do
+    case usage_block(sub) do
+      [] ->
+        usage()
+
+      block ->
+        (["faber #{version()} — #{sub}", "", "Usage:"] ++ block ++ usage_footer(block))
+        |> Enum.join("\n")
+        |> Kernel.<>("\n")
+    end
+  end
+
+  # Carry the --source/--format footer only for the subcommands that take them, so `faber scan
+  # --help` still explains what `--source ccrider` means while `faber serve --help` isn't padded
+  # with flags it doesn't accept.
+  defp usage_footer(block) do
+    if Enum.any?(block, &(&1 =~ ~r/--source|--format/)) do
+      usage()
+      |> String.split("\n")
+      |> Enum.drop_while(&(not String.starts_with?(&1, "Sources (--source)")))
+      |> then(&["" | &1])
+    else
+      []
+    end
+  end
+
+  # A block runs from `  faber <sub> …` up to (not including) the next `  faber …` line — that is,
+  # the command's own line plus its indented continuation/annotation lines.
+  defp usage_block(sub) do
+    starts = ~r/^  faber #{Regex.escape(to_string(sub))}\b/
+    next = ~r/^  faber \S/
+
+    usage()
+    |> String.split("\n")
+    |> Enum.drop_while(&(not Regex.match?(starts, &1)))
+    |> case do
+      [] -> []
+      [line | rest] -> [line | Enum.take_while(rest, &(not Regex.match?(next, &1)))]
+    end
+    |> Enum.reverse()
+    |> Enum.drop_while(&(String.trim(&1) == ""))
+    |> Enum.reverse()
   end
 
   defp usage do

@@ -93,6 +93,18 @@ defmodule Faber.CLITest do
       assert CLI.parse(["propose", "--bogus", "--help"]) == {:help, :propose}
     end
 
+    test "a bare `help` asks for help only as the first token" do
+      assert CLI.parse(["propose", "help"]) == {:help, :propose}
+    end
+
+    test "an option VALUE of `help` is a value, not a help request" do
+      # This scanned every token for "help", so a directory or ref legitimately named `help` printed
+      # usage instead of being used. `--help`/`-h` stay position-free; a bare `help` does not.
+      assert CLI.parse(["scan", "--base", "help"]) == {:scan, [base: "help"]}
+      assert CLI.parse(["feedback", "--dir", "help"]) == {:feedback, [dir: "help"]}
+      assert CLI.parse(["scan", "--format", "help"]) == {:scan, [format: "help"]}
+    end
+
     test "a valid flag next to an invalid one still fails — no partial run" do
       assert CLI.parse(["scan", "--limit", "5", "--nope"]) == {:parse_error, :scan, ["--nope"]}
     end
@@ -138,9 +150,44 @@ defmodule Faber.CLITest do
       assert stderr =~ "unrecognized options for 'scan': --a, --b"
     end
 
-    test "help exits 0 and prints usage" do
+    test "help for a subcommand shows that subcommand, not the whole manual" do
+      # This used to assert only `out =~ "faber propose"` — which the FULL usage satisfies too, so
+      # it passed happily while run/2 ignored the subcommand entirely. The absence of the other
+      # commands is the part that discriminates.
       out = capture_io(fn -> assert CLI.run(:help, subcommand: :propose) == 0 end)
+
       assert out =~ "faber propose"
+      assert out =~ "--trigger"
+      refute out =~ "faber sync"
+      refute out =~ "faber serve"
+    end
+
+    test "help for a --source-taking subcommand keeps the sources/formats footer" do
+      out = capture_io(fn -> CLI.run(:help, subcommand: :scan) end)
+      assert out =~ "Sources (--source)"
+
+      # ...and one that takes neither isn't padded with flags it doesn't accept.
+      serve = capture_io(fn -> CLI.run(:help, subcommand: :serve) end)
+      refute serve =~ "Sources (--source)"
+    end
+
+    test "top-level help still lists every subcommand" do
+      out = capture_io(fn -> assert CLI.run(:help, []) == 0 end)
+      for sub <- @subcommands, do: assert(out =~ "faber #{sub}", "top-level help omitted #{sub}")
+    end
+
+    test "every subcommand slices a non-empty help block naming itself" do
+      # usage/1 slices per-subcommand help out of the single usage/0 heredoc instead of keeping a
+      # second copy, which couples it to that text's layout. Reformat the heredoc and this fails
+      # loudly, rather than `faber scan --help` quietly going blank or dumping the whole manual.
+      for sub <- @subcommands do
+        out = capture_io(fn -> CLI.run(:help, subcommand: String.to_existing_atom(sub)) end)
+
+        assert out =~ "faber #{sub}", "#{sub} help did not name itself"
+
+        refute out =~ "local-first improvement engine",
+               "#{sub} help fell back to the full manual — usage/0's layout probably moved"
+      end
     end
   end
 
