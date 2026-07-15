@@ -7,6 +7,13 @@ defmodule Faber.MixProject do
       version: "0.1.0",
       elixir: "~> 1.20",
       start_permanent: Mix.env() == :prod,
+      # Phoenix 1.8 drives code reloading through a Mix listener, and warns (falling back to a
+      # blunter purge) whenever `Phoenix.CodeReloader.reload/1` is called without one registered.
+      # Faber never reloads on requests — dev.exs keeps `code_reloader: false`, since a CLI serving
+      # a dashboard has no use for it — but Tidewave calls reload/1 unconditionally before every
+      # `project_eval` so it evaluates against your latest edits. That's the only caller, and this
+      # is what silences it. Mix-time only: listeners don't exist in a release.
+      listeners: [Phoenix.CodeReloader],
       description: description(),
       aliases: aliases(),
       releases: releases(),
