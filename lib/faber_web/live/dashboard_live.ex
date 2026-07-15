@@ -185,17 +185,40 @@ defmodule FaberWeb.DashboardLive do
       <table :if={@results != []}>
         <thead>
           <tr>
-            <th>#</th>
-            <th class="num">Friction</th>
-            <th>Project</th>
-            <th>Type</th>
-            <th>Signal</th>
-            <th>Missed</th>
-            <th class="num">Msgs</th>
-            <th class="num">Tools</th>
-            <th class="num">Errs</th>
-            <th class="num">Ctx</th>
-            <th>T2</th>
+            <th data-tip="Rank — sessions ordered by friction, highest first.">#</th>
+            <th
+              class="num"
+              data-tip="Total weighted friction: retry loops, user corrections, error/tool ratio, approach changes, context compactions, and interrupts. Higher = rougher session; the bar shows it relative to the top row."
+            >
+              Friction
+            </th>
+            <th data-tip="The session's working directory, with a short session id.">Project</th>
+            <th data-tip="What the work was — feature, bug-fix, refactoring, exploration, maintenance, or review.">
+              Type
+            </th>
+            <th data-tip="The friction signal that contributed the most (e.g. user corrections, retry loops, context compactions).">
+              Signal
+            </th>
+            <th data-tip="Skills that could have helped this session but weren't used — the reason to propose one.">
+              Missed
+            </th>
+            <th class="num" data-tip="Transcript events — every user + assistant line, including the agent's own tool traffic.">
+              Events
+            </th>
+            <th class="num" data-tip="Messages a human actually typed. Far smaller than events: the agent generates most of a transcript itself.">
+              Turns
+            </th>
+            <th class="num" data-tip="Number of tool calls made in the session.">Tools</th>
+            <th class="num tip-end" data-tip="Tool calls that returned an error.">Errs</th>
+            <th class="num tip-end" data-tip="Peak context-window usage reached. Turns red at ≥ 80%.">
+              Ctx
+            </th>
+            <th
+              class="tip-end"
+              data-tip="Tier-2 eligible: the session clears the bar to be worth proposing a skill for."
+            >
+              T2
+            </th>
             <th></th>
           </tr>
         </thead>
@@ -214,6 +237,7 @@ defmodule FaberWeb.DashboardLive do
                 <span :if={r.missed == []} class="muted">—</span>
               </td>
               <td class="num">{r.message_count}</td>
+              <td class="num">{r.human_turns}</td>
               <td class="num">{r.tool_count}</td>
               <td class="num">{r.error_count}</td>
               <td class={"num ctx" <> if(hot_ctx?(r.max_ctx_pct), do: " hot", else: "")}>

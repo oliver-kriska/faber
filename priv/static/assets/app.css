@@ -78,6 +78,38 @@ th {
 }
 th.num { text-align: right; }
 tbody tr:hover { background: var(--panel); }
+
+/* Header hover tooltips — instant, dark-themed (native `title` is delayed and off-theme).
+   `.tip-end` right-anchors the tooltip so right-edge columns don't clip off-screen. */
+thead th[data-tip] { position: relative; cursor: help; }
+thead th[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  z-index: 20;
+  width: max-content;
+  max-width: 260px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0.45rem 0.6rem;
+  font: 400 0.72rem/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: normal;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transform: translateY(-2px);
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+thead th.tip-end[data-tip]::after { left: auto; right: 0; }
+thead th[data-tip]:hover::after { opacity: 1; transform: translateY(0); }
+@media (prefers-reduced-motion: reduce) {
+  thead th[data-tip]::after { transition: none; }
+}
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .tier2 { color: var(--accent); }
 .muted { color: var(--muted); }
