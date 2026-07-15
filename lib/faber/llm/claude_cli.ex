@@ -52,14 +52,11 @@ defmodule Faber.LLM.ClaudeCLI do
       prompt_file = Path.join(dir, "prompt.txt")
       File.write!(prompt_file, prompt)
 
-      sys_file =
-        if is_binary(system) and system != "" do
-          path = Path.join(dir, "system.txt")
-          File.write!(path, system)
-          path
-        else
-          ""
-        end
+      # Unconditional: `build_system/2` always appends `render_schema/1`, whose instruction text is
+      # non-empty for every schema — so there is never an empty system prompt to skip. The shell's
+      # `${FB_SYS_FILE:+…}` guard below stays as a cheap backstop if that ever changes.
+      sys_file = Path.join(dir, "system.txt")
+      File.write!(sys_file, system)
 
       script =
         ~s(exec "$FB_BIN" -p --output-format json) <>

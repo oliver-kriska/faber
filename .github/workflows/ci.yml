@@ -1,9 +1,20 @@
 name: ci
 
-# Test gate for every push/PR: format, warnings-as-errors compile, `mix test.full` (the hermetic
-# suite PLUS the :sidecar/:ccrider/:opencode tags — ubuntu-latest ships python3 and sqlite3, so
-# the native↔python matcher parity test always runs here), and the Python sidecar's own suite.
-# The :live/:live_api tags stay excluded — they need a real `claude` CLI / paid API key.
+# Quality gate for every push/PR — the CI half of `mix verify` (Iron Law #22).
+#
+# `check` runs format/compile/credo plus `mix test.full`: the hermetic suite PLUS the
+# :sidecar/:ccrider/:opencode tags (ubuntu-latest ships python3 and sqlite3, so the native↔python
+# matcher parity test always runs here), and the Python sidecar's own suite. The :live/:live_api
+# tags stay excluded — they need a real `claude` CLI / paid API key.
+#
+# `dialyzer` is a separate job purely because it's the slow one: it runs in parallel with `check`
+# rather than adding PLT-build minutes to the critical path. Both pin MIX_ENV=test so they analyse
+# the same beams `mix verify` does locally.
+#
+# Actions are pinned to commit SHAs, not tags: a tag is mutable, so `@v4` is a standing grant of
+# arbitrary code execution in CI to whoever can move it. The trailing comment is the human-readable
+# version — update both together. (These stay on the v4/v1 lines deliberately; bumping majors is a
+# separate, testable change.)
 
 on:
   push:
@@ -14,35 +25,101 @@ on:
 permissions:
   contents: read
 
+# Don't burn runners on superseded commits.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MIX_ENV: test
+  # Bump to bust every cache below (e.g. after an OTP/Elixir jump or a cache-layout change).
+  CACHE_VERSION: v1
+
 jobs:
-  test:
+  check:
+    name: Format, Credo, Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       # Erlang + Elixir come from .tool-versions (single source of truth, shared with local mise
       # and the release workflow).
-      - uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           version-file: .tool-versions
           version-type: strict
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             deps
             _build
-          key: mix-${{ runner.os }}-${{ hashFiles('.tool-versions', 'mix.lock') }}
-          restore-keys: mix-${{ runner.os }}-
+          key: ${{ env.CACHE_VERSION }}-mix-check-${{ runner.os }}-${{ hashFiles('.tool-versions', 'mix.lock') }}
+          restore-keys: ${{ env.CACHE_VERSION }}-mix-check-${{ runner.os }}-
 
       - run: mix deps.get
 
+      # `mix verify` formats in place for the local loop; CI must fail instead of fixing.
       - run: mix format --check-formatted
 
       - run: mix compile --warnings-as-errors
+
+      - run: mix credo --strict
 
       - run: mix test.full
 
       - name: Python sidecar tests (stdlib-only)
         working-directory: python
         run: python3 -m unittest discover -s tests
+
+  dialyzer:
+    name: Dialyzer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      # Split restore/save (rather than actions/cache) so the PLT survives a RED run. `actions/cache`
+      # only saves in a post-step that is skipped when the job fails, and `mix dialyzer` halts with
+      # status 2 on findings — so a combined build+analyse step would throw away the PLT it just
+      # built on every red push, i.e. exactly while you're iterating on dialyzer findings.
+      #
+      # The PLT lives in `_build/plts` (see mix.exs dialyzer/0), so this one cache covers deps, beams
+      # and the PLT — keyed on exactly what invalidates a PLT: the dep set and the OTP/Elixir version.
+      # A prefix-matched restore is still useful: dialyxir updates a stale PLT incrementally, which is
+      # far cheaper than building one from scratch.
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: mix-cache
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ env.CACHE_VERSION }}-mix-dialyzer-${{ runner.os }}-${{ hashFiles('.tool-versions', 'mix.lock') }}
+          restore-keys: ${{ env.CACHE_VERSION }}-mix-dialyzer-${{ runner.os }}-
+
+      - run: mix deps.get
+
+      - run: mix compile
+
+      # Build the PLT in its own step so the save below is reached before anything can halt.
+      - run: mix dialyzer --plt
+
+      # Saved BEFORE the analysis: a later failing step cannot undo a step that already ran, so the
+      # PLT is banked either way. Skipped on an exact hit — the key already holds this PLT (the save
+      # would only log "cache already exists"). A prefix-only restore reports cache-hit false, which
+      # is what we want: the incrementally-updated PLT gets stored under the new exact key.
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: steps.mix-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ steps.mix-cache.outputs.cache-primary-key }}
+
+      # --format github emits ::warning file=...,line=... so findings land as inline PR annotations.
+      # The job still fails on findings via dialyxir's halt(2) — the annotations are not the gate.
+      - run: mix dialyzer --format github

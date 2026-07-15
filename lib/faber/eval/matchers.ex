@@ -455,6 +455,10 @@ defmodule Faber.Eval.Matchers do
 
   @doc "Dispatch a check by type. Unknown types fail (caught by the scorer)."
   @spec run_check(atom() | String.t(), String.t(), map()) :: {boolean(), String.t()}
+  # A flat name → matcher dispatch table, not branching logic: every clause is a single call and
+  # the count only grows when a new matcher is added. Cyclomatic complexity scores it 21, but the
+  # alternative (a %{} of captures) trades a greppable, arity-checked table for an opaque map.
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   def run_check(type, content, params) do
     case to_string(type) do
       "section_exists" -> section_exists(content, params)

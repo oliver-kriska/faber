@@ -41,11 +41,15 @@ defmodule Faber.Loop do
   train phrasings rather than improving routing.
   """
 
-  alias Faber.{Adapter, Eval, Propose, Proposal, Scan}
+  alias Faber.{Adapter, Eval, Proposal, Propose, Scan}
   alias Faber.Loop.{Git, Journal, Reflect}
 
   defmodule State do
     @moduledoc "Loop state carried across iterations and returned by `Faber.Loop.run/1`."
+
+    @typedoc "Loop state carried across iterations."
+    @type t :: %__MODULE__{}
+
     defstruct skill: nil,
               path: nil,
               dir: nil,
@@ -464,8 +468,9 @@ defmodule Faber.Loop do
     |> Keyword.put_new(:trigger_samples, 3)
   end
 
-  defp attach_holdout(state_or_err, nil, _eval_opts), do: state_or_err
-  defp attach_holdout({:error, _} = err, _validate_seed, _eval_opts), do: err
+  # No `{:error, _}` clause: `run_refinement/4` already returns holdout_split's error itself, so
+  # only a %State{} ever reaches here (dialyzer proves it). `nil` = holdout wasn't requested.
+  defp attach_holdout(state, nil, _eval_opts), do: state
 
   defp attach_holdout(%State{best_proposal: %Proposal{} = best} = state, validate, eval_opts) do
     report =

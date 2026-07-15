@@ -32,7 +32,7 @@ defmodule Faber.Ingest.SourceTest do
       path = Enum.find(handles, &(&1 =~ "sample_session.jsonl"))
       assert Source.Files.label(path) == path
       assert {events, []} = Source.Files.parse(path, [])
-      assert length(events) > 0
+      assert [_ | _] = events
     end
 
     test "Scan.run with the default source matches an explicit source: :files" do

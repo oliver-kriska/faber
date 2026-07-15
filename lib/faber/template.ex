@@ -32,18 +32,19 @@ defmodule Faber.Template do
   defp render_sections(template, context) do
     Regex.replace(@section, template, fn _full, key, inner ->
       case Map.get(context, key) do
-        list when is_list(list) ->
-          Enum.map_join(list, "", fn item ->
-            scope = if is_map(item), do: Map.merge(context, item), else: context
-            render(inner, scope)
-          end)
-
-        true ->
-          render(inner, context)
-
-        _falsy ->
-          ""
+        list when is_list(list) -> render_each(list, inner, context)
+        true -> render(inner, context)
+        _falsy -> ""
       end
+    end)
+  end
+
+  # A list section renders `inner` once per item. A map item is merged over the outer context so
+  # `{{field}}` resolves against the item first, falling back to the enclosing scope.
+  defp render_each(list, inner, context) do
+    Enum.map_join(list, "", fn item ->
+      scope = if is_map(item), do: Map.merge(context, item), else: context
+      render(inner, scope)
     end)
   end
 

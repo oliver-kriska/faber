@@ -30,13 +30,20 @@ The end-user walkthrough (every command, flag, config key, and the intended work
 ## Conventions (HANDOFF §10)
 
 - **Commit per feature / cohesive unit**, conventional-commit style messages.
-- **Verify before every commit** (Iron Law #22): run, in order, and confirm all pass —
+- **Verify before every commit** (Iron Law #22): run **`mix verify`** (or `make verify`) and confirm
+  it passes. It is the whole gate, in order, cheapest-first:
 
   ```sh
-  mix format
-  mix compile --warnings-as-errors
-  mix test          # hermetic — no python3 needed
+  mix verify        # = format · compile --warnings-as-errors · credo --strict · dialyzer · test
   ```
+
+  It formats in place rather than checking (CI re-checks with `--check-formatted`, so an
+  unformatted tree still fails there). Static analysis is configured in
+  [`.credo.exs`](.credo.exs) and `mix.exs`'s `dialyzer/0`; both are expected to stay green, so
+  fix a finding rather than widen the config. Dialyzer's first run builds a PLT into `_build/plts`
+  (a few minutes; cached after). The rare warning that is *correct about deliberate code* goes in
+  [`.dialyzer_ignore.exs`](.dialyzer_ignore.exs) **with a reason** — `list_unused_filters: true`
+  fails the gate if such an entry outlives the code it was written for.
 
   `mix test` excludes the `:sidecar`/`:ccrider`/`:opencode`/`:live`/`:live_api` tags so it needs no
   interpreter, key, or external index. Run **`mix test.full`** (alias for `mix test --include

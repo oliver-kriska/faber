@@ -92,17 +92,39 @@ machine, and no autonomous action happens unless you opt in.
 
 ```sh
 git clone <repo> faber && cd faber
-mix deps.get
-mix test              # sanity: hermetic suite, no python needed
+make deps             # mix deps.get
+make test             # sanity: hermetic suite, no python needed
 mix faber.scan        # first real run against your ~/.claude sessions
 ```
+
+`make help` lists every target; `make verify` is the pre-commit gate.
 
 **Build the single binary**
 
 ```sh
-MIX_ENV=prod mix release faber        # cross-builds via Burrito + Zig
-ls burrito_out/                       # faber_macos, faber_macos_silicon, faber_linux
+make build            # host target only — fastest dev loop
+make build-all        # cross-build every target: faber_macos, faber_macos_silicon, faber_linux
+ls burrito_out/
 ```
+
+Prefer `make build` over a bare `MIX_ENV=prod mix release faber`: on macOS 26 the raw command fails
+with hundreds of `undefined symbol: _abort/_getenv/...`, because Burrito pins Zig 0.15.2 and that
+Zig predates the macOS 26 SDK (whose umbrella `libSystem` no longer advertises a plain `arm64-macos`
+slice). `make build` detects this and points Zig at an SDK that still has the slice, via
+`DEVELOPER_DIR`. It engages only when needed — `make doctor` shows whether it's active.
+
+**Install it on your PATH**
+
+```sh
+make install                      # → ~/.local/bin/faber
+make install PREFIX=/usr/local    # → /usr/local/bin/faber (may need sudo)
+faber scan                        # now works from any directory
+```
+
+`make install` also purges Burrito's extracted runtime. That step is load-bearing during
+development: Burrito keys its self-extraction on the **app version**, not on a payload hash, and
+re-extracts only when that cache is absent — so at a pinned `0.1.0` a rebuilt binary would
+otherwise silently keep running the previously extracted code. `make uninstall` removes both.
 
 The binary embeds the Erlang runtime and ships the `adapters/` packs beside it. Every command
 below exists in both forms:
@@ -654,17 +676,24 @@ These are design invariants, not defaults you can accidentally flip:
 ## 20. Testing & development
 
 ```sh
+mix verify            # THE pre-commit gate: format · compile --warnings-as-errors ·
+                      #   credo --strict · dialyzer · test   (also `make verify`)
 mix test              # hermetic — no python3/sqlite3/network/key; the default gate
 mix test.full         # + :sidecar (python3) + :ccrider/:opencode (sqlite3) — run before
                       #   committing eval-matcher / sidecar / SQLite-ingest changes
 mix test.live         # keyless END-TO-END with a real model via `claude -p` (spends quota)
 mix test.live.api     # ReqLLM against the real API — needs CLAUDE_API in .env, costs money
-mix compile --warnings-as-errors
-mix format
+mix credo --strict    # lint on its own
+mix dialyzer          # type-check on its own (first run builds a PLT into _build/plts)
 ```
 
-CI (`.github/workflows/ci.yml`) runs format check, warnings-as-errors, `mix test.full`, and
-the Python suite on every push/PR. Releases build from tags (`.github/workflows/release.yml`).
+Lint rules live in `.credo.exs`; Dialyzer's config is `dialyzer/0` in `mix.exs`, with justified
+exceptions in `.dialyzer_ignore.exs`. Both are expected to stay green.
+
+CI (`.github/workflows/ci.yml`) runs two parallel jobs on every push/PR: **check** (format check,
+warnings-as-errors, `mix credo --strict`, `mix test.full`, the Python suite) and **dialyzer**
+(split out because it's the slow one; findings appear as inline PR annotations). Releases build
+from tags (`.github/workflows/release.yml`).
 
 ---
 

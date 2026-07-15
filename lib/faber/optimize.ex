@@ -23,7 +23,7 @@ defmodule Faber.Optimize do
   opt in to spend; the `:sidecar` test in `optimize_test.exs` covers the (free) boundary check.
   """
 
-  alias Faber.{Adapter, Loop, Propose, Proposal, Scan, Sidecar}
+  alias Faber.{Adapter, Loop, Proposal, Propose, Scan, Sidecar}
 
   @doc """
   Reflectively optimize the skill for a friction finding — the keyless v1 optimizer.

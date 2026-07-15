@@ -14,7 +14,7 @@ defmodule Faber.CLI do
   `help`, `--version`.
   """
 
-  alias Faber.{Adapter, Consolidate, Eval, Install, Loop, Propose, Proposal, Scan}
+  alias Faber.{Adapter, Consolidate, Eval, Install, Loop, Proposal, Propose, Scan}
 
   @default_port 4710
 

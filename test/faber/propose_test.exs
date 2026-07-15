@@ -1,7 +1,8 @@
 defmodule Faber.ProposeTest do
   use ExUnit.Case, async: true
 
-  alias Faber.{Adapter, Propose, Proposal, Scan}
+  alias Faber.{Adapter, Proposal, Propose, Scan}
+  alias Faber.Eval.Matchers
 
   @reference_adapter Path.expand("../../adapters/faber-elixir", __DIR__)
 
@@ -233,7 +234,7 @@ defmodule Faber.ProposeTest do
       md = Propose.render_skill_md(p)
 
       # usage comment over the concrete example → two non-empty lines in one fence.
-      assert {true, _} = Faber.Eval.Matchers.has_examples(md, %{min_blocks: 1})
+      assert {true, _} = Matchers.has_examples(md, %{min_blocks: 1})
 
       # Independent of the matcher: assert the fence itself directly, so a matcher regex change can't
       # silently "pass" this without the renderer actually guaranteeing the >=2-line minimum.
@@ -245,7 +246,7 @@ defmodule Faber.ProposeTest do
       p = %Proposal{name: "x", description: "d", rationale: "r", iron_laws: ["a", "b", "c"]}
       md = Propose.render_skill_md(p)
 
-      assert {true, _} = Faber.Eval.Matchers.has_examples(md, %{min_blocks: 1})
+      assert {true, _} = Matchers.has_examples(md, %{min_blocks: 1})
       assert fence_nonempty_lines(md) >= 2
     end
 
@@ -265,7 +266,7 @@ defmodule Faber.ProposeTest do
 
       # Exactly one fenced block survives (the value's triple-backticks were collapsed).
       assert length(Regex.scan(~r/```/, md)) == 2
-      assert {true, _} = Faber.Eval.Matchers.has_examples(md, %{min_blocks: 1})
+      assert {true, _} = Matchers.has_examples(md, %{min_blocks: 1})
     end
   end
 
@@ -344,11 +345,11 @@ defmodule Faber.ProposeTest do
       # usage comment + example, so the clarity dimension's has_examples check passes via the
       # adapter path — the gap dogfooding caught: clarity stuck at 0.50 (action_density ok, examples
       # missing).
-      assert {true, _} = Faber.Eval.Matchers.has_examples(md, %{min_blocks: 1})
+      assert {true, _} = Matchers.has_examples(md, %{min_blocks: 1})
 
       # And it holds even when the LLM omits usage/example.
       bare = Propose.render_skill_md(%{p | usage: nil, example: nil}, adapter)
-      assert {true, _} = Faber.Eval.Matchers.has_examples(bare, %{min_blocks: 1})
+      assert {true, _} = Matchers.has_examples(bare, %{min_blocks: 1})
     end
   end
 

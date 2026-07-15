@@ -1,6 +1,7 @@
 defmodule Faber.LoopTest do
   use ExUnit.Case, async: true
 
+  alias Faber.LLM
   alias Faber.Loop
   alias Faber.Loop.{Journal, Server}
 
@@ -102,7 +103,7 @@ defmodule Faber.LoopTest do
         {:ok, %{triggers: String.contains?(prompt, "XYZZY")}}
       else
         gamed =
-          Map.merge(Faber.LLM.Stub.default_proposal(), %{
+          Map.merge(LLM.Stub.default_proposal(), %{
             "should_trigger" => ["XYZZY please do the thing"],
             "should_not_trigger" => ["a plain unrelated question"]
           })
@@ -564,7 +565,10 @@ defmodule Faber.LoopTest do
       # candidates on their own fixtures. Pinning grades them on the seed's instead, so they tie
       # the baseline and all are rejected. A single keep here means the guard is broken.
       assert %Loop.State{} = state
-      assert Enum.count(state.history, & &1.kept) == 0
+      # Pin the iteration count first: every assertion below is vacuous on an empty history, so
+      # without this a loop that never ran would pass the whole test.
+      assert length(state.history) == 3
+      refute Enum.any?(state.history, & &1.kept)
       assert Enum.all?(state.history, &(&1.reason == "no improvement"))
       assert state.best_proposal == seed
     end
@@ -782,7 +786,7 @@ defmodule Faber.LoopTest do
   # A well-formed seed proposal with HONEST fixtures (none contain the GamingLLM's "XYZZY"
   # activation token), content-identical to the Stub/GamingLLM proposal otherwise.
   defp honest_seed do
-    base = Faber.LLM.Stub.default_proposal()
+    base = LLM.Stub.default_proposal()
 
     %Faber.Proposal{
       name: base["name"],

@@ -18,7 +18,7 @@ defmodule Faber.Consolidate do
   then consolidate before installing.
   """
 
-  alias Faber.{Adapter, Eval, LLM, Propose, Proposal}
+  alias Faber.{Adapter, Eval, LLM, Proposal, Propose}
 
   @default_threshold 0.3
 

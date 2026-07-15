@@ -132,20 +132,22 @@ defmodule Faber.Ingest.Source.Ccrider do
         {:error, :sqlite3_timeout}
 
       {out, 0} ->
-        case String.trim(out) do
-          "" ->
-            {:ok, []}
-
-          json ->
-            case Jason.decode(json) do
-              {:ok, rows} when is_list(rows) -> {:ok, rows}
-              {:ok, other} -> {:error, {:unexpected_shape, other}}
-              {:error, reason} -> {:error, {:bad_json, reason}}
-            end
-        end
+        decode_rows(String.trim(out))
 
       {out, code} ->
         {:error, {:sqlite3_exit, code, String.trim(out)}}
+    end
+  end
+
+  # `sqlite3 -json` prints nothing at all for an empty result set, so "" is success-with-no-rows
+  # rather than malformed output.
+  defp decode_rows(""), do: {:ok, []}
+
+  defp decode_rows(json) do
+    case Jason.decode(json) do
+      {:ok, rows} when is_list(rows) -> {:ok, rows}
+      {:ok, other} -> {:error, {:unexpected_shape, other}}
+      {:error, reason} -> {:error, {:bad_json, reason}}
     end
   end
 

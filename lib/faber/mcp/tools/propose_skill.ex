@@ -162,11 +162,11 @@ defmodule Faber.MCP.Tools.ProposeSkill do
   defp rank_by("rate"), do: :rate
   defp rank_by(_), do: :raw
 
+  # `eval.dimensions` is always a map, so there's no non-map fallback clause — a shape change
+  # should fail loudly here rather than silently report an empty dimension set.
   defp dimension_scores(dimensions) when is_map(dimensions) do
     Map.new(dimensions, fn {name, dim} -> {name, round3(dim["score"])} end)
   end
-
-  defp dimension_scores(_), do: %{}
 
   defp round3(n) when is_number(n), do: Float.round(n * 1.0, 3)
   defp round3(_), do: nil

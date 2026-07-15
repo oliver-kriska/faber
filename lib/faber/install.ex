@@ -8,7 +8,7 @@ defmodule Faber.Install do
   pass the eval bar?) is the caller's responsibility; `Faber.Eval.gate/2` is the natural guard.
   """
 
-  alias Faber.{Adapter, Propose, Proposal}
+  alias Faber.{Adapter, Proposal, Propose}
   alias Faber.Install.ManagedBlock
 
   # A skill name becomes a path segment, so it must be a single lowercase-kebab token — same shape
@@ -240,13 +240,18 @@ defmodule Faber.Install do
       file ->
         existing = if File.exists?(file), do: File.read!(file), else: ""
         body = render_pointer_body(list_faber_installed(opts[:dir] || default_dir()))
+        pointer_state(existing, body)
+    end
+  end
 
-        cond do
-          not ManagedBlock.has_block?(existing) -> :absent
-          ManagedBlock.tampered?(existing) -> :modified
-          ManagedBlock.in_sync?(existing, body) -> :in_sync
-          true -> :drift
-        end
+  # Order matters: a tampered block must be reported before an in-sync/drift verdict, so a
+  # hand-edited block is never silently overwritten.
+  defp pointer_state(existing, body) do
+    cond do
+      not ManagedBlock.has_block?(existing) -> :absent
+      ManagedBlock.tampered?(existing) -> :modified
+      ManagedBlock.in_sync?(existing, body) -> :in_sync
+      true -> :drift
     end
   end
 

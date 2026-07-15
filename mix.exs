@@ -10,7 +10,25 @@ defmodule Faber.MixProject do
       description: description(),
       aliases: aliases(),
       releases: releases(),
+      dialyzer: dialyzer(),
       deps: deps()
+    ]
+  end
+
+  # PLTs live in `_build/plts`, NOT the conventional `priv/plts`: Mix copies the app's `priv/`
+  # verbatim into a release (`_build/<env>/lib/faber/priv` is a symlink to it), so the ~9MB of PLTs
+  # parked there would be bundled into the Burrito single binary we ship. `_build` is already
+  # gitignored and CI-cached, and `make clean-all` wipes it — the PLT's desired lifetime.
+  defp dialyzer do
+    [
+      plt_local_path: "_build/plts",
+      plt_core_path: "_build/plts",
+      # `:mix` — the CLI ships `Mix.Tasks.Faber.*`; `:ex_unit` — test/support helpers.
+      plt_add_apps: [:mix, :ex_unit],
+      ignore_warnings: ".dialyzer_ignore.exs",
+      # Fail the gate if an entry in .dialyzer_ignore.exs stops matching, so the exception list
+      # can't quietly outlive the code it was written for.
+      list_unused_filters: true
     ]
   end
 
@@ -51,12 +69,37 @@ defmodule Faber.MixProject do
     [
       "test.full": ["test --include sidecar --include ccrider --include opencode"],
       "test.live": ["test --include live"],
-      "test.live.api": ["test --include live_api"]
+      "test.live.api": ["test --include live_api"],
+      # The Iron Law #22 pre-commit gate, in one command (`make verify` calls this).
+      # `format` writes rather than checks — this is the local dev loop; CI re-checks with
+      # `--check-formatted` so an unformatted tree still fails there. Ordered cheapest-first
+      # so a typo fails in seconds instead of after dialyzer.
+      verify: [
+        "format",
+        "compile --warnings-as-errors",
+        "credo --strict",
+        "dialyzer",
+        "test"
+      ]
     ]
   end
 
   def cli do
-    [preferred_envs: ["test.full": :test, "test.live": :test, "test.live.api": :test]]
+    [
+      preferred_envs: [
+        "test.full": :test,
+        "test.live": :test,
+        "test.live.api": :test,
+        # Keep the gate in one env so `compile` and `test` share a build (and dialyzer analyses
+        # the same beams the tests ran against) instead of compiling the tree twice.
+        verify: :test,
+        # …and pin the same env for the standalone tasks (`mix dialyzer`, `make dialyzer`), which
+        # would otherwise default to :dev and build a SECOND divergent PLT — minutes and ~9MB spent
+        # analysing different beams than the gate does.
+        dialyzer: :test,
+        credo: :test
+      ]
+    ]
   end
 
   defp description do
@@ -95,7 +138,12 @@ defmodule Faber.MixProject do
       # Single-binary packaging (mix release → self-extracting binary with ERTS bundled). Only the
       # release path uses it; runtime code guards on it so dev/test never call into Burrito.
       {:burrito, "~> 1.0"},
-      {:lazy_html, ">= 0.1.0", only: :test}
+      {:lazy_html, ">= 0.1.0", only: :test},
+      # Static analysis gate (`mix verify`). credo >= 1.7.19 is a hard floor: 1.7.18 and older
+      # crash on Elixir 1.20's sigil end-position tokens (`String.Chars` not implemented for
+      # Tuple), and we pin `~> 1.20`. 1.7.19 backported the fix, so no github pin is needed.
+      {:credo, "~> 1.7.19", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end
 end
