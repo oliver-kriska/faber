@@ -7,16 +7,23 @@ defmodule Faber.Scan do
   proposer. This is OTP's home turf: the fan-out runs under `Task.async_stream` with bounded
   concurrency, a per-session timeout, and crash isolation, so one pathological transcript
   can't take down the scan.
+
+  Scoring is memoized by `Faber.Scan.Cache`, which is why re-running a scan over an unchanged
+  corpus is cheap. The cache is transparent — it can only ever return what `score_session/2` would
+  have — so it needs no cooperation from callers; pass `cache: false` to bypass it.
   """
 
   alias Faber.Detect
   alias Faber.Ingest.Source
+  alias Faber.Scan.Cache
+  alias Faber.Scan.Coalesce
 
   defmodule Result do
     @moduledoc "Per-session friction summary produced by `Faber.Scan`."
     @type t :: %__MODULE__{
             path: Path.t(),
             session_id: String.t() | nil,
+            stamp: Source.stamp() | nil,
             friction: float(),
             raw: float(),
             rate: float(),
@@ -40,6 +47,15 @@ defmodule Faber.Scan do
     defstruct [
       :path,
       :session_id,
+      # The source's `c:Faber.Ingest.Source.stamp/1` for this session at scoring time — "which bytes
+      # this score was derived from". `nil` for a source that can't answer cheaply.
+      #
+      # This is the only field that tracks *content* change. Note `fingerprint` does NOT: it is a
+      # six-bucket session-*type* label read off the first ten human messages, so it is effectively
+      # frozen once a session opens and stays `"bug-fix"` whether the session has 6 messages or 800.
+      # Anything asking "has this session moved on since?" (`Faber.Proposal.Store.stale?/2`) must
+      # compare this, not that.
+      :stamp,
       # The session's working directory (from the transcript), used for a clean project label —
       # the on-disk transcript path is an opaque slug (Claude) or a date dir (Codex).
       :cwd,
@@ -92,33 +108,97 @@ defmodule Faber.Scan do
     * `:adapter` — an optional `%Faber.Adapter{}` whose detection vocab (contract §4.1) drives
       fingerprint command-bonuses, opportunity→skill rules, and skill-namespace extraction.
       Absent ⇒ the engine's generic defaults (adapter-free behavior, unchanged).
+    * `:cache` — set `false` to rescore every session from source rather than reusing
+      `Faber.Scan.Cache` (default `true`). Results are identical either way; this only trades
+      time for independence from the cache.
+    * `:coalesce` — set `false` to always run your own scan rather than joining an identical one
+      already in flight (default `true`; see `Faber.Scan.Coalesce`). Only matters under
+      concurrency — sequential calls never coalesce.
   """
   @spec run(keyword()) :: [Result.t()]
   def run(opts \\ []) do
+    # Concurrent callers asking the identical question share one scan (see `Faber.Scan.Coalesce`).
+    # Sequential calls never coalesce — a flight only exists while a leader is mid-scan — so this
+    # cannot affect a scan-modify-scan sequence.
+    if Keyword.get(opts, :coalesce, true) do
+      Coalesce.run(flight_key(opts), fn -> do_run(opts) end)
+    else
+      do_run(opts)
+    end
+  end
+
+  # Opts that change the *result*. `max_concurrency`/`timeout`/`coalesce` are deliberately excluded:
+  # they affect only how the scan is executed, so two callers differing on them are still asking the
+  # same question and should share an answer.
+  @result_opts [
+    :base,
+    :format,
+    :source,
+    :db,
+    :limit,
+    :min_messages,
+    :dedupe,
+    :rank_by,
+    :adapter,
+    :cache
+  ]
+
+  defp flight_key(opts) do
+    opts
+    |> Keyword.take(@result_opts)
+    |> Enum.sort()
+    |> :erlang.phash2()
+  end
+
+  defp do_run(opts) do
     min_messages = Keyword.get(opts, :min_messages, 4)
     max_concurrency = Keyword.get(opts, :max_concurrency, System.schedulers_online())
     timeout = Keyword.get(opts, :timeout, @session_timeout_ms)
     dedupe = Keyword.get(opts, :dedupe, true)
     rank_by = Keyword.get(opts, :rank_by, :raw)
     source = Source.resolve(opts)
+    cache = cache_ctx(opts)
 
-    source.discover(opts)
-    |> maybe_take(opts[:limit])
-    |> Task.async_stream(&score_session(&1, opts),
-      max_concurrency: max_concurrency,
-      timeout: timeout,
-      on_timeout: :kill_task,
-      ordered: false
-    )
-    |> Stream.filter(&match?({:ok, %Result{}}, &1))
-    |> Stream.map(fn {:ok, result} -> result end)
-    |> Stream.filter(&(&1.message_count >= min_messages))
-    |> Enum.to_list()
+    results =
+      source.discover(opts)
+      |> maybe_take(opts[:limit])
+      |> Task.async_stream(&score_maybe_cached(&1, source, cache, opts),
+        max_concurrency: max_concurrency,
+        timeout: timeout,
+        on_timeout: :kill_task,
+        ordered: false
+      )
+      |> Stream.filter(&match?({:ok, %Result{}}, &1))
+      |> Stream.map(fn {:ok, result} -> result end)
+      |> Stream.filter(&(&1.message_count >= min_messages))
+      |> Enum.to_list()
+
+    results
     |> dedupe(dedupe)
     # Rank by raw weighted friction (not the sigmoid score, which saturates to ~1.0 on any long
     # session). `:rank_by :rate` instead surfaces concentrated friction (raw/message). Both keep
     # `score`/`tier2` for the per-session y/n gate.
     |> Enum.sort_by(&sort_key(&1, rank_by), :desc)
+  end
+
+  # `nil` when caching is off/unavailable, otherwise the scorer version every entry is keyed by.
+  # Computed once per scan rather than per session — it hashes ~20 modules' BEAM digests.
+  defp cache_ctx(opts) do
+    if Keyword.get(opts, :cache, true) and Cache.enabled?(), do: Cache.version(opts)
+  end
+
+  defp score_maybe_cached(handle, _source, nil, opts), do: score_session(handle, opts)
+
+  defp score_maybe_cached(handle, source, version, opts) do
+    case Cache.fetch(source, handle, version) do
+      {:ok, result} ->
+        result
+
+      {:miss, stamp} ->
+        result = score_session(handle, opts)
+        Cache.put(source, handle, stamp, version, result)
+        result
+    end
   end
 
   defp sort_key(%Result{} = r, :rate), do: {r.rate, r.message_count}
@@ -160,6 +240,10 @@ defmodule Faber.Scan do
     %Result{
       path: source.label(handle),
       session_id: session_id(events),
+      # Re-stat rather than threading the cache's stamp in: `score_session/2` is public and called
+      # directly, so it has to stand alone. Costs one extra stat per *miss* (~28µs) — nothing next
+      # to the parse it sits beside, and cache hits never reach here at all.
+      stamp: Source.stamp(source, handle),
       cwd: session_cwd(events),
       friction: f.score,
       raw: f.raw,

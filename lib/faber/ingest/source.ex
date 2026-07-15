@@ -13,6 +13,9 @@ defmodule Faber.Ingest.Source do
     * `parse/2` — decode one handle into `{events, errors}` (same shape as `Ingest.parse_file/2`).
     * `label/1` — a path-like identity string for the handle (lands in `Scan.Result.path`).
 
+  …and may optionally own a fourth, `stamp/1`, which is what makes a source **cacheable** — see
+  `Faber.Scan.Cache`. A source that doesn't implement it is simply always rescored.
+
   Resolution mirrors `Faber.Ingest.Format`: `opts[:source]` → `config :faber, :ingest_source` → the
   `:files` default. So the whole engine (dashboard included) can be switched to ccrider with one
   config line, or per-call with `source: :ccrider`, while the default stays self-contained.
@@ -22,9 +25,54 @@ defmodule Faber.Ingest.Source do
 
   @type handle :: term()
 
+  @typedoc """
+  An opaque cache-validity token for one handle (see `c:stamp/1`).
+
+  Compared only for equality, never interpreted, so each source picks whatever cheaply and
+  *conservatively* captures "the bytes behind this handle changed".
+  """
+  @type stamp :: term()
+
   @callback discover(opts :: keyword()) :: [handle()]
   @callback parse(handle(), opts :: keyword()) :: {[Event.t()], [map()]}
   @callback label(handle()) :: String.t()
+
+  @doc """
+  A token that changes whenever `parse/2` would yield different events for this handle.
+
+  This is the seam `Faber.Scan.Cache` keys on. Scoring a session is a pure function of the bytes
+  `parse/2` reads, so an unchanged stamp means an unchanged `Scan.Result` — and the scan can skip
+  the parse entirely. Must be **cheap** (it runs once per handle on every scan, including cache
+  hits) and must never miss a change: over-invalidating only costs time, under-invalidating serves
+  a stale score.
+
+  Returning `nil` means "can't cheaply tell" — the handle is then never cached and always
+  rescored, which is exactly the pre-cache behavior. Optional for that reason: a source that
+  doesn't implement it keeps working, it just doesn't get the speedup.
+  """
+  @callback stamp(handle()) :: stamp() | nil
+
+  @optional_callbacks stamp: 1
+
+  @doc """
+  The `c:stamp/1` for `handle` under `source`, or `nil` if the source doesn't implement it.
+
+  Never raises: a source whose stamp blows up (a vanished file, an unreadable DB) degrades to
+  "uncacheable" rather than taking down a scan over a cache concern.
+  """
+  @spec stamp(module(), handle()) :: stamp() | nil
+  def stamp(source, handle) do
+    # `ensure_loaded?` before `function_exported?`: the latter answers `false` for a module that
+    # merely hasn't been loaded yet (lazy loading in dev), which would silently make every source
+    # look uncacheable.
+    if Code.ensure_loaded?(source) and function_exported?(source, :stamp, 1) do
+      source.stamp(handle)
+    end
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
 
   @aliases %{files: Faber.Ingest.Source.Files, ccrider: Faber.Ingest.Source.Ccrider}
 

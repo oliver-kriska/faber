@@ -19,4 +19,16 @@ defmodule Faber.Ingest.Source.Files do
 
   @impl true
   def label(path), do: path
+
+  @impl true
+  def stamp(path) do
+    # `{mtime, size}`, not a content hash: transcripts run to hundreds of MB and hashing them
+    # would cost exactly what the cache exists to avoid. Both fields are load-bearing — size alone
+    # misses an in-place rewrite that keeps the length, and mtime alone misses an append landing
+    # inside the filesystem's mtime granularity.
+    case File.stat(path, time: :posix) do
+      {:ok, %File.Stat{mtime: mtime, size: size}} -> {mtime, size}
+      {:error, _} -> nil
+    end
+  end
 end

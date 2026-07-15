@@ -88,6 +88,30 @@ defmodule Faber.Ingest.Source.Ccrider do
     Path.join(pp || "ccrider", "#{sid}.jsonl")
   end
 
+  @impl true
+  def stamp(%{id: id, db: db}) do
+    # Deliberately coarse: the whole DB's mtime/size, so *any* ccrider import invalidates *every*
+    # ccrider session's cached score. `discover/1`'s rows carry no per-session version column to
+    # key on, and inventing one would mean a correlated subquery over the whole message table on
+    # every scan — more expensive than the rescan it would save. Over-invalidating is the safe
+    # direction (§`c:Faber.Ingest.Source.stamp/1`): coarse costs time, wrong costs correctness.
+    #
+    # The `-wal` sidecar is not optional. ccrider writes in WAL mode, where a committed write can
+    # land entirely in `<db>-wal` and leave the main file's mtime untouched — stat only the `.db`
+    # and freshly imported sessions would keep serving stale scores indefinitely.
+    case {file_stamp(db), file_stamp(db <> "-wal")} do
+      {nil, _} -> nil
+      {db_stamp, wal_stamp} -> {db_stamp, wal_stamp, id}
+    end
+  end
+
+  defp file_stamp(path) do
+    case path |> Path.expand() |> File.stat(time: :posix) do
+      {:ok, %File.Stat{mtime: mtime, size: size}} -> {mtime, size}
+      {:error, _} -> nil
+    end
+  end
+
   # Rebuild the Claude JSONL line envelope from ccrider's columns. `content` is the *inner* message
   # object; `type`/`is_sidechain`/`uuid`/`session_id` are separate columns. `isMeta` is not stored,
   # so the user-corrections "exclude meta turns" refinement degrades slightly under this source.

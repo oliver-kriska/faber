@@ -17,6 +17,15 @@ defmodule Faber.Application do
       [
         # PubSub first — anything below may broadcast on it.
         {Phoenix.PubSub, name: Faber.PubSub},
+        # Memoized session scores. In the always-on set, not `web_children/1`: a one-shot
+        # `faber scan` re-derives the same corpus the dashboard does, so it wants the same cache.
+        # Owns only an ETS table and a file under ~/.faber/cache — no port, no network.
+        # (`Faber.Proposal.Store` needs no process — it writes through to disk on every put.)
+        Faber.Scan.Cache,
+        # Single-flight for scans. A separate process from the cache on purpose: the cache OWNS the
+        # ETS table, so folding scan-coordination into it would mean a bug in the coordinator wipes
+        # every cached score. This one holds only bookkeeping and is cheap to lose.
+        Faber.Scan.Coalesce,
         # Crash-isolated home for the loop servers' run tasks (async_nolink): a loop that raises
         # must reach its server as a DOWN, not kill it — and OTP shutdown must not sever a link
         # mid git-commit. Must start before Faber.Loop.Supervisor's children can run.
