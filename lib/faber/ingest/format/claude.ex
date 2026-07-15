@@ -18,6 +18,47 @@ defmodule Faber.Ingest.Format.Claude do
 
   @default_base "~/.claude/projects"
 
+  # Blocks Claude Code injects into `role: "user"` turns that no human typed: background-task
+  # completions, messages from other agent sessions, slash-command echoes, command output, and
+  # system reminders. They are stripped from `Event.text` (never from `:raw`) so friction signals
+  # scoped to human turns don't score the harness talking to itself — a `<task-notification>`
+  # reporting "fixed, but the approach was wrong" trips the correction regex exactly like a human
+  # would. See `.claude/research/2026-07-15-faber-scan-propose-verification.md`.
+  #
+  # `<command-args>` is deliberately NOT here: it holds what the user actually typed after a slash
+  # command, which is genuine input.
+  @synthetic_tags ~w(
+    task-notification
+    teammate-message
+    system-reminder
+    local-command-stdout
+    local-command-caveat
+    command-name
+    command-message
+  )
+
+  # Well-formed pairs only, via a backreference to the opening tag — a genuine message that merely
+  # *mentions* `<system-reminder>` in prose keeps its text. `s` so a block spans newlines; the lazy
+  # body stops at the first matching close, so blocks nesting other tags strip as a unit.
+  @synthetic_block_regex Regex.compile!(
+                           "<(#{Enum.join(@synthetic_tags, "|")})(?:\\s[^>]*)?>.*?</\\1>",
+                           "s"
+                         )
+
+  # Scaffolding prose Claude Code wraps around an injected teammate block. Stripping the block
+  # alone leaves these orphans behind, and a non-blank residue reads as a genuine turn — the
+  # postamble in particular trips the correction regex on "asks you to do it instead", which is
+  # 4 of the 6 residual false positives measured on the audited session.
+  #
+  # Matched as prose rather than by "the turn had a teammate block, so bin the whole turn": that
+  # structural shortcut would discard a genuine message *quoting* a teammate block (contract Risk
+  # 1). The trade-off is version-sensitivity, so the postamble anchors on its stable opening clause
+  # and runs to the end of the paragraph instead of pinning the exact closing sentence.
+  @teammate_scaffolding [
+    ~r/^[ \t]*Another Claude session sent a message:[ \t]*$/m,
+    ~r/^[ \t]*This came from another Claude session\b.*?(?=\n[ \t]*\n|\z)/sm
+  ]
+
   @impl true
   def default_base, do: @default_base
 
@@ -63,6 +104,7 @@ defmodule Faber.Ingest.Format.Claude do
   def normalize(map) when is_map(map) do
     message = map["message"]
     content = message_content(message, map)
+    {text, synthetic?} = content |> extract_text() |> strip_synthetic()
 
     %Event{
       type: parse_type(map["type"]),
@@ -71,10 +113,11 @@ defmodule Faber.Ingest.Format.Claude do
       uuid: map["uuid"],
       parent_uuid: map["parentUuid"],
       session_id: map["sessionId"],
-      text: extract_text(content),
+      text: text,
       tool_uses: extract_tool_uses(content),
       tool_results: extract_tool_results(content),
       is_meta: map["isMeta"] == true,
+      synthetic: synthetic?,
       cwd: map["cwd"],
       raw: map
     }
@@ -121,6 +164,23 @@ defmodule Faber.Ingest.Format.Claude do
       "" -> nil
       _ -> text
     end
+  end
+
+  # Remove harness-injected blocks, returning `{text, synthetic?}`. A turn is synthetic when it had
+  # content and *nothing but* injected blocks: text that survives stripping was typed by a human, so
+  # a real correction sent alongside a system-reminder still counts as a human turn.
+  @spec strip_synthetic(String.t() | nil) :: {String.t() | nil, boolean()}
+  defp strip_synthetic(nil), do: {nil, false}
+
+  defp strip_synthetic(text) do
+    stripped =
+      @teammate_scaffolding
+      |> Enum.reduce(Regex.replace(@synthetic_block_regex, text, ""), fn re, acc ->
+        Regex.replace(re, acc, "")
+      end)
+      |> nilify_blank()
+
+    {stripped, is_nil(stripped)}
   end
 
   defp extract_tool_uses(content) when is_list(content) do

@@ -56,6 +56,7 @@ defmodule Faber.MCP.Tools.SearchFriction do
       tool_count: r.tool_count,
       error_count: r.error_count,
       message_count: r.message_count,
+      human_turns: r.human_turns,
       max_ctx_pct: round2(r.max_ctx_pct),
       cwd: r.cwd,
       file_paths: r.file_paths,

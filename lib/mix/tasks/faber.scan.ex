@@ -82,7 +82,8 @@ defmodule Mix.Tasks.Faber.Scan do
     Mix.shell().info(
       pad("#", 4) <>
         pad("FRICTION", 10) <>
-        pad("MSGS", 6) <>
+        pad("EVENTS", 8) <>
+        pad("TURNS", 7) <>
         pad("TOOLS", 6) <>
         pad("ERRS", 6) <>
         pad("TYPE", 14) <>
@@ -96,7 +97,8 @@ defmodule Mix.Tasks.Faber.Scan do
       Mix.shell().info(
         pad("#{i}", 4) <>
           pad(fmt_raw(r.raw), 10) <>
-          pad("#{r.message_count}", 6) <>
+          pad("#{r.message_count}", 8) <>
+          pad("#{r.human_turns}", 7) <>
           pad("#{r.tool_count}", 6) <>
           pad("#{r.error_count}", 6) <>
           pad(type_label(r), 14) <>

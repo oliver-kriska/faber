@@ -16,6 +16,17 @@ defmodule Faber.Ingest.Event do
   `token_count` event **with the window inline** (and a model — GPT-5 — that isn't in any static
   window map), so its format normalizes that into `:usage`. `Detect.context/1` prefers `:usage`
   when present, keeping the friction scorer genuinely agent-agnostic.
+
+  ## `:synthetic` vs `:is_meta` — two different claims
+
+  `:is_meta` mirrors the transcript's own `isMeta` flag: the *agent* declared this line
+  internal. `:synthetic` is Faber's own classification — the line is *shaped* like a user turn
+  but its content was written by the harness (task notifications, teammate messages, command
+  stdout, system reminders) rather than typed by a human. Only a format module, which knows
+  what its agent's injected blocks look like, may set it; `Faber.Detect` just consumes
+  `human_turn?/1` and stays agent-agnostic. They stay separate because they can disagree: a
+  line can be harness-authored without the agent flagging it `isMeta`, which is exactly the
+  case that was polluting the correction signal.
   """
 
   @type tool_use :: %{name: String.t(), input: map(), id: String.t() | nil}
@@ -39,6 +50,7 @@ defmodule Faber.Ingest.Event do
           tool_uses: [tool_use()],
           tool_results: [tool_result()],
           is_meta: boolean(),
+          synthetic: boolean(),
           usage: usage() | nil,
           cwd: String.t() | nil,
           raw: map()
@@ -54,18 +66,27 @@ defmodule Faber.Ingest.Event do
             tool_uses: [],
             tool_results: [],
             is_meta: false,
+            synthetic: false,
             usage: nil,
             cwd: nil,
             raw: %{}
 
   @doc """
-  A human turn: a `:user` event carrying actual text (not a tool-result-only turn) and not
-  an internal/meta marker. Used to scope friction signals like corrections to real user
-  messages.
+  A human turn: a `:user` event carrying actual text (not a tool-result-only turn), not an
+  internal/meta marker, and not harness-synthesized (`:synthetic`). Used to scope friction
+  signals like corrections to real user messages.
+
+  The `:synthetic` gate is load-bearing, not cosmetic: agents write their own machinery back
+  into the transcript as `role: "user"` turns. A 2026-07-15 audit of real sessions found 27 of
+  30 detected "user corrections" in one session were `<task-notification>` blocks — a
+  background task reporting "fix applied, no errors" trips the correction regex exactly like a
+  human saying "no, fix that instead". See
+  `.claude/research/2026-07-15-faber-scan-propose-verification.md`.
   """
   @spec human_turn?(t()) :: boolean()
-  def human_turn?(%__MODULE__{type: :user, text: text, is_meta: false}) when is_binary(text),
-    do: String.trim(text) != ""
+  def human_turn?(%__MODULE__{type: :user, text: text, is_meta: false, synthetic: false})
+      when is_binary(text),
+      do: String.trim(text) != ""
 
   def human_turn?(%__MODULE__{}), do: false
 end

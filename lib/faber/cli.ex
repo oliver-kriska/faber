@@ -510,8 +510,10 @@ defmodule Faber.CLI do
 
   defp render_table([]), do: "No sessions matched."
 
+  # `events` is the transcript line count (what the old `msgs` column actually showed); `turns` is
+  # what a person typed. Showing only the former overstated human involvement by 20-70x.
   defp render_table(results) do
-    header = "  #  friction  fingerprint            signal           msgs  t2  session"
+    header = "  #  friction  fingerprint            signal           events  turns  t2  session"
 
     rows =
       results
@@ -522,7 +524,8 @@ defmodule Faber.CLI do
           String.pad_leading(fmt(r.raw), 9),
           String.pad_trailing(to_string(r.fingerprint), 22),
           String.pad_trailing(to_string(r.dominant_signal || "—"), 16),
-          String.pad_leading(to_string(r.message_count), 5),
+          String.pad_leading(to_string(r.message_count), 7),
+          String.pad_leading(to_string(r.human_turns), 6),
           String.pad_leading(if(r.tier2, do: "✓", else: ""), 3),
           "  " <> session(r)
         ]

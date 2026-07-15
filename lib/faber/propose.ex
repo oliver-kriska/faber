@@ -151,7 +151,7 @@ defmodule Faber.Propose do
 
     - session fingerprint: #{r.fingerprint} (confidence #{fmt(r.fingerprint_confidence)})
     - dominant friction signal: #{r.dominant_signal || "none"}
-    - raw friction: #{fmt(r.raw)} (#{r.message_count} messages, #{r.tool_count} tools, #{r.error_count} errors)
+    - raw friction: #{fmt(r.raw)} (#{r.human_turns} human turns across #{r.message_count} transcript events, #{r.tool_count} tools, #{r.error_count} errors)
     - friction signals:
     #{signals}
     - missed automation opportunities: #{fmt_list(r.missed)}

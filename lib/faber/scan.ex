@@ -30,6 +30,7 @@ defmodule Faber.Scan do
             tool_count: non_neg_integer(),
             error_count: non_neg_integer(),
             message_count: non_neg_integer(),
+            human_turns: non_neg_integer(),
             parse_errors: non_neg_integer(),
             max_ctx_pct: float() | nil,
             file_paths: [String.t()],
@@ -54,7 +55,11 @@ defmodule Faber.Scan do
       :skills_used,
       :tool_count,
       :error_count,
+      # Transcript events (user + assistant lines) vs. messages a human actually typed. These
+      # differ by 20-70x on real sessions; `message_count` keeps driving the gates below, while
+      # the display surfaces both. See `Faber.Detect.Friction.friction/0`.
       :message_count,
+      :human_turns,
       :parse_errors,
       :max_ctx_pct,
       # File paths the session touched (edited/read/patched) — the stack signal `Faber.Adapter`
@@ -169,6 +174,7 @@ defmodule Faber.Scan do
       tool_count: f.tool_count,
       error_count: f.error_count,
       message_count: f.message_count,
+      human_turns: f.human_turns,
       parse_errors: length(parse_errors),
       max_ctx_pct: ctx.max_ctx_pct,
       file_paths: referenced_paths(tool_uses),

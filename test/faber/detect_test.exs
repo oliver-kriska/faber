@@ -116,6 +116,143 @@ defmodule Faber.DetectTest do
     end
   end
 
+  # Regression for the 2026-07-15 audit: `retry_loops` is the highest-weighted signal (3.0) and
+  # was 0/7 genuine on `faber/31f10cff`, because a 2-token prefix collides under the
+  # `cd /abs/path && …` convention our own agent instructions mandate.
+  describe "friction/1 retry_loops keys on the full normalized command" do
+    # Bash calls with sequential ids, and the ids that errored.
+    defp bash_run(commands, errored_ids) do
+      calls =
+        Ingest.normalize(%{
+          "type" => "assistant",
+          "message" => %{
+            "role" => "assistant",
+            "content" =>
+              commands
+              |> Enum.with_index()
+              |> Enum.map(fn {cmd, i} ->
+                %{
+                  "type" => "tool_use",
+                  "name" => "Bash",
+                  "id" => "t#{i}",
+                  "input" => if(cmd == :malformed, do: %{}, else: %{"command" => cmd})
+                }
+              end)
+          }
+        })
+
+      results =
+        Ingest.normalize(%{
+          "type" => "user",
+          "message" => %{
+            "role" => "user",
+            "content" =>
+              Enum.map(errored_ids, fn id ->
+                %{"type" => "tool_result", "tool_use_id" => id, "is_error" => true}
+              end)
+          }
+        })
+
+      Detect.friction([calls, results]).signals.retry_loops
+    end
+
+    test "a genuine retry loop still fires" do
+      assert bash_run(List.duplicate("mix test test/foo_test.exs", 3), ["t1"]) == 1
+    end
+
+    test "the same command under a cd preamble still groups as one loop" do
+      # The `cd` hop is boilerplate, so stripping it must not *lose* a real loop.
+      cmd = "cd /Users/oliverkriska/Projects/faber && mix test test/foo_test.exs"
+      assert bash_run(List.duplicate(cmd, 3), ["t1"]) == 1
+    end
+
+    test "stacked cd segments are stripped" do
+      cmd = "cd /tmp && cd /Users/oliverkriska/Projects/faber && mix test"
+      assert bash_run(List.duplicate(cmd, 3), ["t1"]) == 1
+    end
+
+    test "distinct commands behind a shared cd preamble are not a loop" do
+      # The audited shape: one detected "loop" grouped 93 different commands behind `cd /Users/…`.
+      cd = "cd /Users/oliverkriska/Projects/faber && "
+      assert bash_run([cd <> "mix compile", cd <> "mix format", cd <> "git status"], ["t1"]) == 0
+    end
+
+    test "git add of different paths is not a loop" do
+      commands = ["git add lib/a.ex", "git add lib/b.ex", "git add lib/c.ex"]
+      assert bash_run(commands, ["t1"]) == 0
+    end
+
+    test "mise exec of different commands is not a loop" do
+      commands = ["mise exec -- mix test", "mise exec -- mix credo", "mise exec -- mix dialyzer"]
+      assert bash_run(commands, ["t1"]) == 0
+    end
+
+    test "a same-command run with no errors is not a loop" do
+      assert bash_run(List.duplicate("mix test", 3), []) == 0
+    end
+
+    test "non-consecutive repeats of the same command are not a loop" do
+      # chunk_by, not group_by: re-running `mix test` across a session is normal work, not a loop.
+      commands = ["mix test", "git status", "mix test", "git status", "mix test"]
+      assert bash_run(commands, ["t0", "t2", "t4"]) == 0
+    end
+
+    test "whitespace-only differences still group" do
+      commands = ["mix  test   foo", "mix test foo", "mix\ttest foo"]
+      assert bash_run(commands, ["t1"]) == 1
+    end
+
+    test "malformed commands never contribute to a run" do
+      # Previously `bash_prefix(_) -> ""` collapsed these onto a shared key, so 3 malformed calls
+      # plus one error faked a loop.
+      assert bash_run([:malformed, :malformed, :malformed], ["t1"]) == 0
+    end
+
+    test "malformed calls are dropped from the sequence, not treated as a separator" do
+      # "Excluded from runs entirely" means the call leaves the sequence, so the identifiable
+      # commands on either side become adjacent. An unparseable Bash call is not evidence that the
+      # agent stopped retrying — and it's rare (3 in the whole 16.5k-event audited session).
+      commands = ["mix test", "mix test", :malformed, "mix test"]
+      assert bash_run(commands, ["t0"]) == 1
+    end
+  end
+
+  # Regression for the 2026-07-15 audit: Claude Code writes background-task completions and
+  # teammate messages as `role: "user"` turns, so the harness talking to itself was scoring as
+  # user friction (27 of 30 "corrections" in `faber/31f10cff`). Detect stays agent-agnostic —
+  # it just honors `Event.human_turn?/1` — but the *effect* is asserted here, where it matters.
+  describe "friction/1 ignores harness-authored user turns" do
+    test "a task-notification full of correction words scores zero corrections" do
+      events = [
+        user("""
+        <task-notification>
+        <status>completed</status>
+        <result>That was wrong, so I reverted it and did it the other way instead.</result>
+        </task-notification>
+        """)
+      ]
+
+      assert Detect.friction(events).signals.user_corrections == 0
+    end
+
+    test "a genuine correction alongside a system-reminder still counts" do
+      events = [
+        user("""
+        <system-reminder>Context is running low.</system-reminder>
+        no, that's not what I meant — revert it
+        """)
+      ]
+
+      assert Detect.friction(events).signals.user_corrections == 1
+    end
+
+    test "interrupts are still counted on turns carrying the marker" do
+      events = [user("[Request interrupted by user]")]
+
+      assert Detect.friction(events).signals.interrupted_requests == 1
+    end
+  end
+
   describe "fingerprint/1" do
     test "classifies a feature session" do
       events = [
@@ -148,6 +285,24 @@ defmodule Faber.DetectTest do
     test "unknown when there are no signals" do
       assert %{type: "unknown", confidence: confidence} = Detect.fingerprint([])
       assert confidence == 0.0
+    end
+
+    test "synthetic user turns don't steer keyword classification" do
+      # Fingerprint is the other `human_turn?/1` consumer, so the audit's pollution reached it too:
+      # a task-notification reporting a subagent's bug-hunt is dense with "fix"/"bug"/"error" and
+      # would classify an exploration session as bug-fix. The read-heavy tool mix is the only
+      # honest signal here.
+      events = [
+        user("""
+        <task-notification>
+        <result>Found the bug: an error in the crash handler. Fix the broken debug path.</result>
+        </task-notification>
+        """),
+        user("explain how does this work, I want to understand the code"),
+        asst([{"Read", %{}}, {"Grep", %{}}, {"Read", %{}}])
+      ]
+
+      assert %{type: "exploration"} = Detect.fingerprint(events)
     end
 
     test "breaks fingerprint ties deterministically by reference type order" do

@@ -54,7 +54,7 @@ defmodule Faber.MCP.ToolsTest do
       # within the privacy-safe projection — catches a leak the atom-keyed summarize/1 test can't.
       wire_allowed =
         ~w(session_id friction raw rate dominant_signal opportunity tool_count error_count
-           message_count max_ctx_pct cwd file_paths missed skills_used fingerprint)
+           message_count human_turns max_ctx_pct cwd file_paths missed skills_used fingerprint)
 
       for finding <- Jason.decode!(hd(resp.content)["text"])["findings"] do
         assert Enum.all?(Map.keys(finding), &(&1 in wire_allowed)),
@@ -77,6 +77,8 @@ defmodule Faber.MCP.ToolsTest do
           :tool_count,
           :error_count,
           :message_count,
+          # An aggregate count, same privacy class as message_count — no transcript text.
+          :human_turns,
           :max_ctx_pct,
           :cwd,
           :file_paths,
