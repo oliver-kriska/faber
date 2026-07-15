@@ -30,10 +30,19 @@ defmodule Faber.CLI do
     end
   end
 
-  # Only treat argv as a CLI invocation inside an actual release wrapped by Burrito. `RELEASE_NAME`
-  # is set by every release at runtime; the Burrito argv shim is only present in the wrapped binary.
+  # Only treat argv as a CLI invocation inside an actual release wrapped by Burrito.
+  #
+  # Two things this guard must get right, both of which silently degrade to `nil` — i.e. to booting
+  # the dashboard instead of running the subcommand:
+  #
+  #   * `__BURRITO`, not `RELEASE_NAME`. Burrito's launcher execs `erl` directly instead of the
+  #     release's generated bin script, so it exports RELEASE_ROOT/RELEASE_SYS_CONFIG/`__BURRITO`
+  #     but never RELEASE_NAME. (Mirrors Burrito.Util.running_standalone?/0.)
+  #   * `Code.ensure_loaded?`, not `function_exported?`. A release boots in `-mode embedded` and
+  #     `Application.start/2` runs before Burrito's modules are loaded; `function_exported?/3` does
+  #     not autoload, so it answers false for a module that is present and loadable.
   defp release_argv do
-    if System.get_env("RELEASE_NAME") && function_exported?(Burrito.Util.Args, :argv, 0) do
+    if System.get_env("__BURRITO") && Code.ensure_loaded?(Burrito.Util.Args) do
       Burrito.Util.Args.argv()
     end
   end
