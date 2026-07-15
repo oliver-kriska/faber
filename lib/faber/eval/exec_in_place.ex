@@ -72,6 +72,14 @@ defmodule Faber.Eval.ExecInPlace do
     # A missing interpreter/repo raises rather than returning a code — that's an environment gap,
     # not a scoring verdict, so it falls back like any other failure.
     e in [ErlangError, File.Error] -> {:error, {:exec_in_place_unavailable, e}}
+  catch
+    # `Subprocess.run_with_timeout/4` deliberately re-raises an abnormal task exit via `exit/1`
+    # (subprocess.ex), and **no `rescue` clause can catch an exit** — only `catch :exit`. Without
+    # this clause a scorer whose port dies abnormally (linked-process crash, `:brutal_kill` race)
+    # unwinds straight through `score/3` and takes the eval pipeline down, instead of falling back
+    # to native — the precise opposite of this module's "failure is never silent, the caller falls
+    # back" contract. `Faber.CLI.guarded/1` pairs `rescue` + `catch` for the same reason.
+    :exit, reason -> {:error, {:exec_in_place_unavailable, reason}}
   end
 
   defp decode(out) do
