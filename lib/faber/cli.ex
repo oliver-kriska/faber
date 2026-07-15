@@ -230,8 +230,31 @@ defmodule Faber.CLI do
     # alive). `catch` is load-bearing, not belt-and-braces: `Faber.Subprocess` re-raises abnormal
     # task exits via `exit/1`, which `rescue` alone lets escape — the process would die with
     # System.halt/1 never reached and the VM hung.
-    Task.start(fn -> System.halt(guarded(fn -> run(command, opts) end)) end)
+    Task.start(fn ->
+      status = guarded(fn -> run(command, opts) end)
+      persist()
+      System.halt(status)
+    end)
+
     :ok
+  end
+
+  @doc false
+  # `System.halt/1` is an immediate VM halt: no supervisor shutdown, so the scan cache's
+  # `terminate/2` never runs and its 5s debounce never fires. Without this, a one-shot `faber scan`
+  # scores the whole corpus and persists none of it — every run cold, forever.
+  #
+  # Persist even when the command failed: work already cached is still valid, and the next run
+  # should not pay for this one's failure. Best-effort by design — a cache that cannot write is a
+  # slower next run, never a failed command, and must never keep the VM from reaching its exit.
+  @spec persist() :: :ok
+  def persist do
+    _ = Faber.Scan.Cache.flush()
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
   end
 
   @doc false
