@@ -160,19 +160,38 @@ defmodule Faber.DetectTest do
       assert bash_run(List.duplicate("mix test test/foo_test.exs", 3), ["t1"]) == 1
     end
 
-    test "the same command under a cd preamble still groups as one loop" do
+    # These two vary the preamble on purpose. Identical strings (`List.duplicate` of one fully
+    # `cd`-prefixed command) group under *any* keying, so such a test passes with
+    # `strip_cd_prefix/1` deleted and proves nothing about stripping. Only the same command reached
+    # via *differing* preambles discriminates: unstripped they are distinct keys (0 loops),
+    # stripped they collapse to one (1 loop).
+    test "one command retried under differing cd preambles is still one loop" do
       # The `cd` hop is boilerplate, so stripping it must not *lose* a real loop.
-      cmd = "cd /Users/oliverkriska/Projects/faber && mix test test/foo_test.exs"
-      assert bash_run(List.duplicate(cmd, 3), ["t1"]) == 1
+      assert bash_run(
+               [
+                 "cd /Users/oliverkriska/Projects/faber && mix test test/foo_test.exs",
+                 "cd /tmp && mix test test/foo_test.exs",
+                 "mix test test/foo_test.exs"
+               ],
+               ["t1"]
+             ) == 1
     end
 
-    test "stacked cd segments are stripped" do
-      cmd = "cd /tmp && cd /Users/oliverkriska/Projects/faber && mix test"
-      assert bash_run(List.duplicate(cmd, 3), ["t1"]) == 1
+    test "stacked and quoted cd segments are stripped down to the same command" do
+      assert bash_run(
+               [
+                 "cd /tmp && cd /Users/oliverkriska/Projects/faber && mix test",
+                 "cd '/Users/oliverkriska/My Projects/faber' && mix test",
+                 "cd /a && cd /b && cd /c && mix test"
+               ],
+               ["t1"]
+             ) == 1
     end
 
     test "distinct commands behind a shared cd preamble are not a loop" do
       # The audited shape: one detected "loop" grouped 93 different commands behind `cd /Users/…`.
+      # This guards the *keying* (full command, not a 2-token prefix) rather than the stripping —
+      # under the old prefix keying `cd /Users/…` was the whole key and collided everything.
       cd = "cd /Users/oliverkriska/Projects/faber && "
       assert bash_run([cd <> "mix compile", cd <> "mix format", cd <> "git status"], ["t1"]) == 0
     end
