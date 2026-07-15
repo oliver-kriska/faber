@@ -68,17 +68,22 @@ defmodule Faber.MixProject do
   end
 
   # `mix test` skips the `@tag :sidecar` parity tests (they spawn python3); `mix test.full` runs
-  # them so native↔sidecar engine drift is caught, plus `:plugin_eval` — the adapter's
-  # exec-in-place eval against the real referenced plugin repo, which catches drift in that
-  # scorer's JSON shape that a fake scorer never would. `mix test.live` runs the keyless real-model smoke
-  # test (shells out to `claude -p`; spends subscription quota). `mix test.live.api` runs the
-  # API-backed (ReqLLM) live test — needs a key (`set -a; . ./.env; set +a` first) and costs money.
-  # See CLAUDE.md / README.
+  # them so native↔sidecar engine drift is caught. Its tags are the ones CI *can* satisfy with
+  # tooling (python3, sqlite3), which is why it is CI's command.
+  #
+  # `:plugin_eval` is deliberately NOT in `test.full`: it scores against the real referenced plugin
+  # repo at the adapter's machine-local `metadata.source_repo`, so it is unsatisfiable on a runner
+  # no matter how that runner is provisioned — it is environment-bound in the same way `:live` /
+  # `:live_api` are, and gets its own alias for the same reason. `mix test.plugin` runs it locally
+  # to catch drift in that scorer's JSON shape that a fake scorer never would.
+  #
+  # `mix test.live` runs the keyless real-model smoke test (shells out to `claude -p`; spends
+  # subscription quota). `mix test.live.api` runs the API-backed (ReqLLM) live test — needs a key
+  # (`set -a; . ./.env; set +a` first) and costs money. See CLAUDE.md / README.
   defp aliases do
     [
-      "test.full": [
-        "test --include sidecar --include ccrider --include opencode --include plugin_eval"
-      ],
+      "test.full": ["test --include sidecar --include ccrider --include opencode"],
+      "test.plugin": ["test --include plugin_eval"],
       "test.live": ["test --include live"],
       "test.live.api": ["test --include live_api"],
       # The Iron Law #22 pre-commit gate, in one command (`make verify` calls this).
@@ -99,6 +104,7 @@ defmodule Faber.MixProject do
     [
       preferred_envs: [
         "test.full": :test,
+        "test.plugin": :test,
         "test.live": :test,
         "test.live.api": :test,
         # Keep the gate in one env so `compile` and `test` share a build (and dialyzer analyses

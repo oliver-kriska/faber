@@ -45,13 +45,20 @@ The end-user walkthrough (every command, flag, config key, and the intended work
   [`.dialyzer_ignore.exs`](.dialyzer_ignore.exs) **with a reason** — `list_unused_filters: true`
   fails the gate if such an entry outlives the code it was written for.
 
-  `mix test` excludes the `:sidecar`/`:ccrider`/`:opencode`/`:live`/`:live_api` tags so it needs no
-  interpreter, key, or external index. Run **`mix test.full`** (alias for `mix test --include
-  sidecar --include ccrider --include opencode`) — which needs `python3` (sidecar) and `sqlite3`
-  (the ccrider/OpenCode SQLite readers) — before committing changes that touch the eval matchers,
-  the sidecar boundary, or a SQLite-backed ingest format, and in CI, to catch native/sidecar drift.
-  The keyless end-to-end run is **`mix test.live`** (real `claude -p`, no key); the paid
-  ReqLLM/Anthropic backend is **`mix test.live.api`** (needs `CLAUDE_API` in `.env`).
+  `mix test` excludes the `:sidecar`/`:ccrider`/`:opencode`/`:plugin_eval`/`:live`/`:live_api` tags
+  so it needs no interpreter, key, or external index. Run **`mix test.full`** (alias for `mix test
+  --include sidecar --include ccrider --include opencode`) — which needs `python3` (sidecar) and
+  `sqlite3` (the ccrider/OpenCode SQLite readers) — before committing changes that touch the eval
+  matchers, the sidecar boundary, or a SQLite-backed ingest format, and in CI, to catch
+  native/sidecar drift.
+
+  The other three tags are **environment-bound** — no runner can satisfy them by installing
+  tooling — so they each get their own alias and stay out of `test.full` (which is CI's command):
+  **`mix test.plugin`** (`:plugin_eval`) runs the adapter's exec-in-place eval against the real
+  plugin repo at the adapter's machine-local `metadata.source_repo`, catching drift in that
+  scorer's JSON shape that a fake scorer never would; **`mix test.live`** is the keyless
+  end-to-end run (real `claude -p`, no key); **`mix test.live.api`** is the paid ReqLLM/Anthropic
+  backend (needs `CLAUDE_API` in `.env`).
 
 - **NEVER push to a remote** until explicitly told. The `origin/main` ref shows `[gone]` —
   it is stale; ignore it. Do not create PRs.

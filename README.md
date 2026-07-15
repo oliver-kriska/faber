@@ -115,6 +115,7 @@ mix deps.get
 mix verify                     # the pre-commit gate: format, compile, credo, dialyzer, test
 mix test                       # hermetic — Elixir suite incl. LiveView, no python3 needed
 mix test.full                  # also runs @tag :sidecar (needs python3) + :ccrider/:opencode (need sqlite3)
+mix test.plugin                # exec-in-place eval vs the real plugin repo (needs it checked out locally)
 mix faber.scan                 # rank your real ~/.claude sessions by friction
 iex -S mix phx.server          # dashboard at http://localhost:4010 (+ Tidewave MCP at /tidewave/mcp)
 ```
