@@ -13,6 +13,8 @@ It is deliberately stdlib-only and dependency-free so `mix test` needs nothing b
 """
 
 import json
+import os
+import stat
 import sys
 
 
@@ -38,6 +40,13 @@ def main() -> int:
     except OSError as exc:
         print(f"could not read skill: {exc}", file=sys.stderr)
         return 1
+
+    # Stat from in here, not from the test: the dispatcher deletes the temp tree the moment we
+    # exit, so this process IS the only observer of the permissions during the window that matters
+    # — exactly when another local user on a shared /tmp could be reading the file.
+    # skill_path is <root>/<skill-name>/SKILL.md, so the root is two dirnames up.
+    file_mode = oct(stat.S_IMODE(os.stat(skill_path).st_mode))
+    root_mode = oct(stat.S_IMODE(os.stat(os.path.dirname(os.path.dirname(skill_path))).st_mode))
 
     if mode == "boom":
         print("Traceback (most recent call last): ModuleNotFoundError: no lab", file=sys.stderr)
@@ -90,6 +99,14 @@ def main() -> int:
                                 "desc": "skill content as received",
                                 "passed": True,
                                 "evidence": content,
+                            },
+                            {
+                                # Perms observed live, mid-run — see the stat call above.
+                                "id": "perms-echo",
+                                "type": "perms_echo",
+                                "desc": "temp tree permissions during the scorer's run",
+                                "passed": True,
+                                "evidence": f"file={file_mode} root={root_mode}",
                             },
                         ],
                     }

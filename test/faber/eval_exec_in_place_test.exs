@@ -115,6 +115,15 @@ defmodule Faber.EvalExecInPlaceTest do
       refute adapter() |> echoed("path-echo") |> File.exists?()
     end
 
+    test "the skill is written private — 0600 under a 0700 root" do
+      # The body is derived from the user's private transcript and `/tmp` is world-listable on
+      # stock macOS/Linux, so defaults (0644/0755) would expose it for the scorer's whole run.
+      # Asserted from *inside* the scorer (fake_scorer.py stats its own argument): the dispatcher
+      # deletes the tree the instant the scorer exits, so mid-run is both the only moment these
+      # perms are observable and the only moment they matter.
+      assert echoed(adapter(), "perms-echo") == "file=0o600 root=0o700"
+    end
+
     defp echoed(adapter, md \\ @skill_md, id) do
       {:ok, result} = Faber.Eval.score(md, adapter: adapter)
 

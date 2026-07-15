@@ -152,16 +152,38 @@ defmodule Faber.Eval.ExecInPlace do
   end
 
   # `<tmp>/<skill-name>/SKILL.md`: the scorer reads the skill's name from the parent directory.
+  #
+  # The body is derived from the user's private session transcript, so lock the tree down before it
+  # lands: 0700 on the root, O_EXCL + 0600 on the file — the same treatment
+  # `Faber.Sidecar.System.write_temp/1` gives an equally sensitive payload. Defaults (0755/0644 under
+  # a typical umask) would leave it readable for the scorer's whole run, and `/tmp` is world-listable
+  # on stock macOS/Linux, so on a shared dev box or CI host that is a real (if time-boxed) leak.
+  # The random root name defeats symlink pre-planting; these perms defeat the reader.
+  #
+  # NOTE: this runs OUTSIDE `run/4`'s rescue/catch, so it must return errors rather than raise.
   defp write_skill(skill_md, name) do
     root = Path.join(System.tmp_dir!(), "faber-eval-#{rand_token()}")
     dir = Path.join(root, name)
     path = Path.join(dir, "SKILL.md")
 
     with :ok <- File.mkdir_p(dir),
-         :ok <- File.write(path, skill_md) do
+         :ok <- File.chmod(root, 0o700),
+         :ok <- write_private(path, skill_md) do
       {:ok, path, root}
     else
       {:error, reason} -> {:error, {:tmp_write_failed, reason}}
+    end
+  end
+
+  defp write_private(path, content) do
+    case File.open(path, [:write, :exclusive, :binary]) do
+      {:ok, io} ->
+        IO.binwrite(io, content)
+        File.close(io)
+        File.chmod(path, 0o600)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
