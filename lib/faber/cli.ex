@@ -18,8 +18,22 @@ defmodule Faber.CLI do
 
   @default_port 4710
 
-  @typedoc "A parsed command: `{name, opts}`."
-  @type command :: {atom(), keyword()}
+  @typedoc "A subcommand name, or `nil` for top-level (`faber --help`)."
+  @type subcommand :: atom() | nil
+
+  @typedoc """
+  A parsed command: `{name, opts}` for something runnable, plus two outcomes that deliberately
+  run **nothing** — `{:help, subcommand}` and `{:parse_error, subcommand, invalid_switches}`.
+
+  Those two are *data*, not printed here, because `parse/1` is pure: rendering usage and picking
+  an exit status belong to `run/2`. That separation is the fix for a real bug — every clause used
+  to discard `OptionParser`'s invalid list (`{opts, _, _}`), so `faber propose --help` parsed to a
+  perfectly valid `{:propose, []}` and spent a minute on a real LLM call.
+  """
+  @type command ::
+          {:help, subcommand()}
+          | {:parse_error, subcommand(), [String.t()]}
+          | {atom(), keyword()}
 
   @doc "Parsed command when running as a Burrito release, else `nil` (dev/test/iex)."
   @spec command() :: command() | nil
@@ -47,128 +61,124 @@ defmodule Faber.CLI do
     end
   end
 
-  @doc "Pure argv → `{command, opts}` parser (no I/O), so it's unit-testable."
+  @doc """
+  Pure argv → `command()` parser (no I/O), so it's unit-testable.
+
+  An unknown or malformed switch never yields a runnable command: it becomes `{:parse_error, ...}`,
+  and `--help`/`-h` anywhere in a subcommand's args becomes `{:help, subcommand}`. Both are
+  rendered by `run/2`.
+  """
   @spec parse([String.t()]) :: command()
-  def parse([]), do: {:help, []}
-  def parse([h | _]) when h in ["help", "--help", "-h"], do: {:help, []}
+  def parse([]), do: {:help, nil}
+  def parse([h | _]) when h in ["help", "--help", "-h"], do: {:help, nil}
   def parse([v | _]) when v in ["--version", "-V"], do: {:version, []}
 
   def parse(["scan" | rest]) do
-    {opts, _, _} =
-      OptionParser.parse(rest,
-        strict: [
-          limit: :integer,
-          rank_by: :string,
-          source: :string,
-          db: :string,
-          format: :string,
-          base: :string,
-          min_messages: :integer
-        ]
-      )
-
-    {:scan, opts}
+    parse_sub(:scan, rest,
+      limit: :integer,
+      rank_by: :string,
+      source: :string,
+      db: :string,
+      format: :string,
+      base: :string,
+      min_messages: :integer
+    )
   end
 
   def parse(["propose" | rest]) do
-    {opts, _, _} =
-      OptionParser.parse(rest,
-        strict: [
-          rank: :integer,
-          install: :boolean,
-          force: :boolean,
-          trigger: :boolean,
-          source: :string,
-          db: :string,
-          format: :string,
-          limit: :integer,
-          base: :string,
-          min_messages: :integer
-        ]
-      )
-
-    {:propose, opts}
+    parse_sub(:propose, rest,
+      rank: :integer,
+      install: :boolean,
+      force: :boolean,
+      trigger: :boolean,
+      source: :string,
+      db: :string,
+      format: :string,
+      limit: :integer,
+      base: :string,
+      min_messages: :integer
+    )
   end
 
   def parse(["refine" | rest]) do
-    {opts, _, _} =
-      OptionParser.parse(rest,
-        strict: [
-          rank: :integer,
-          strategy: :string,
-          iterations: :integer,
-          patience: :integer,
-          target: :float,
-          min_improvement: :float,
-          trigger: :boolean,
-          trigger_samples: :integer,
-          holdout: :boolean,
-          install: :boolean,
-          force: :boolean,
-          source: :string,
-          db: :string,
-          format: :string,
-          limit: :integer,
-          base: :string,
-          min_messages: :integer
-        ]
-      )
-
-    {:refine, opts}
+    parse_sub(:refine, rest,
+      rank: :integer,
+      strategy: :string,
+      iterations: :integer,
+      patience: :integer,
+      target: :float,
+      min_improvement: :float,
+      trigger: :boolean,
+      trigger_samples: :integer,
+      holdout: :boolean,
+      install: :boolean,
+      force: :boolean,
+      source: :string,
+      db: :string,
+      format: :string,
+      limit: :integer,
+      base: :string,
+      min_messages: :integer
+    )
   end
 
   def parse(["consolidate" | rest]) do
-    {opts, _, _} =
-      OptionParser.parse(rest,
-        strict: [
-          top: :integer,
-          cluster_threshold: :float,
-          trigger: :boolean,
-          force: :boolean,
-          source: :string,
-          db: :string,
-          format: :string,
-          limit: :integer,
-          base: :string,
-          min_messages: :integer
-        ]
-      )
-
-    {:consolidate, opts}
+    parse_sub(:consolidate, rest,
+      top: :integer,
+      cluster_threshold: :float,
+      trigger: :boolean,
+      force: :boolean,
+      source: :string,
+      db: :string,
+      format: :string,
+      limit: :integer,
+      base: :string,
+      min_messages: :integer
+    )
   end
 
   def parse(["feedback" | rest]) do
-    {opts, _, _} =
-      OptionParser.parse(rest,
-        strict: [
-          dir: :string,
-          source: :string,
-          db: :string,
-          format: :string,
-          limit: :integer,
-          base: :string,
-          min_messages: :integer
-        ]
-      )
-
-    {:feedback, opts}
+    parse_sub(:feedback, rest,
+      dir: :string,
+      source: :string,
+      db: :string,
+      format: :string,
+      limit: :integer,
+      base: :string,
+      min_messages: :integer
+    )
   end
 
-  def parse(["serve" | rest]) do
-    {opts, _, _} = OptionParser.parse(rest, strict: [port: :integer, open: :boolean])
-    {:serve, opts}
-  end
+  def parse(["serve" | rest]), do: parse_sub(:serve, rest, port: :integer, open: :boolean)
 
   def parse(["sync" | rest]) do
-    {opts, _, _} =
-      OptionParser.parse(rest,
-        strict: [target: :string, check: :boolean, force: :boolean, dir: :string, file: :string]
-      )
-
-    {:sync, opts}
+    parse_sub(:sync, rest,
+      target: :string,
+      check: :boolean,
+      force: :boolean,
+      dir: :string,
+      file: :string
+    )
   end
 
   def parse([other | _]), do: {:unknown, arg: other}
+
+  # One strict parse for every subcommand. `OptionParser`'s third element lists switches it could
+  # not accept; honoring it is the whole point — discarding it is what let `--help` run a propose.
+  defp parse_sub(subcommand, argv, strict) do
+    if help?(argv) do
+      {:help, subcommand}
+    else
+      case OptionParser.parse(argv, strict: strict) do
+        {opts, _argv, []} -> {subcommand, opts}
+        {_opts, _argv, invalid} -> {:parse_error, subcommand, Enum.map(invalid, &elem(&1, 0))}
+      end
+    end
+  end
+
+  # `--help` wins over any other flag, valid or not: someone asking how a command works should get
+  # the answer, not a complaint about the flag they were unsure of.
+  defp help?(argv), do: Enum.any?(argv, &(&1 in ["--help", "-h", "help"]))
 
   @doc """
   Apply a `serve --port` override to the endpoint config BEFORE the endpoint child starts. Called
@@ -195,6 +205,15 @@ defmodule Faber.CLI do
   """
   @spec dispatch(command() | nil) :: :ok
   def dispatch(nil), do: :ok
+
+  # Normalize the two non-running outcomes into the `{command, opts}` shape `run/2` takes, so they
+  # get the same halt-guard and exit-status handling as everything else.
+  def dispatch({:parse_error, subcommand, invalid}),
+    do: dispatch({:parse_error, [subcommand: subcommand, invalid: invalid]})
+
+  def dispatch({:help, subcommand}) when is_atom(subcommand),
+    do: dispatch({:help, [subcommand: subcommand]})
+
   def dispatch({:serve, opts}), do: serve(opts)
 
   def dispatch({command, opts}) do
@@ -240,6 +259,23 @@ defmodule Faber.CLI do
   def run(:unknown, opts) do
     IO.puts(:stderr, "faber: unknown command '#{opts[:arg]}'\n")
     IO.puts(usage())
+    1
+  end
+
+  # The command itself never runs: an unknown flag is a typo, and guessing what someone meant is
+  # how `--dry-run` silently becomes a real one. Usage goes to stderr because this is the error
+  # path — stdout stays clean for anything piping a successful command's output.
+  def run(:parse_error, opts) do
+    invalid = opts[:invalid] || []
+    subcommand = opts[:subcommand]
+
+    IO.puts(
+      :stderr,
+      "faber: unrecognized #{pluralize("option", invalid)} for '#{subcommand}': " <>
+        "#{Enum.join(invalid, ", ")}\n"
+    )
+
+    IO.puts(:stderr, usage())
     1
   end
 
@@ -505,6 +541,9 @@ defmodule Faber.CLI do
     e ->
       IO.puts(:stderr, "could not open browser (open #{url} manually): #{Exception.message(e)}")
   end
+
+  defp pluralize(word, [_one]), do: word
+  defp pluralize(word, _many), do: word <> "s"
 
   # ── rendering ──────────────────────────────────────────────────────────────
 

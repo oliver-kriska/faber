@@ -10,8 +10,8 @@ defmodule Faber.CLITest do
 
   describe "parse/1" do
     test "maps argv to {command, opts}" do
-      assert CLI.parse([]) == {:help, []}
-      assert CLI.parse(["help"]) == {:help, []}
+      assert CLI.parse([]) == {:help, nil}
+      assert CLI.parse(["help"]) == {:help, nil}
       assert CLI.parse(["--version"]) == {:version, []}
 
       assert CLI.parse(["scan", "--limit", "5", "--rank-by", "rate"]) ==
@@ -58,6 +58,89 @@ defmodule Faber.CLITest do
                {:sync, [target: "claude,codex", check: true]}
 
       assert CLI.parse(["bogus"]) == {:unknown, arg: "bogus"}
+    end
+  end
+
+  # F4 (2026-07-15 audit): every clause discarded OptionParser's invalid list (`{opts, _, _}`), so
+  # `faber propose --help` parsed to a valid `{:propose, []}` and spent ~1min on a real LLM call.
+  # The audit reproduced exactly that. parse/1 stays pure — it returns the outcome as data.
+  describe "parse/1 refuses to run a command it didn't understand" do
+    # Every subcommand with a parse clause — a new one must be added here too [codex #9].
+    @subcommands ~w(scan propose refine consolidate feedback serve sync)
+
+    test "an unknown switch never yields a runnable command, for any subcommand" do
+      for sub <- @subcommands do
+        assert CLI.parse([sub, "--definitely-not-a-flag"]) ==
+                 {:parse_error, String.to_existing_atom(sub), ["--definitely-not-a-flag"]},
+               "#{sub} accepted an unknown switch"
+      end
+    end
+
+    test "--help after any subcommand asks for help, and runs nothing" do
+      for sub <- @subcommands, flag <- ["--help", "-h"] do
+        assert CLI.parse([sub, flag]) == {:help, String.to_existing_atom(sub)},
+               "#{sub} #{flag} did not resolve to help"
+      end
+    end
+
+    test "propose --help does NOT parse as a propose (the audited regression)" do
+      refute match?({:propose, _}, CLI.parse(["propose", "--help"]))
+      assert CLI.parse(["propose", "--help"]) == {:help, :propose}
+    end
+
+    test "--help wins even alongside an invalid flag" do
+      # Someone unsure enough about a flag to ask for help should get help, not a complaint.
+      assert CLI.parse(["propose", "--bogus", "--help"]) == {:help, :propose}
+    end
+
+    test "a valid flag next to an invalid one still fails — no partial run" do
+      assert CLI.parse(["scan", "--limit", "5", "--nope"]) == {:parse_error, :scan, ["--nope"]}
+    end
+
+    test "every invalid switch is reported, not just the first" do
+      assert {:parse_error, :scan, invalid} = CLI.parse(["scan", "--nope", "--also-nope"])
+      assert Enum.sort(invalid) == ["--also-nope", "--nope"]
+    end
+
+    test "a wrongly-typed value is a parse error, not a silent drop" do
+      # --limit is :integer; "abc" can't be one. OptionParser reports it as invalid.
+      assert {:parse_error, :scan, ["--limit"]} = CLI.parse(["scan", "--limit", "abc"])
+    end
+
+    test "valid invocations are unaffected" do
+      assert CLI.parse(["scan", "--limit", "5"]) == {:scan, [limit: 5]}
+
+      assert CLI.parse(["propose", "--rank", "2", "--install"]) ==
+               {:propose, [rank: 2, install: true]}
+
+      assert CLI.parse(["serve", "--port", "9000"]) == {:serve, [port: 9000]}
+    end
+  end
+
+  describe "run/2 renders the non-running outcomes" do
+    test "a parse error prints usage to stderr and exits non-zero" do
+      # stderr, not stdout: this is the error path, and stdout stays clean for piped output.
+      stderr =
+        capture_io(:stderr, fn ->
+          assert CLI.run(:parse_error, subcommand: :propose, invalid: ["--bogus"]) == 1
+        end)
+
+      assert stderr =~ "unrecognized option for 'propose': --bogus"
+      assert stderr =~ "faber propose"
+    end
+
+    test "multiple invalid switches are pluralized and all listed" do
+      stderr =
+        capture_io(:stderr, fn ->
+          CLI.run(:parse_error, subcommand: :scan, invalid: ["--a", "--b"])
+        end)
+
+      assert stderr =~ "unrecognized options for 'scan': --a, --b"
+    end
+
+    test "help exits 0 and prints usage" do
+      out = capture_io(fn -> assert CLI.run(:help, subcommand: :propose) == 0 end)
+      assert out =~ "faber propose"
     end
   end
 

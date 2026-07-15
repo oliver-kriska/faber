@@ -25,11 +25,22 @@ defmodule Mix.Tasks.Faber.Refine do
     Mix.Task.run("app.config")
     Application.ensure_all_started(:req_llm)
 
-    {:refine, opts} = Faber.CLI.parse(["refine" | argv])
+    # `parse/1` can answer `{:help, _}` or `{:parse_error, _, _}` instead of a runnable command —
+    # both must print and stop here rather than MatchError'ing (or, worse, running a refine loop
+    # the flags didn't ask for).
+    status =
+      case Faber.CLI.parse(["refine" | argv]) do
+        {:refine, opts} -> Faber.CLI.run(:refine, opts)
+        {:help, subcommand} -> Faber.CLI.run(:help, subcommand: subcommand)
+        {:parse_error, subcommand, invalid} -> parse_error(subcommand, invalid)
+      end
 
-    case Faber.CLI.run(:refine, opts) do
+    case status do
       0 -> :ok
       status -> exit({:shutdown, status})
     end
   end
+
+  defp parse_error(subcommand, invalid),
+    do: Faber.CLI.run(:parse_error, subcommand: subcommand, invalid: invalid)
 end

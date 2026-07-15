@@ -163,6 +163,12 @@ faber feedback
 Each step is expanded below. Nothing in steps 1, 4, 5 calls an LLM; step 2/3 makes exactly one
 generation call through your local `claude` CLI.
 
+**Flags and `--help`.** `faber <command> --help` (or `-h`) prints usage and exits 0 — it never runs
+the command, which matters most for `propose` / `refine` / `consolidate`, where running one costs an
+LLM call. An unrecognized or wrongly-typed switch is refused outright: Faber names the offending
+flag on stderr, prints usage, and exits non-zero rather than running the command without it. So a
+typo'd `--dry-run` fails loudly instead of quietly doing the real thing.
+
 ---
 
 ## 4. Concepts
