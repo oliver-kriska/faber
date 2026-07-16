@@ -38,8 +38,29 @@ defmodule FaberWeb.DashboardLiveEnvTest do
     {:ok, view, _html} = live(conn, "/")
     html = render_async(view, @async_timeout)
 
-    assert html =~ "No sessions matched."
+    # First-run onboarding, not a bare "none": name where we looked and the one next step.
+    assert html =~ "No sessions to rank yet."
+    assert html =~ empty
+    assert html =~ "coding-agent transcripts"
     assert html =~ "sessions scanned"
+    refute html =~ "<table"
+  end
+
+  test "a scan crash shows the retry state, not the onboarding copy", %{conn: conn} do
+    prev = Application.get_env(:faber, :dashboard_scan_opts)
+    # An unknown ingest source makes Scan.run raise inside the async task, driving the {:exit, _}
+    # scan handler — the crash path, distinct from a genuinely empty scan.
+    Application.put_env(:faber, :dashboard_scan_opts, source: :faber_bogus_source_for_test)
+    on_exit(fn -> Application.put_env(:faber, :dashboard_scan_opts, prev) end)
+
+    {:ok, view, _html} = live(conn, "/")
+    html = render_async(view, @async_timeout)
+
+    # Crash copy — nothing wrong with the sessions, so point at the logs + Rescan, and NOT the
+    # "no sessions to rank yet" onboarding teaching (which would misdiagnose the failure).
+    assert html =~ "Something went wrong reading your sessions."
+    assert html =~ "Rescan"
+    refute html =~ "No sessions to rank yet."
     refute html =~ "<table"
   end
 

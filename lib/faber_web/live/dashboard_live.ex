@@ -58,7 +58,13 @@ defmodule FaberWeb.DashboardLive do
         # refresh: reopening that session shows "installed" even though the assigns above are gone.
         installed_sessions: %{},
         allow_propose: allow_propose?(),
-        allow_install: allow_install?()
+        allow_install: allow_install?(),
+        # Onboarding context for the empty state: where we looked and the message floor, so a
+        # first-run user with nothing to rank is told what to do next rather than a bare "none".
+        # `scan_error?` separates a genuinely empty scan (teach) from a crashed one (retry).
+        scan_location: scan_location(scan_opts()),
+        scan_min: Keyword.get(scan_opts(), :min_messages, 4),
+        scan_error?: false
       )
 
     # Scan only on the connected mount, and run it asynchronously so the LiveView process stays
@@ -239,6 +245,7 @@ defmodule FaberWeb.DashboardLive do
      socket
      |> assign(:scanned, true)
      |> assign(:scanning, false)
+     |> assign(:scan_error?, false)
      |> assign(:total, length(results))
      |> assign(:tier2, Enum.count(results, & &1.tier2))
      |> assign(:all_results, results)
@@ -261,6 +268,7 @@ defmodule FaberWeb.DashboardLive do
      |> assign(
        scanned: true,
        scanning: false,
+       scan_error?: true,
        total: 0,
        tier2: 0,
        all_results: [],
@@ -385,6 +393,7 @@ defmodule FaberWeb.DashboardLive do
 
     socket
     |> assign(:scanning, true)
+    |> assign(:scan_error?, false)
     |> start_async(:scan, fn -> Scan.run(opts) end)
   end
 
@@ -453,6 +462,22 @@ defmodule FaberWeb.DashboardLive do
   # full fan-out doesn't block the LiveView. Tests point this at fixtures via :dashboard_scan_opts.
   defp scan_opts do
     Application.get_env(:faber, :dashboard_scan_opts, min_messages: 4)
+  end
+
+  # A human-readable path for the empty state's "we looked here" line. An explicit `:base` wins;
+  # otherwise, for the default file source, it is the resolved agent format's default transcript
+  # root (e.g. `~/.claude/projects`). A non-file source (ccrider) has no single path — stay generic.
+  defp scan_location(opts) do
+    cond do
+      opts[:base] ->
+        opts[:base]
+
+      (opts[:source] || Application.get_env(:faber, :ingest_source, :files)) == :files ->
+        Faber.Ingest.Format.resolve(opts).default_base()
+
+      true ->
+        "your configured session source"
+    end
   end
 
   defp allow_propose?, do: Application.get_env(:faber, :web_allow_propose, true) == true
@@ -754,8 +779,31 @@ defmodule FaberWeb.DashboardLive do
         />
       </div>
 
-      <p :if={@scanned and @all_results == []} class="empty">No sessions matched.</p>
-      <p :if={@scanned and @all_results != [] and @results == []} class="empty">
+      <%!-- The scan crashed: a distinct state from "nothing to rank" — nothing is wrong with your
+            sessions, so point at Rescan + the logs, not the onboarding copy below. --%>
+      <div :if={@scanned and @scan_error?} class="empty">
+        <p class="empty-title">The scan didn't finish.</p>
+        <p class="empty-body">
+          Something went wrong reading your sessions. The details are in the server logs; the scan
+          left everything as it was.
+        </p>
+        <button type="button" class="secondary" phx-click="rescan">Rescan</button>
+      </div>
+
+      <%!-- Genuinely empty scan — the first-run moment. Teach where we looked, the message floor,
+            and the one next step, instead of a bare "none". --%>
+      <div :if={@scanned and not @scan_error? and @all_results == []} class="empty">
+        <p class="empty-title">No sessions to rank yet.</p>
+        <p class="empty-body">
+          Faber read <code>{@scan_location}</code> and found nothing to rank{if @scan_min > 0,
+            do: " (sessions under #{@scan_min} messages are skipped)",
+            else: ""}. Friction is mined from real coding-agent transcripts — once you've worked a
+          session with an agent there, Rescan to see it ranked.
+        </p>
+        <button type="button" class="secondary" phx-click="rescan">Rescan</button>
+      </div>
+
+      <p :if={@scanned and not @scan_error? and @all_results != [] and @results == []} class="empty">
         No sessions match these filters.
         <button type="button" class="filter-clear" phx-click="clear_filters">Clear filters</button>
       </p>
