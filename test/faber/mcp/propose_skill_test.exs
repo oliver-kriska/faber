@@ -68,6 +68,13 @@ defmodule Faber.MCP.Tools.ProposeSkillTest do
       msg = error_reply(ProposeSkill.execute(%{rank: 2}, frame()))
       assert msg =~ "stack"
 
+      # The refusal cites the evidence, from the same `Propose.touched_extensions/1` the CLI's
+      # refusal and the dashboard's badge use — so all three quote the same numbers rather than
+      # three hand-rolled variations. `=~ "stack"` alone passed while this tool still carried its
+      # own private copy of the gate, so it could not have caught the drift.
+      assert msg =~ ~r/\.(jsx|tsx)×\d+/
+      assert msg =~ "force: true"
+
       # force bypasses the stack gate and proceeds to a real proposal.
       reply = ok_reply(ProposeSkill.execute(%{rank: 2, force: true}, frame()))
       assert is_binary(reply["name"])

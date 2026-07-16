@@ -116,14 +116,12 @@ defmodule Faber.MCP.Tools.ProposeSkill do
     end
   end
 
-  # Don't propose an off-stack skill unless forced (same guard as `faber propose`).
-  defp stack_gate(_adapter, _result, true), do: :ok
-
-  defp stack_gate(adapter, result, _force) do
-    if Adapter.matches_session?(adapter, result.file_paths),
-      do: :ok,
-      else: {:error, {:stack_mismatch, adapter.name}}
-  end
+  # Don't propose an off-stack skill unless forced — the same guard as `faber propose` and the
+  # dashboard, and now literally the same function. This was a third copy of the decision, which is
+  # the failure `Faber.Propose.stack_gate/3` exists to prevent: a gate each caller re-implements is
+  # a gate the next caller forgets. `!!force` because `params[:force]` is `true | nil` and the spec
+  # says `boolean()`.
+  defp stack_gate(adapter, result, force), do: Propose.stack_gate(adapter, result, !!force)
 
   # Keyless by default (the configured Faber.LLM is `claude -p`); a `model` param overrides.
   defp propose(result, adapter, model) do
@@ -178,10 +176,22 @@ defmodule Faber.MCP.Tools.ProposeSkill do
     do:
       "No friction finding at rank #{rank}. Call faber_search_friction to see available findings."
 
-  defp error_message({:stack_mismatch, name}),
-    do:
-      "This session doesn't match the #{name} stack, so a #{name} skill would be off-target. " <>
-        "Pass force: true to propose anyway."
+  # Cites the evidence, like the CLI's refusal and the dashboard's badge — from the same
+  # `touched_extensions/1`, so all three quote the same numbers. "doesn't match the Elixir stack"
+  # invites an argument; ".go×74, .md×30" ends it.
+  defp error_message({:stack_mismatch, adapter, result}) do
+    # `"none"` and not an empty string: a session CAN touch no extension-bearing file (`file_paths:
+    # []` is a real Scan.Result shape), and "It touched ." is worse than saying so. Mirrors the
+    # CLI's refusal, which guards the same way.
+    exts =
+      case Propose.touched_extensions(result) do
+        [] -> "no files"
+        pairs -> Enum.map_join(pairs, ", ", fn {ext, n} -> "#{ext}×#{n}" end)
+      end
+
+    "This session doesn't match the #{adapter.name} stack, so a #{adapter.name} skill would be " <>
+      "off-target. It touched #{exts}. Pass force: true to propose anyway."
+  end
 
   defp error_message({:propose, reason}),
     do:
