@@ -36,7 +36,7 @@ defmodule Faber.Feedback do
           verdict: :no_sessions | :unused | :low_usage | :active
         }
 
-  @scan_keys [:base, :min_messages, :limit, :db, :source, :format, :rank_by]
+  @scan_keys [:base, :min_messages, :limit, :db, :source, :format, :rank_by, :scope]
 
   @doc """
   Build one `t:report/0` per Faber-installed skill.

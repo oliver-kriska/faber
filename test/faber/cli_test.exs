@@ -998,4 +998,273 @@ defmodule Faber.CLITest do
       assert CLI.maybe_apply_port(nil) == :ok
     end
   end
+
+  describe "--json" do
+    test "scan emits raw values and the full signal vector, not the table's rounded ones" do
+      json = json_out(:scan, @fixtures ++ [limit: 5])
+
+      assert json["count"] == 5
+      assert length(json["sessions"]) == 5
+      assert json["scope"]["kind"] == "all"
+      assert is_integer(json["elapsed_ms"])
+
+      session = hd(json["sessions"])
+      assert is_map(session["friction"]["signals"])
+      # The table rounds `raw` to one decimal and prints the sigmoid nowhere; both are here whole.
+      assert is_float(session["friction"]["raw"])
+      assert is_float(session["friction"]["score"])
+      assert Map.has_key?(session["fingerprint"], "confidence")
+      assert Map.has_key?(session["counts"], "turns")
+    end
+
+    # `ctx` renders as "—" in the table for a session with no reading. A dash is not a number, and a
+    # script must not have to parse one — it gets null.
+    test "scan renders an unknown context as null rather than the table's dash" do
+      json = json_out(:scan, @fixtures ++ [limit: 5])
+      assert Enum.any?(json["sessions"], &is_nil(&1["max_ctx_pct"]))
+      refute Enum.any?(json["sessions"], &(&1["max_ctx_pct"] == "—"))
+    end
+
+    test "an empty scan is a valid answer (count 0), not an error or a prose explanation" do
+      json = json_out(:scan, base: "test/fixtures", min_messages: 99_999, json: true)
+
+      assert json["count"] == 0
+      assert json["sessions"] == []
+      refute inspect(json) =~ "No sessions matched"
+    end
+
+    test "scan reports the scope it actually used" do
+      json = json_out(:scan, @fixtures ++ [limit: 1])
+      # `--base` was given, so the scan is global and says why.
+      assert json["scope"] == %{"kind" => "all", "reason" => "explicit_base"}
+    end
+
+    test "parse accepts --json only on the read-only surfaces" do
+      assert {:scan, [json: true]} = CLI.parse(["scan", "--json"])
+      assert {:proposals, [json: true]} = CLI.parse(["proposals", "--json"])
+      assert {:show, opts} = CLI.parse(["show", "abc", "--json"])
+      assert opts[:json] == true
+      assert {:feedback, [json: true]} = CLI.parse(["feedback", "--json"])
+
+      # A command whose output is a paid artifact has no --json shape yet; it must say so rather
+      # than silently ignoring the flag.
+      assert {:parse_error, :propose, ["--json"]} = CLI.parse(["propose", "--json"])
+    end
+  end
+
+  describe "--json over the proposal store" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: tmp_dir} do
+      Application.put_env(:faber, :proposal_store, true)
+      Application.put_env(:faber, :proposals_dir, Path.join(tmp_dir, "proposals"))
+
+      on_exit(fn ->
+        Application.put_env(:faber, :proposal_store, false)
+        Application.delete_env(:faber, :proposals_dir)
+      end)
+
+      :ok
+    end
+
+    test "proposals: an empty store is an empty list, not the how-to-get-one prose" do
+      json = json_out(:proposals, json: true)
+
+      assert json["count"] == 0
+      assert json["proposals"] == []
+    end
+
+    test "proposals and show carry the eval breakdown and the skill body" do
+      capture_io(fn -> CLI.run(:propose, @fixtures ++ [force: true]) end)
+      [record] = Store.list()
+
+      listed = json_out(:proposals, json: true)
+      assert listed["count"] == 1
+      assert [entry] = listed["proposals"]
+      assert entry["id"] == record.id
+      assert entry["installed"] == false
+      assert is_float(entry["eval"]["composite"])
+      assert map_size(entry["eval"]["dimensions"]) > 0
+
+      # The list stays a summary; only `show` pays for the full body.
+      refute Map.has_key?(entry, "md")
+
+      shown = json_out(:show, id: record.id, json: true)
+      assert shown["md"] == record.md
+      assert shown["eval"]["dimensions"] == entry["eval"]["dimensions"]
+    end
+  end
+
+  describe "--quiet" do
+    test "silences status lines and keeps the result" do
+      # propose narrates a "Proposing for …" pre-flight line to stderr, because one LLM call is a
+      # minute of silence. `--quiet` is for the script that neither reads nor wants it.
+      out =
+        capture_io(:stderr, fn ->
+          assert capture_io(fn ->
+                   assert CLI.run(:propose, @fixtures ++ [rank: 1, quiet: true]) == 0
+                 end) =~ "composite"
+        end)
+
+      assert out == ""
+    end
+
+    test "without it, the status line is still there" do
+      out =
+        capture_io(:stderr, fn ->
+          capture_io(fn -> CLI.run(:propose, @fixtures ++ [rank: 1]) end)
+        end)
+
+      assert out =~ "Proposing for"
+    end
+
+    test "every subcommand accepts it, including ones that emit no status at all" do
+      # A global flag that errors on half the commands is not global — a script should be able to
+      # pass it uniformly without first learning which commands narrate.
+      for argv <- [
+            ["scan"],
+            ["propose"],
+            ["refine"],
+            ["consolidate"],
+            ["proposals"],
+            ["feedback"],
+            ["serve"],
+            ["sync"]
+          ] do
+        assert {_cmd, opts} = CLI.parse(argv ++ ["--quiet"])
+        assert opts[:quiet] == true, "#{hd(argv)} rejected --quiet"
+      end
+
+      assert {:show, opts} = CLI.parse(["show", "abc", "--quiet"])
+      assert opts[:quiet] == true
+    end
+  end
+
+  describe "--dry-run" do
+    setup do
+      # The whole promise of --dry-run is "no LLM calls", and the ordinary Stub cannot tell a run
+      # that skipped the call from one that made it and got a canned answer back. This spy makes the
+      # difference observable, so the test asserts the promise instead of the output.
+      Process.register(self(), :faber_llm_spy)
+      Application.put_env(:faber, :llm, Faber.CLITest.SpyLLM)
+
+      on_exit(fn ->
+        Application.put_env(:faber, :llm, Faber.LLM.Stub)
+      end)
+
+      :ok
+    end
+
+    test "propose --dry-run spends nothing" do
+      out =
+        capture_io(fn ->
+          assert CLI.run(:propose, @fixtures ++ [rank: 1, dry_run: true]) == 0
+        end)
+
+      refute_received :llm_called
+
+      assert out =~ "DRY RUN"
+      assert out =~ "no LLM calls were spent"
+      assert out =~ "LLM calls: 1 (the draft)"
+      assert out =~ "Re-run without --dry-run"
+    end
+
+    # The control for the test above: without it, `refute_received` would pass just as happily
+    # against a propose that never called an LLM for some unrelated reason.
+    test "without --dry-run, the call is made" do
+      capture_io(:stderr, fn ->
+        capture_io(fn -> assert CLI.run(:propose, @fixtures ++ [rank: 1]) == 0 end)
+      end)
+
+      assert_received :llm_called
+    end
+
+    test "it reports the real decision — session, adapter, and the engine that would score" do
+      out = capture_io(fn -> CLI.run(:propose, @fixtures ++ [rank: 1, dry_run: true]) end)
+
+      assert out =~ "faber-elixir"
+
+      # Named by asking Eval what it WOULD route to, not by retyping a guess here — if the routing
+      # changes, this moves with it instead of asserting a stale literal.
+      assert out =~ Faber.Eval.planned_engine(adapter: adapter!())
+
+      # The backend named is the one CONFIGURED right now (this describe swaps in the spy), which is
+      # the point: a dry run reporting a backend other than the one that would be called is a lie.
+      assert out =~ "SpyLLM"
+    end
+
+    test "--trigger changes the quoted cost, and still spends nothing" do
+      out =
+        capture_io(fn ->
+          assert CLI.run(:propose, @fixtures ++ [rank: 1, dry_run: true, trigger: true]) == 0
+        end)
+
+      refute_received :llm_called
+      assert out =~ "one per fixture in it for --trigger"
+    end
+
+    test "consolidate --dry-run lists every session it would draft, and spends nothing" do
+      # `--force` means nothing is stack-skipped, so there is no stderr notice to swallow here.
+      out =
+        capture_io(fn ->
+          assert CLI.run(:consolidate, @fixtures ++ [top: 2, dry_run: true, force: true]) == 0
+        end)
+
+      refute_received :llm_called
+
+      assert out =~ "sessions to draft (2)"
+      assert out =~ "one draft each"
+    end
+
+    test "parse accepts --dry-run on the commands that spend" do
+      assert {:propose, opts} = CLI.parse(["propose", "--dry-run"])
+      assert opts[:dry_run] == true
+
+      assert {:consolidate, c_opts} = CLI.parse(["consolidate", "--dry-run", "--top", "3"])
+      assert c_opts[:dry_run] == true
+    end
+  end
+
+  describe "--dry-run files nothing" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: tmp_dir} do
+      Application.put_env(:faber, :proposal_store, true)
+      Application.put_env(:faber, :proposals_dir, Path.join(tmp_dir, "proposals"))
+
+      on_exit(fn ->
+        Application.put_env(:faber, :proposal_store, false)
+        Application.delete_env(:faber, :proposals_dir)
+      end)
+
+      :ok
+    end
+
+    test "no artifact is written for a run that drafted nothing" do
+      capture_io(fn -> assert CLI.run(:propose, @fixtures ++ [rank: 1, dry_run: true]) == 0 end)
+      assert Store.list() == []
+    end
+  end
+
+  defp adapter!, do: elem(Faber.Adapter.load(Faber.adapter_dir()), 1)
+
+  defp json_out(command, opts) do
+    fn -> assert CLI.run(command, Keyword.put(opts, :json, true)) == 0 end
+    |> capture_io()
+    |> Jason.decode!()
+  end
+end
+
+defmodule Faber.CLITest.SpyLLM do
+  @moduledoc false
+  @behaviour Faber.LLM
+
+  # Reports the call to the registered test process, then defers to the ordinary Stub so behavior
+  # is unchanged — this observes, it does not simulate. Registered by name rather than captured as
+  # a pid so it works even if the proposer ever moves the call off the caller's process.
+  @impl Faber.LLM
+  def generate_object(prompt, schema, opts) do
+    send(:faber_llm_spy, :llm_called)
+    Faber.LLM.Stub.generate_object(prompt, schema, opts)
+  end
 end

@@ -35,6 +35,42 @@ defmodule Faber.Ingest.Format do
   @callback stream_file!(path :: Path.t()) :: Enumerable.t()
   @callback normalize(record :: map()) :: Event.t()
 
+  @doc """
+  Where under `base` this format keeps the transcripts of sessions run in `cwd` — the seam
+  `Faber.Scan.Scope` narrows a scan through, so scoping to one project reads that project's
+  directory instead of the whole corpus (~40x fewer files on a real machine).
+
+  **Pure, and answers "would live", not "does live".** It must not touch the filesystem: the
+  caller owns the existence check and the fallback, because "cwd is not a known project" is a
+  policy question (does it mean scan everything? say nothing?) that a format has no business
+  deciding. Return `:error` when `cwd` has no representable directory at all.
+
+  Optional: implement it only for formats that **partition storage by project**, which is what
+  makes the narrowing possible. Codex (date-stamped rollout dirs), Gemini (an opaque project
+  hash), and OpenCode (one SQLite DB) do not, so they decline it and `Faber.Scan` falls back to
+  filtering scored results by `cwd` — same answer, no speedup.
+  """
+  @callback project_base(base :: String.t(), cwd :: String.t()) :: {:ok, Path.t()} | :error
+
+  @optional_callbacks project_base: 2
+
+  @doc """
+  The directory `cwd`'s transcripts would live in for `format`, or `:error` if the format does not
+  partition by project (or cannot represent this `cwd`).
+
+  Wraps the optional `c:project_base/2` so callers never have to `function_exported?/3` — which is
+  also load-bearing in a Burrito release: it boots in `-mode embedded` and does not autoload, so
+  the check needs the `Code.ensure_loaded?/1` this does.
+  """
+  @spec project_base(module(), String.t(), String.t()) :: {:ok, Path.t()} | :error
+  def project_base(format, base, cwd) do
+    if Code.ensure_loaded?(format) and function_exported?(format, :project_base, 2) do
+      format.project_base(base, cwd)
+    else
+      :error
+    end
+  end
+
   @aliases %{
     claude: Faber.Ingest.Format.Claude,
     codex: Faber.Ingest.Format.Codex,

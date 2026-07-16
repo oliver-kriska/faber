@@ -118,13 +118,45 @@ defmodule Faber.Eval do
     end
   end
 
+  @doc """
+  The engine `score/2` would **attempt** for these opts, named without scoring anything — what
+  `faber propose --dry-run` reports before deciding whether to spend an LLM call.
+
+  "Attempt" is the honest word and the reason this can't promise more: `exec-in-place` genuinely
+  tries the adapter's external scorer and degrades to `native:fallback` when the referenced repo
+  isn't there (see `run_adapter_eval/3`), which is only knowable by running it. A dry run that
+  printed `native:fallback` would be guessing about the environment; one that printed
+  `adapter:exec-in-place` is stating the intent, which is what the flag is for.
+  """
+  @spec planned_engine(keyword()) :: String.t()
+  def planned_engine(opts) do
+    case eval_route(opts) do
+      {:explicit, _eval} -> to_string(engine(opts))
+      {:adapter, %{"mode" => "exec-in-place"}} -> "adapter:exec-in-place"
+      # A vendored pack is scored by the native engine against the pack's own dimensions.
+      {:adapter, %{"mode" => "vendored"}} -> "native"
+      {:adapter, _other} -> to_string(engine(opts))
+      :default -> to_string(engine(opts))
+    end
+  end
+
   # Resolve HOW to score: explicit :eval wins, then an adapter's stack-specific criteria, else the
   # built-in default. This is the moat — a skill is judged by its stack's bar, not a generic one.
   defp run_eval(skill_md, opts) do
+    case eval_route(opts) do
+      {:explicit, eval} -> run_engine(engine(opts), skill_md, eval, opts)
+      {:adapter, adapter_eval} -> run_adapter_eval(skill_md, adapter_eval, opts)
+      :default -> run_engine(engine(opts), skill_md, nil, opts)
+    end
+  end
+
+  # The routing decision, factored out so `planned_engine/1` reports the branch `run_eval/2` will
+  # actually take rather than a parallel re-derivation of it that could drift.
+  defp eval_route(opts) do
     case {opts[:eval], adapter_eval(opts)} do
-      {eval, _} when eval != nil -> run_engine(engine(opts), skill_md, eval, opts)
-      {_, adapter_eval} when adapter_eval != nil -> run_adapter_eval(skill_md, adapter_eval, opts)
-      _ -> run_engine(engine(opts), skill_md, nil, opts)
+      {eval, _} when eval != nil -> {:explicit, eval}
+      {_, adapter_eval} when adapter_eval != nil -> {:adapter, adapter_eval}
+      _ -> :default
     end
   end
 

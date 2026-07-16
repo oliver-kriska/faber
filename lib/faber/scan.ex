@@ -17,6 +17,7 @@ defmodule Faber.Scan do
   alias Faber.Ingest.Source
   alias Faber.Scan.Cache
   alias Faber.Scan.Coalesce
+  alias Faber.Scan.Scope
 
   defmodule Result do
     @moduledoc "Per-session friction summary produced by `Faber.Scan`."
@@ -94,6 +95,9 @@ defmodule Faber.Scan do
 
     * `:source` — where sessions come from: `:files` (default, walks the filesystem) or `:ccrider`
       (read ccrider's SQLite index; see `Faber.Ingest.Source`). Also `config :faber, :ingest_source`.
+    * `:scope` — a `Faber.Scan.Scope` limiting the scan to one project's sessions. Absent (the
+      default) ⇒ the whole corpus, unchanged. A `:project` scope both narrows discovery and drops
+      scored sessions that don't belong to it; see the Scope moduledoc for why it takes both steps.
     * `:base` — transcript root (default: the ingest format's `default_base/0`); `:files` source only
     * `:db` — ccrider DB path (default `~/.config/ccrider/sessions.db`); `:ccrider` source only
     * `:format` — ingest format / agent (default `:claude`; see `Faber.Ingest.Format`)
@@ -140,7 +144,8 @@ defmodule Faber.Scan do
     :dedupe,
     :rank_by,
     :adapter,
-    :cache
+    :cache,
+    :scope
   ]
 
   defp flight_key(opts) do
@@ -156,30 +161,49 @@ defmodule Faber.Scan do
     timeout = Keyword.get(opts, :timeout, @session_timeout_ms)
     dedupe = Keyword.get(opts, :dedupe, true)
     rank_by = Keyword.get(opts, :rank_by, :raw)
+    scope = Keyword.get(opts, :scope)
+
+    # A scope that knows its project's transcript directory narrows discovery through `:base`, which
+    # every source already honors — so scoping needs no new discovery plumbing, just a smaller root.
+    opts = Keyword.merge(opts, Scope.to_opts(scope))
     source = Source.resolve(opts)
     cache = cache_ctx(opts)
+    {discover_limit, post_limit} = split_limit(opts[:limit], scope)
 
-    results =
-      source.discover(opts)
-      |> maybe_take(opts[:limit])
-      |> Task.async_stream(&score_maybe_cached(&1, source, cache, opts),
-        max_concurrency: max_concurrency,
-        timeout: timeout,
-        on_timeout: :kill_task,
-        ordered: false
-      )
-      |> Stream.filter(&match?({:ok, %Result{}}, &1))
-      |> Stream.map(fn {:ok, result} -> result end)
-      |> Stream.filter(&(&1.message_count >= min_messages))
-      |> Enum.to_list()
-
-    results
+    source.discover(opts)
+    |> maybe_take(discover_limit)
+    |> Task.async_stream(&score_maybe_cached(&1, source, cache, opts),
+      max_concurrency: max_concurrency,
+      timeout: timeout,
+      on_timeout: :kill_task,
+      ordered: false
+    )
+    |> Stream.filter(&match?({:ok, %Result{}}, &1))
+    |> Stream.map(fn {:ok, result} -> result end)
+    |> Stream.filter(&(&1.message_count >= min_messages))
+    |> Stream.filter(&Scope.member?(scope, &1))
+    |> Enum.to_list()
+    |> maybe_take(post_limit)
     |> dedupe(dedupe)
     # Rank by raw weighted friction (not the sigmoid score, which saturates to ~1.0 on any long
     # session). `:rank_by :rate` instead surfaces concentrated friction (raw/message). Both keep
     # `score`/`tier2` for the per-session y/n gate.
     |> Enum.sort_by(&sort_key(&1, rank_by), :desc)
   end
+
+  # Where `:limit` bites depends on whether the scope could narrow discovery.
+  #
+  # Narrowed (or unscoped): the discovered handles already *are* the sessions in scope, so the limit
+  # caps scoring — the speed knob it was designed to be.
+  #
+  # Scoped but NOT narrowed (a format that doesn't partition by project): the handles are the whole
+  # corpus, and membership is only knowable once a session is parsed. Capping discovery would sample
+  # N sessions machine-wide and then filter them down to however few happened to be this project's —
+  # usually none. So the limit moves after the filter: it stops being a speed knob (everything is
+  # scored either way) and becomes a cap on results, which is the only honest reading left.
+  defp split_limit(nil, _scope), do: {nil, nil}
+  defp split_limit(limit, %Scope{kind: :project, base: nil}), do: {nil, limit}
+  defp split_limit(limit, _scope), do: {limit, nil}
 
   # `nil` when caching is off/unavailable, otherwise the scorer version every entry is keyed by.
   # Computed once per scan rather than per session — it hashes ~20 modules' BEAM digests.

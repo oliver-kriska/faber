@@ -143,11 +143,14 @@ below exists in both forms:
 
 ## 3. Five-minute quickstart
 
+Run these from inside one of your projects — Faber scopes to the project you're standing in.
+
 ```sh
-# 1. Rank your real Claude Code sessions by friction (read-only, no LLM call)
-faber scan
+# 1. Rank this project's sessions by friction (read-only, no LLM call)
+faber scan                       # ...or `faber scan --all` for every project
 
 # 2. Draft + eval a skill for the worst session (one keyless claude -p call)
+faber propose --dry-run          # what it would draft and spend, for free
 faber propose
 
 # 3. Happy with it? Install it into ~/.claude/skills
@@ -167,7 +170,7 @@ generation call through your local `claude` CLI.
 the command, which matters most for `propose` / `refine` / `consolidate`, where running one costs an
 LLM call. An unrecognized or wrongly-typed switch is refused outright: Faber names the offending
 flag on stderr, prints usage, and exits non-zero rather than running the command without it. So a
-typo'd `--dry-run` fails loudly instead of quietly doing the real thing.
+typo'd `--dry-runn` fails loudly instead of quietly doing the real thing.
 
 ---
 
@@ -208,18 +211,45 @@ never claimed, listed, synced, or analyzed.
 ## 5. Step 1 — Scan: rank your sessions by friction
 
 ```sh
-faber scan
+faber scan                                 # this project's sessions (see "Scope" below)
+faber scan --all                           # every project on the machine
 faber scan --limit 200 --rank-by rate
 faber scan --format codex                  # scan OpenAI Codex sessions instead
 faber scan --source ccrider --db ~/.config/ccrider/sessions.db
 ```
 
-Output: a header line (`12 sessions across 3 projects in 84ms`), then a ranked table:
+Output: a scope line, a summary line, then a ranked table:
 
 ```
+project: faber (/Users/you/Projects/faber) — use --all for every project
+12 sessions in 84ms
+
   # friction(raw) fingerprint  signal              events  turns  tools  errs   ctx   opp  t2  session
   1           9.0 bug-fix      retry_loops             11      3      4     2   62%  0.20   ✓  faber/a1b2c3d4
 ```
+
+### Scope: `faber scan` means "this project"
+
+Run from inside a project, `scan` ranks **that project's** sessions — not every session on your
+machine. `propose`, `refine`, `consolidate` and `feedback` scope the same way, so `propose` drafts a
+skill for *your* worst session rather than the worst one you have ever had anywhere.
+
+The scope is resolved from the working directory, **walking up to the git root** — so `faber scan`
+from `lib/faber/` scopes to the repo, not to a `lib/faber` that has no sessions of its own. The walk
+stops at the repo boundary on purpose.
+
+The first line always says which scope you got, because a count is unreadable without it — 12
+sessions out of what?
+
+| You ran | You get |
+|---|---|
+| `faber scan` in a project with sessions | `project: <name> (<path>) — use --all for every project` |
+| `faber scan --all` | `all projects` |
+| `faber scan` somewhere with no recorded sessions | `all projects — no sessions recorded for this directory…` and the global ranking (never a silently empty table) |
+| `faber scan --base DIR` | `all projects` — an explicit root already names the files to read, so it is not narrowed further |
+
+Scoping also makes scans dramatically cheaper: one project's directory instead of the whole corpus
+(on a real machine, 174 transcripts rather than 6,770).
 
 | Column | Meaning |
 |---|---|
@@ -241,35 +271,71 @@ tier-2 gate still count **events**.
 **On a terminal** the `session` column is clipped with `…` to fit the width. Piped or redirected
 (`faber scan > out.txt`, `| less`), nothing is clipped — there is no width to fit.
 
-**Nothing matched?** The empty result names the three things that cause it (`--min-messages` too
-strict, wrong `--base` root, wrong `--format` for the agent) — see §21.
+**Nothing matched?** The empty result names the things that cause it — and names the ones that
+actually apply: inside a project whose directory was found, the root is provably right, so it points
+at `--min-messages` and `--all` rather than at `--base`/`--format`. See §21.
 
 | Flag | Meaning | Default |
 |---|---|---|
+| `--all` | rank every project on the machine, not just the one you're in | off (scoped to the cwd's project) |
 | `--limit N` | cap sessions scored (an even sample across the corpus, not a prefix) | all |
 | `--rank-by raw\|rate` | total friction vs. friction per message | `raw` |
+| `--json` | machine-readable: raw values, the full signal vector, no padding | off |
 | `--format F` | agent format: `claude`, `codex`, `cline`, `gemini`, `opencode` | `claude` |
 | `--source S` | `files` (walk the format's directory) or `ccrider` (SQLite index) | `files` |
 | `--db PATH` | ccrider DB path | `~/.config/ccrider/sessions.db` |
-| `--base DIR` | transcript root override | the format's default |
+| `--base DIR` | transcript root override (also disables cwd scoping) | the format's default |
 | `--min-messages N` | skip sessions shorter than N user+assistant messages | 4 |
+| `--quiet` | suppress status/progress lines on stderr; results still go to stdout | off |
 
 Dev mode: `mix faber.scan [--top N] [--limit N] [--min-messages N] [--base DIR] [--format F]`
 prints a fuller report (`--top` controls rows shown, default 20).
 
 Scanning is pure analysis — no LLM, no writes.
 
+### Machine-readable output: `--json` and `--quiet`
+
+Faber is human-readable by default and machine-readable on request. `--json` is available on the
+four read-only surfaces — **`scan`, `proposals`, `show`, `feedback`** — and `--quiet` on every
+command.
+
+```sh
+faber scan --json | jq '.sessions[0].friction.raw'
+faber scan --json | jq -r '.scope.project'
+faber proposals --json | jq -r '.proposals[] | select(.installed | not) | .id'
+faber feedback --json | jq -r '.skills[] | select(.verdict == "unused") | .skill'
+faber show a1b2c3 --json | jq -r .md > SKILL.md
+```
+
+What `--json` gives you over the table:
+
+- **Raw values, not display values.** The table rounds `friction(raw)` to one decimal and never
+  shows the sigmoid score at all; JSON carries both at full precision.
+- **The full signal vector**, not just the dominant one.
+- **`null`, not `—`.** A session with no context reading is `"max_ctx_pct": null` — a dash is not a
+  number and a script should not have to parse one.
+- **The scope it used**, so a script can tell a project-scoped ranking from a global one.
+
+Empty is an *answer*, not an error: a scan matching nothing is `{"count": 0, "sessions": []}` and
+exit 0, and an empty proposal store is `[]` rather than the prose explaining how to get one. Exit
+codes stay meaningful when piped, and `--quiet` silences the stderr status lines while leaving
+stdout untouched — so the two compose: `faber propose --quiet > skill.md`.
+
 ---
 
 ## 6. Step 2 — Propose: draft a skill for a friction finding
 
 ```sh
-faber propose                    # rank-1 session, faber-elixir adapter, keyless LLM
+faber propose                    # rank-1 session of THIS project, faber-elixir adapter, keyless LLM
+faber propose --dry-run          # what it would draft and spend — costs nothing
 faber propose --rank 3           # the 3rd-ranked session
+faber propose --all              # rank across every project, not just the one you're in
 faber propose --trigger          # also run the behavioral routing eval (see §7)
 faber propose --install          # install if you like what you see
 faber propose --force            # skip the stack-match gate (see below)
 ```
+
+Like `scan`, `propose` ranks **this project's** sessions by default (§5) — `--all` widens it.
 
 What happens:
 
@@ -284,7 +350,32 @@ What happens:
 **Progress.** Step 3 is a real `claude -p` call and can take a minute, so a pre-flight line goes to
 **stderr** before it — `Proposing for bug-fix session (raw 9.0, dominant retry_loops) via ClaudeCLI…`
 — naming the session, its score, and the backend about to be spent. Progress and diagnostics always
-go to stderr; **stdout carries only results**, so `faber propose > skill.md` stays clean.
+go to stderr; **stdout carries only results**, so `faber propose > skill.md` stays clean. `--quiet`
+drops the status lines and keeps the results.
+
+**`--dry-run`: see the bill before you pay it.** It stops at exactly the point where the free work
+ends and the paid work begins — after the scan, the adapter load and the stack gate, before the LLM
+call — and prints the decision it would act on:
+
+```
+DRY RUN — nothing was drafted, nothing was filed, no LLM calls were spent.
+
+  session to draft (1):
+    1. faber/31f10cff  (feature, raw 61.5)
+  adapter:   faber-elixir
+  eval:      adapter:exec-in-place
+  backend:   ClaudeCLI
+  LLM calls: 1 (the draft)
+
+Re-run without --dry-run to spend it.
+```
+
+Exit status is 0 and nothing reaches `~/.faber/proposals/`. `consolidate --dry-run` does the same
+for a whole `--top N` batch. Where a count genuinely isn't knowable in advance it says so rather
+than inventing one: `--trigger` spends one call per fixture *in the skill that hasn't been drafted
+yet*, and consolidate's merge calls depend on clusters that don't exist until the drafts do. The
+`eval:` line names the engine that will be **attempted** — an `exec-in-place` adapter falls back to
+the native eval if its referenced repo is absent, which is only knowable by running it (§7).
 
 **The draft is kept.** Before anything is printed, the proposal is written to `~/.faber/proposals/`
 and the run ends by naming its id. You never pay for the same skill twice, and nothing is lost by
@@ -350,8 +441,9 @@ Library API, if you're composing:
 When a draft is decent but not great, let the loop improve it:
 
 ```sh
-faber refine                          # rank-1 session, 5 reflective iterations
+faber refine                          # rank-1 session of this project, 5 reflective iterations
 faber refine --rank 2 --iterations 3
+faber refine --all                    # rank across every project
 faber refine --trigger                # also optimize routing recall
 faber refine --trigger --holdout      # + report a held-out validation score
 faber refine --install                # install the final best
@@ -497,7 +589,8 @@ Registered targets: `claude` → `~/.claude/CLAUDE.md`, `codex` → `~/.codex/AG
 Days or weeks after installing, close the outer loop:
 
 ```sh
-faber feedback
+faber feedback                       # usage across THIS project's sessions
+faber feedback --all                 # usage across every project
 faber feedback --format codex        # judge usage in another agent's sessions
 ```
 
@@ -522,6 +615,10 @@ its routing, or remove it.
 | `unused` | sessions ran, never fired | `faber refine --trigger` (routing problem) or retire it |
 | `no_sessions` | nothing ran since install | wait |
 
+**Scope matters here.** A skill judged against one project's sessions is judged on whether it fires
+*in that project*. That is usually the question you want — but a general-purpose skill that fires
+happily elsewhere will read as `unused` here. Use `--all` for the machine-wide verdict.
+
 Feedback is read-only — it never retires or edits anything, and it consumes only scan
 aggregates (usage flags + friction scores), never transcript text.
 
@@ -536,13 +633,20 @@ every merge must pass the eval gate or the originals are kept:
 
 ```sh
 faber consolidate                          # top 5 sessions → propose → cluster → merge → gate
+faber consolidate --top 10 --dry-run       # which 10 it would draft, and the calls that costs
 faber consolidate --top 10 --cluster-threshold 0.5
 faber consolidate --trigger                # score merges with the behavioral trigger dimension
 ```
 
+This is the most expensive command here — `--top 10` is ten drafts plus a merge call per cluster —
+so `--dry-run` (§6) is worth a look first. Like the rest, it ranks **this project's** sessions
+unless you pass `--all`.
+
 | Flag | Meaning | Default |
 |---|---|---|
 | `--top N` | how many top-friction sessions to draft proposals from | 5 |
+| `--dry-run` | list the sessions it would draft and the calls it would spend, then exit 0 | off |
+| `--all` | draw the top-N from every project, not just the one you're in | off |
 | `--cluster-threshold F` | token-Jaccard similarity for two proposals to share a cluster | 0.3 |
 | `--trigger` | add the behavioral trigger-accuracy dimension to the merge gate | off |
 | `--force` | include sessions that fail the adapter's stack-match gate | off |
@@ -824,10 +928,23 @@ Elixir tuple. This section is the longer form (and covers what an unrecognized e
 prints as a raw tuple, might mean).
 
 **`faber scan` shows "No sessions matched." / `propose` says "no sessions found under …".**
-Wrong root or too-strict filter — both commands list the three causes inline. Try `--min-messages 0`,
-check `--base` (see §13 for each format's default location), and confirm the format matches the
-agent whose sessions you want. Note "no sessions found" (an empty corpus) is a *different* problem
-from "no session at rank N — only M sessions matched" (a rank past the end of a real corpus).
+Wrong root or too-strict filter — both commands list the causes inline, and which causes they list
+depends on the scope (§5). Inside a project Faber found, the root is provably right, so try
+`--min-messages 0` or `--all`. Globally, check `--base` (see §13 for each format's default location)
+and confirm the format matches the agent whose sessions you want. Note "no sessions found" (an empty
+corpus) is a *different* problem from "no session at rank N — only M sessions matched" (a rank past
+the end of a real corpus).
+
+**`faber scan` ranks sessions from other projects.**
+You asked it to, one of three ways: `--all`, a `--base DIR` override (an explicit root disables cwd
+scoping), or standing somewhere with no recorded sessions — in which case it falls back to the
+global ranking *and says so* on the first line. See §5.
+
+**`faber scan` says "no sessions recorded for this directory" in a project you've used.**
+The scope is keyed on the working directory, walking up to the git root. If your sessions were run
+from a *different* path for the same code — a worktree, a symlinked checkout, a different mount —
+they're recorded under that path, not this one. Use `--all` to see everything, or `--base DIR` to
+name the transcript root directly (§13).
 
 **`faber propose` fails with `stack mismatch`.**
 Working as intended: the session's files don't match the adapter's globs. Either switch the

@@ -15,8 +15,10 @@ defmodule Faber.CLI do
   """
 
   alias Faber.{Adapter, Consolidate, Eval, Install, Loop, Proposal, Propose, Scan}
+  alias Faber.CLI.JSON
   alias Faber.Ingest.Format
   alias Faber.Proposal.Store
+  alias Faber.Scan.Scope
 
   @default_port 4710
 
@@ -90,6 +92,8 @@ defmodule Faber.CLI do
       db: :string,
       format: :string,
       base: :string,
+      all: :boolean,
+      json: :boolean,
       min_messages: :integer
     )
   end
@@ -100,11 +104,13 @@ defmodule Faber.CLI do
       install: :boolean,
       force: :boolean,
       trigger: :boolean,
+      dry_run: :boolean,
       source: :string,
       db: :string,
       format: :string,
       limit: :integer,
       base: :string,
+      all: :boolean,
       min_messages: :integer
     )
   end
@@ -127,6 +133,7 @@ defmodule Faber.CLI do
       format: :string,
       limit: :integer,
       base: :string,
+      all: :boolean,
       min_messages: :integer
     )
   end
@@ -136,24 +143,26 @@ defmodule Faber.CLI do
       top: :integer,
       cluster_threshold: :float,
       trigger: :boolean,
+      dry_run: :boolean,
       force: :boolean,
       source: :string,
       db: :string,
       format: :string,
       limit: :integer,
       base: :string,
+      all: :boolean,
       min_messages: :integer
     )
   end
 
   def parse(["proposals" | rest]) do
-    parse_sub(:proposals, rest, prune: :boolean, keep: :integer, dir: :string)
+    parse_sub(:proposals, rest, prune: :boolean, keep: :integer, dir: :string, json: :boolean)
   end
 
   # `show`/`install` take a positional id, which `parse_sub/3` discards along with every other
   # non-switch arg. Pull it out of OptionParser's remaining-args list and carry it in the opts, so
   # `parse/1` still returns pure data and `run/2` still does all the I/O.
-  def parse(["show" | rest]), do: parse_with_id(:show, rest, [])
+  def parse(["show" | rest]), do: parse_with_id(:show, rest, json: :boolean)
 
   def parse(["install" | rest]) do
     parse_with_id(:install, rest, force: :boolean, dir: :string)
@@ -167,6 +176,8 @@ defmodule Faber.CLI do
       format: :string,
       limit: :integer,
       base: :string,
+      all: :boolean,
+      json: :boolean,
       min_messages: :integer
     )
   end
@@ -185,13 +196,18 @@ defmodule Faber.CLI do
 
   def parse([other | _]), do: {:unknown, arg: other}
 
+  # Switches every subcommand takes, so a script can pass them uniformly without first knowing which
+  # commands care. `--quiet` silences status lines; on a command that emits none it is simply inert,
+  # which is the point — a global flag that errors on half the commands is not global.
+  @global_switches [quiet: :boolean]
+
   # One strict parse for every subcommand. `OptionParser`'s third element lists switches it could
   # not accept; honoring it is the whole point — discarding it is what let `--help` run a propose.
   defp parse_sub(subcommand, argv, strict) do
     if help?(argv) do
       {:help, subcommand}
     else
-      case OptionParser.parse(argv, strict: strict) do
+      case OptionParser.parse(argv, strict: strict ++ @global_switches) do
         {opts, _argv, []} -> {subcommand, opts}
         {_opts, _argv, invalid} -> {:parse_error, subcommand, Enum.map(invalid, &elem(&1, 0))}
       end
@@ -207,7 +223,7 @@ defmodule Faber.CLI do
     if help?(argv) do
       {:help, subcommand}
     else
-      case OptionParser.parse(argv, strict: strict) do
+      case OptionParser.parse(argv, strict: strict ++ @global_switches) do
         {opts, [id], []} -> {subcommand, Keyword.put(opts, :id, id)}
         {_opts, [], []} -> {:missing_id, subcommand}
         {_opts, [_ | _] = extra, []} -> {:extra_args, subcommand, extra}
@@ -323,7 +339,32 @@ defmodule Faber.CLI do
 
   @doc "Run a one-shot command, returning a process exit status (0 ok / 1 error). No `halt`."
   @spec run(atom(), keyword()) :: non_neg_integer()
-  def run(:help, opts) do
+  def run(command, opts) do
+    put_quiet(opts)
+    do_run(command, opts)
+  end
+
+  # `--quiet` is ambient, and deliberately not threaded. It has to reach `status/1` from inside
+  # progress callbacks several layers down (`Loop.refine`'s `:on_progress`, `Consolidate`'s), and
+  # passing a boolean through each of them just to reach an `IO.puts` is a lot of plumbing for a
+  # flag that means "don't".
+  #
+  # The process dictionary is the right ambient store here, specifically:
+  #
+  #   * it works — neither Loop nor Consolidate spawns for those callbacks, so they run in THIS
+  #     process, and `dispatch/1` runs each one-shot command in a single Task;
+  #   * unlike an Application env it cannot leak between concurrent tests, which matters because the
+  #     suite runs `run/2` directly and mostly async;
+  #   * it fails in the safe direction — an unset flag reads false, i.e. print.
+  defp put_quiet(opts), do: Process.put(:faber_quiet, opts[:quiet] == true)
+
+  defp quiet?, do: Process.get(:faber_quiet, false) == true
+
+  # `--json` is per-command and only ever read where output is rendered, so unlike `--quiet` it
+  # stays an ordinary opt — no ambient state needed.
+  defp json?(opts), do: opts[:json] == true
+
+  defp do_run(:help, opts) do
     # `parse/1` has carried the subcommand in `{:help, sub}` all along; this used to ignore it and
     # print the whole manual, so `faber propose --help` buried propose's flags in six other
     # commands' worth of text.
@@ -331,12 +372,12 @@ defmodule Faber.CLI do
     0
   end
 
-  def run(:version, _opts) do
+  defp do_run(:version, _opts) do
     IO.puts("faber #{version()}")
     0
   end
 
-  def run(:unknown, opts) do
+  defp do_run(:unknown, opts) do
     IO.puts(:stderr, "faber: unknown command '#{opts[:arg]}'\n")
     IO.puts(usage())
     1
@@ -345,7 +386,7 @@ defmodule Faber.CLI do
   # The command itself never runs: an unknown flag is a typo, and guessing what someone meant is
   # how `--dry-run` silently becomes a real one. Usage goes to stderr because this is the error
   # path — stdout stays clean for anything piping a successful command's output.
-  def run(:parse_error, opts) do
+  defp do_run(:parse_error, opts) do
     invalid = opts[:invalid] || []
     subcommand = opts[:subcommand]
 
@@ -359,7 +400,7 @@ defmodule Faber.CLI do
     1
   end
 
-  def run(:missing_id, opts) do
+  defp do_run(:missing_id, opts) do
     sub = opts[:subcommand]
 
     IO.puts(
@@ -372,7 +413,7 @@ defmodule Faber.CLI do
     1
   end
 
-  def run(:extra_args, opts) do
+  defp do_run(:extra_args, opts) do
     sub = opts[:subcommand]
 
     IO.puts(
@@ -385,7 +426,7 @@ defmodule Faber.CLI do
     1
   end
 
-  def run(:proposals, opts) do
+  defp do_run(:proposals, opts) do
     if opts[:prune] == true do
       prune_proposals(opts[:keep] || @default_keep)
     else
@@ -393,10 +434,10 @@ defmodule Faber.CLI do
     end
   end
 
-  def run(:show, opts) do
+  defp do_run(:show, opts) do
     case resolve_id(opts[:id]) do
       {:ok, record} ->
-        IO.puts(render_show(record))
+        IO.puts(if json?(opts), do: JSON.show(record), else: render_show(record))
         0
 
       {:error, reason} ->
@@ -405,7 +446,7 @@ defmodule Faber.CLI do
     end
   end
 
-  def run(:install, opts) do
+  defp do_run(:install, opts) do
     case resolve_id(opts[:id]) do
       {:ok, record} ->
         install_skill(record.name, record.md, opts)
@@ -416,29 +457,28 @@ defmodule Faber.CLI do
     end
   end
 
-  def run(:scan, opts) do
-    scan_opts =
-      opts
-      |> Keyword.take([:limit, :base, :min_messages, :db])
-      |> put_if(:rank_by, normalize_rank_by(opts[:rank_by]))
-      |> put_if(:source, normalize_source(opts[:source]))
-      |> put_if(:format, normalize_format(opts[:format]))
+  defp do_run(:scan, opts) do
+    scan_opts = opts |> scan_opts() |> put_if(:rank_by, normalize_rank_by(opts[:rank_by]))
 
     {elapsed_us, results} = :timer.tc(fn -> Scan.run(scan_opts) end)
-    IO.puts(render_table(results, div(elapsed_us, 1000)))
+    ms = div(elapsed_us, 1000)
+    scope = scan_opts[:scope]
+
+    # An empty scan stays exit 0 in JSON: "this project has no sessions" is an ANSWER, and a script
+    # asking `faber scan --json | jq '.count'` should read 0, not have the pipeline fall over.
+    if json?(opts),
+      do: IO.puts(JSON.scan(results, ms, scope)),
+      else: IO.puts(render_table(results, ms, scope))
+
     0
   end
 
-  def run(:propose, opts) do
+  defp do_run(:propose, opts) do
     rank = opts[:rank] || 1
 
     # Score all sessions so `--rank N` selects from the TRUE friction ranking (a `:limit` here
     # would sample a subset and could miss the worst sessions). `--limit` still passes through.
-    scan_opts =
-      opts
-      |> Keyword.take([:limit, :base, :min_messages, :db])
-      |> put_if(:source, normalize_source(opts[:source]))
-      |> put_if(:format, normalize_format(opts[:format]))
+    scan_opts = scan_opts(opts)
 
     # `--trigger` opts into the behavioral trigger-accuracy dimension (one keyless LLM call per
     # fixture). Off by default. In the loop (`Faber.Loop.refine/3` with `trigger: true`) the same
@@ -450,6 +490,7 @@ defmodule Faber.CLI do
     with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
          {:ok, result} <- select_session(Scan.run(scan_opts), rank, scan_opts),
          :ok <- stack_gate(adapter, result, opts[:force]),
+         :ok <- dry_run_gate(opts, [result], adapter, propose_cost(trigger?)),
          {:ok, proposal} <- propose_with_status(result, adapter),
          {:ok, eval} <- Eval.score(proposal, adapter: adapter, trigger: trigger?) do
       # Filed before it is printed, not after: the print is what the user sees, the file is what
@@ -459,6 +500,10 @@ defmodule Faber.CLI do
       maybe_install(proposal, adapter, opts[:install])
       0
     else
+      {:dry_run, report} ->
+        IO.puts(report)
+        0
+
       {:error, {:stack_mismatch, adapter, result}} ->
         IO.puts(:stderr, stack_mismatch_message(adapter, result))
         1
@@ -469,14 +514,9 @@ defmodule Faber.CLI do
     end
   end
 
-  def run(:refine, opts) do
+  defp do_run(:refine, opts) do
     rank = opts[:rank] || 1
-
-    scan_opts =
-      opts
-      |> Keyword.take([:limit, :base, :min_messages, :db])
-      |> put_if(:source, normalize_source(opts[:source]))
-      |> put_if(:format, normalize_format(opts[:format]))
+    scan_opts = scan_opts(opts)
 
     # CLI defaults are deliberately tighter than the library's (5 iterations vs 50): every
     # iteration is a real `claude -p` propose + eval, so a CLI run should be minutes, not hours.
@@ -515,14 +555,9 @@ defmodule Faber.CLI do
     end
   end
 
-  def run(:consolidate, opts) do
+  defp do_run(:consolidate, opts) do
     top = opts[:top] || 5
-
-    scan_opts =
-      opts
-      |> Keyword.take([:limit, :base, :min_messages, :db])
-      |> put_if(:source, normalize_source(opts[:source]))
-      |> put_if(:format, normalize_format(opts[:format]))
+    scan_opts = scan_opts(opts)
 
     # `:threshold` here is Consolidate's CLUSTER threshold (token-Jaccard); the eval gate keeps
     # its own configured bar. `--trigger` forwards to the gate like `propose --trigger`.
@@ -535,7 +570,15 @@ defmodule Faber.CLI do
          {:ok, sessions} <- consolidate_sessions(Scan.run(scan_opts), scan_opts, top) do
       {candidates, skipped} = Enum.split_with(sessions, &stack_match?(adapter, &1, opts[:force]))
       report_skipped(skipped)
-      consolidate_proposals(candidates, adapter, consolidate_opts, top)
+
+      case dry_run_gate(opts, candidates, adapter, consolidate_cost(candidates)) do
+        {:dry_run, report} ->
+          IO.puts(report)
+          0
+
+        :ok ->
+          consolidate_proposals(candidates, adapter, consolidate_opts, top)
+      end
     else
       {:error, reason} ->
         IO.puts(:stderr, "faber consolidate failed: #{humanize_error(reason)}")
@@ -543,25 +586,24 @@ defmodule Faber.CLI do
     end
   end
 
-  def run(:feedback, opts) do
-    feedback_opts =
-      opts
-      |> Keyword.take([:dir, :limit, :base, :min_messages, :db])
-      |> put_if(:source, normalize_source(opts[:source]))
-      |> put_if(:format, normalize_format(opts[:format]))
+  defp do_run(:feedback, opts) do
+    reports = opts |> scan_opts([:dir]) |> Faber.Feedback.report()
 
-    case Faber.Feedback.report(feedback_opts) do
-      [] ->
+    cond do
+      json?(opts) ->
+        IO.puts(JSON.feedback(reports))
+
+      reports == [] ->
         IO.puts("No Faber-installed skills found. Install one with `faber propose --install`.")
-        0
 
-      reports ->
+      true ->
         IO.puts(render_feedback(reports))
-        0
     end
+
+    0
   end
 
-  def run(:sync, opts) do
+  defp do_run(:sync, opts) do
     targets = parse_targets(opts[:target])
     check? = opts[:check] == true
     pass = Keyword.take(opts, [:force, :dir, :file])
@@ -605,6 +647,26 @@ defmodule Faber.CLI do
   defp format_sync(agent, {:error, reason}), do: "#{agent}: #{humanize_error(reason)}"
   defp format_sync(agent, other), do: "#{agent}: #{inspect(other)}"
 
+  # Passthrough keys every session-reading command shares. `:dir` and `:rank_by` are NOT here:
+  # they belong to one command each and are added by it.
+  @scan_keys [:limit, :base, :min_messages, :db]
+
+  # Every command that reads sessions builds its scan the same way — including the scope resolution
+  # that makes them all mean "this project" by default — so it happens here once rather than in five
+  # near-identical blocks that could drift apart on which flag they honor.
+  defp scan_opts(opts, extra \\ []) do
+    resolved =
+      opts
+      |> Keyword.take(@scan_keys ++ extra)
+      |> put_if(:source, normalize_source(opts[:source]))
+      |> put_if(:format, normalize_format(opts[:format]))
+
+    # Resolved from the NORMALIZED opts, not the raw ones: the scope has to ask the format module
+    # where transcripts live, and `Format.resolve/1` raises on the `--format` *string* argv carries.
+    scope = Scope.resolve(Keyword.put(resolved, :all, opts[:all] == true))
+    Keyword.put(resolved, :scope, scope)
+  end
+
   # Two failures that used to render identically as "no session at rank 1": an EMPTY corpus (faber
   # found nothing at all — almost always the wrong root, and the user's actual first-run experience)
   # and a rank past the end of a real corpus. Only the second one is about the rank, and telling a
@@ -640,6 +702,55 @@ defmodule Faber.CLI do
     if stack_match?(adapter, result, force),
       do: :ok,
       else: {:error, {:stack_mismatch, adapter, result}}
+  end
+
+  # ── dry run ────────────────────────────────────────────────────────────────
+
+  # `--dry-run` is a GATE, deliberately sitting at the exact seam between the last free step (scan,
+  # adapter load, stack match) and the first paid one (the `claude -p` draft). Everything it reports
+  # is therefore the decision the real run would make, read off the same values — not a second
+  # derivation that could quietly disagree with it. The CLI's answer to the dashboard's confirm(),
+  # without a stdin prompt the fire-and-forget architecture has nowhere to put.
+  defp dry_run_gate(opts, sessions, adapter, cost) do
+    if opts[:dry_run] == true,
+      do: {:dry_run, render_dry_run(sessions, adapter, cost)},
+      else: :ok
+  end
+
+  defp render_dry_run(sessions, adapter, cost) do
+    rows =
+      sessions
+      |> Enum.with_index(1)
+      |> Enum.map_join("\n", fn {r, i} ->
+        "    #{i}. #{session(r)}  (#{r.fingerprint}, raw #{fmt(r.raw)})"
+      end)
+
+    """
+    DRY RUN — nothing was drafted, nothing was filed, no LLM calls were spent.
+
+      #{pluralize("session", sessions)} to draft (#{length(sessions)}):
+    #{rows}
+      adapter:   #{adapter.name}
+      eval:      #{Eval.planned_engine(adapter: adapter)}
+      backend:   #{impl_label()}
+      LLM calls: #{cost}
+
+    Re-run without --dry-run to spend it.\
+    """
+  end
+
+  # One call drafts the skill. `--trigger` then scores routing with one call per fixture — and the
+  # fixtures live IN the skill that hasn't been drafted yet, so the total is genuinely unknowable
+  # here. Say that, rather than printing a confident number that a --trigger run would then exceed.
+  defp propose_cost(false), do: "1 (the draft)"
+
+  defp propose_cost(true),
+    do:
+      "1 (the draft) + one per fixture in it for --trigger (fixture count isn't known until drafted)"
+
+  defp consolidate_cost(candidates) do
+    "#{length(candidates)} (one draft each) + one per merged cluster " <>
+      "(clusters aren't known until the drafts exist)"
   end
 
   defp stack_mismatch_message(adapter, result) do
@@ -807,19 +918,16 @@ defmodule Faber.CLI do
 
   defp first_line(other), do: inspect(other)
 
-  # The three causes of an empty corpus, written once. `scan` renders them under its own table and
+  # The causes of an empty corpus, written once. `scan` renders them under its own table and
   # propose/refine render them via humanize_error/1 — the same user, the same wrong root, and
-  # previously two different (or absent) explanations. The format list is derived from the ingest
-  # registry so it can't drift behind a newly-added agent.
-  defp scan_causes do
-    formats = Format.known() |> Enum.map_join(", ", &to_string/1)
+  # previously two different (or absent) explanations.
+  #
+  # propose/refine have no scope to hand over here, so they get the unscoped list. That is the
+  # honest default rather than a shortcut: their `:no_sessions` error carries the root they
+  # searched, which is the `--base`/`--format` story these lines tell.
+  defp scan_causes, do: causes_block(nil)
 
-    """
-      - --min-messages is filtering every session out — try --min-messages 0
-      - --base points at the wrong transcript root (docs/GUIDE.md §13 lists each format's default)
-      - --format doesn't match the agent whose sessions you want (known: #{formats})
-    """
-  end
+  defp causes_block(scope), do: Enum.map_join(empty_causes(scope), "\n", &("  - " <> &1)) <> "\n"
 
   # ── status ─────────────────────────────────────────────────────────────────
 
@@ -827,7 +935,9 @@ defmodule Faber.CLI do
   # total silence in which a run and a hang look identical. stderr because these are diagnostics,
   # not results: stdout stays a clean data stream for anything piping a command's output.
   @spec status(iodata()) :: :ok
-  defp status(line), do: IO.puts(:stderr, line)
+  defp status(line) do
+    if quiet?(), do: :ok, else: IO.puts(:stderr, line)
+  end
 
   # The short backend name (`ClaudeCLI`) rather than `inspect/1`'s fully-qualified `Faber.LLM.
   # ClaudeCLI` — the module prefix is noise in a status line. String-split rather than
@@ -916,12 +1026,12 @@ defmodule Faber.CLI do
   # An empty scan is the single most common first-run outcome, and "No sessions matched." told the
   # user nothing they could act on. The three causes are GUIDE §21's, and the format list comes from
   # the ingest registry so it can't drift behind a newly-added agent.
-  defp render_table([], ms),
+  defp render_table([], ms, scope),
     do:
-      "No sessions matched (scanned in #{ms}ms). Three things usually cause this:\n" <>
-        scan_causes()
+      "#{scope_line(scope)}\nNo sessions matched (scanned in #{ms}ms). " <>
+        "Usually one of these:\n" <> causes_block(scope)
 
-  defp render_table(results, ms) do
+  defp render_table(results, ms, scope) do
     # Resolved once per table, not once per row: :io.columns/0 is a syscall, and a width that
     # changed mid-table would misalign it anyway.
     session_w = session_width()
@@ -931,7 +1041,50 @@ defmodule Faber.CLI do
       |> Enum.with_index(1)
       |> Enum.map_join("\n", fn {r, i} -> scan_row(r, i, session_w) end)
 
-    "#{scan_summary(results, ms)}\n\n#{scan_header()}\n#{rows}\n\n#{@scan_legend}"
+    "#{scope_line(scope)}\n#{scan_summary(results, ms, scope)}\n\n" <>
+      "#{scan_header()}\n#{rows}\n\n#{@scan_legend}"
+  end
+
+  # The scope line is printed on EVERY scan, scoped or not. A scan that quietly changed which
+  # sessions it ranks — and this one now does, by default — has to say so on the surface the user
+  # actually reads, or the number in the table is unreadable: 9 sessions out of what?
+  defp scope_line(%Scope{kind: :project} = scope),
+    do: "project: #{scope.label} (#{scope.root}) — use --all for every project"
+
+  defp scope_line(%Scope{kind: :all} = scope), do: "all projects#{all_because(scope)}"
+  defp scope_line(_scope), do: "all projects"
+
+  # Why we're showing everything, when the user didn't ask for everything. `:unknown_cwd` is the one
+  # that must never be silent: it is a scoped scan that FELL BACK, and without a word here the user
+  # reads a 60-project table as this project's.
+  defp all_because(%Scope{reason: :unknown_cwd}),
+    do:
+      " — no sessions recorded for this directory, so nothing to scope to " <>
+        "(`--base DIR` sets the transcript root explicitly)"
+
+  defp all_because(%Scope{reason: :no_cwd}),
+    do: " — the working directory could not be read, so nothing to scope to"
+
+  defp all_because(_scope), do: ""
+
+  # `--min-messages` leads for a scoped scan and `--base`/`--format` lead for a global one, because
+  # they are what actually went wrong in each case: inside a project whose directory we FOUND, the
+  # root is provably right and only the filter can be hiding everything.
+  defp empty_causes(%Scope{kind: :project}) do
+    [
+      "--min-messages is filtering every session out — try --min-messages 0",
+      "this project's sessions are all shorter than the filter — `--all` ranks every project"
+    ]
+  end
+
+  defp empty_causes(_scope) do
+    formats = Format.known() |> Enum.map_join(", ", &to_string/1)
+
+    [
+      "--min-messages is filtering every session out — try --min-messages 0",
+      "--base points at the wrong transcript root (docs/GUIDE.md §13 lists each format's default)",
+      "--format doesn't match the agent whose sessions you want (known: #{formats})"
+    ]
   end
 
   defp scan_header do
@@ -961,7 +1114,12 @@ defmodule Faber.CLI do
     |> Kernel.<>("  " <> truncate(session(r), session_w))
   end
 
-  defp scan_summary(results, ms) do
+  # "across M projects" is dropped for a scoped scan: M is 1 by construction there, so printing it
+  # would be padding a line whose whole job is to be scannable.
+  defp scan_summary(results, ms, %Scope{kind: :project}),
+    do: "#{length(results)} #{pluralize("session", results)} in #{ms}ms"
+
+  defp scan_summary(results, ms, _scope) do
     projects =
       results |> Enum.map(&project_label(&1, &1.path)) |> Enum.uniq() |> length()
 
@@ -1259,15 +1417,17 @@ defmodule Faber.CLI do
   # ── proposals / show ───────────────────────────────────────────────────────
 
   defp list_proposals(opts) do
-    case Store.list() do
-      [] ->
-        IO.puts(empty_store_message())
-        0
+    records = Store.list()
 
-      records ->
-        IO.puts(render_proposals(records, opts[:dir]))
-        0
+    cond do
+      # An empty store in JSON is `{"count": 0, "proposals": []}` — a valid answer, not the prose
+      # explaining how to get one. The human path keeps the prose.
+      json?(opts) -> IO.puts(JSON.proposals(records, installed_names(opts[:dir])))
+      records == [] -> IO.puts(empty_store_message())
+      true -> IO.puts(render_proposals(records, opts[:dir]))
     end
+
+    0
   end
 
   # The only thing that ever deletes a proposal, and only because a human typed --prune. Reports
@@ -1701,19 +1861,27 @@ defmodule Faber.CLI do
 
     Usage:
       faber scan [--limit N] [--rank-by raw|rate] [--source S] [--format F] [--db PATH]
-                 [--base DIR] [--min-messages N]   Rank session friction
-                                                    (--base: transcript root override;
+                 [--base DIR] [--all] [--json] [--min-messages N]
+                                                    Rank session friction for the project you're in
+                                                    (--all: every project on this machine;
+                                                     --base: transcript root override;
+                                                     --json: raw values + the full signal vector;
                                                      --min-messages: skip shorter sessions)
-      faber propose [--rank N] [--install] [--force] [--trigger] [--source S] [--format F] [--db PATH]
-                    [--base DIR] [--min-messages N]
+      faber propose [--rank N] [--install] [--force] [--trigger] [--dry-run] [--source S]
+                    [--format F] [--db PATH] [--base DIR] [--all] [--min-messages N]
                                                     Draft + eval a skill for one session
-                                                    (--force: skip the stack-match gate;
+                                                    (--dry-run: print the session, adapter, eval
+                                                     engine and LLM calls it WOULD spend, then
+                                                     exit 0 having spent none;
+                                                     --force: skip the stack-match gate;
+                                                     --all: rank across every project, not just
+                                                     the one you're in;
                                                      --trigger: add the behavioral trigger-accuracy
                                                      dimension — one keyless LLM call per fixture)
       faber refine [--rank N] [--strategy reflect|regenerate] [--iterations N] [--patience N]
                    [--target F] [--min-improvement F] [--trigger] [--trigger-samples N]
                    [--holdout] [--install] [--force] [--source S] [--format F] [--db PATH]
-                   [--base DIR] [--min-messages N]
+                   [--base DIR] [--all] [--min-messages N]
                                                     Self-improve a skill: propose → eval → keep
                                                     the best, looping (default: 5 reflective
                                                     iterations, keyless via claude -p).
@@ -1721,31 +1889,34 @@ defmodule Faber.CLI do
                                                      scored on the seed's pinned fixtures;
                                                      --holdout: report a held-out validation
                                                      score; --install: install the final best)
-      faber consolidate [--top N] [--cluster-threshold F] [--trigger] [--force] [--source S]
-                        [--format F] [--db PATH] [--base DIR] [--min-messages N]
-                                                    Draft skills for the top-N friction sessions
+      faber consolidate [--top N] [--cluster-threshold F] [--trigger] [--dry-run] [--force]
+                        [--source S] [--format F] [--db PATH] [--base DIR] [--all]
+                        [--min-messages N]          Draft skills for the top-N friction sessions
                                                     (default 5), cluster near-duplicates (token
                                                     Jaccard, threshold 0.3), and LLM-merge each
                                                     cluster — a merge must pass the eval gate or
                                                     the originals are kept
-      faber proposals [--prune] [--keep N] [--dir PATH]
+                                                    (--dry-run: list the sessions it would draft
+                                                     and the calls it would spend, then exit 0)
+      faber proposals [--prune] [--keep N] [--dir PATH] [--json]
                                                     List every skill faber has drafted and kept
                                                     (#{Faber.proposals_dir()}) — id, composite,
                                                     outcome, scoring engine, whether it's installed
                                                     (--prune: delete all but the newest --keep N,
                                                      default 50 — the ONLY thing that ever removes
                                                      a proposal, and only when you ask)
-      faber show <id>                               Print one proposal's SKILL.md plus its
+      faber show <id> [--json]                      Print one proposal's SKILL.md plus its
                                                     per-dimension eval breakdown and provenance
                                                     (<id> may be any unambiguous prefix)
       faber install <id> [--force] [--dir PATH]     Install a proposal as a skill. If one is already
                                                     installed under that name, prints a diff and
                                                     refuses — --force replaces it
-      faber feedback [--dir PATH] [--source S] [--format F] [--db PATH] [--base DIR]
-                     [--min-messages N]             The outer loop: for every Faber-installed
+      faber feedback [--dir PATH] [--source S] [--format F] [--db PATH] [--base DIR] [--all]
+                     [--json] [--min-messages N]    The outer loop: for every Faber-installed
                                                     skill, report whether sessions since install
                                                     actually used it and how friction compares —
                                                     verdicts flag skills to refine or retire
+                                                    (--all: judge usage across every project)
       faber serve [--port P] [--no-open]            Start the dashboard UI in your browser
                                                     (also serves the read-only MCP server at /mcp)
       faber sync [--target claude,codex] [--check] [--force] [--dir PATH]
@@ -1753,6 +1924,12 @@ defmodule Faber.CLI do
                                                     context file (managed block; --check: report
                                                     drift only, no write)
       faber help | --version
+
+    Scope: commands that read sessions default to the project you're standing in (walking up to the
+    git root), and say so on their first line. --all ranks every project on the machine; --base DIR
+    reads exactly that root. A directory with no recorded sessions falls back to --all and says so.
+
+    Global: --quiet suppresses status/progress lines (stderr) and keeps results (stdout).
 
     Sources (--source): files (default) walks the agent's transcript dir; ccrider reads ccrider's
     SQLite index (--db, default ~/.config/ccrider/sessions.db). Or set config :faber, :ingest_source.

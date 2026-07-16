@@ -62,6 +62,39 @@ defmodule Faber.Ingest.Format.Claude do
   @impl true
   def default_base, do: @default_base
 
+  # Claude Code names a project directory by flattening the session's working directory: every
+  # character outside `[a-zA-Z0-9]` becomes `-`, case preserved. Verified against a real
+  # `~/.claude/projects` rather than assumed, because the rule is wider than the obvious "slashes
+  # become dashes" — dots and underscores go too:
+  #
+  #     /Users/o/Projects/faber                → -Users-o-Projects-faber
+  #     /Users/o/Projects/andrej_skolenia      → -Users-o-Projects-andrej-skolenia   (underscore)
+  #     /Users/o/.supacode/repos/x             → -Users-o--supacode-repos-x          (dot; note --)
+  #     /Users/o/Projects/webSerialCommunication → …-webSerialCommunication          (case kept)
+  #
+  # The encoding is LOSSY and therefore one-way: `andrej_skolenia` and `andrej-skolenia` collide on
+  # one directory. That is Claude Code's own behavior, not something this can undo — which is why
+  # `Faber.Scan` still filters the scored results by `cwd` instead of trusting the directory alone.
+  @slug_regex ~r/[^a-zA-Z0-9]/
+
+  @doc """
+  The project directory `cwd`'s transcripts would live in — `base` joined to Claude Code's
+  flattened form of `cwd`.
+
+  Pure: it reports where the directory *would* be, never whether it exists (see
+  `c:Faber.Ingest.Format.project_base/2`). `cwd` is expanded first, so a relative or `~` path
+  flattens the same way an absolute one does.
+  """
+  @impl true
+  def project_base(base, cwd) when is_binary(base) and is_binary(cwd) do
+    case cwd |> Path.expand() |> String.replace(@slug_regex, "-") do
+      "" -> :error
+      slug -> {:ok, base |> Path.expand() |> Path.join(slug)}
+    end
+  end
+
+  def project_base(_base, _cwd), do: :error
+
   @doc """
   Discover Claude Code session files under `base` (default `#{@default_base}`).
 
