@@ -140,8 +140,20 @@
   // selecting an item fires a LiveView event whose re-render drops the class and closes the menu.
   function closePopovers(keep) {
     document.querySelectorAll(".install.open, .combo.open").forEach(function (el) {
-      if (el !== keep) el.classList.remove("open");
+      if (el !== keep) {
+        el.classList.remove("open");
+        syncExpanded(el);
+      }
     });
+  }
+
+  // Keep the trigger's aria-expanded in step with its popover's `.open` state, so a screen reader
+  // announces the combo/menu as expanded or collapsed (the class alone is invisible to AT).
+  function syncExpanded(el) {
+    var trigger = el.querySelector("[data-combo-toggle], [data-install-toggle]");
+    if (trigger) {
+      trigger.setAttribute("aria-expanded", el.classList.contains("open") ? "true" : "false");
+    }
   }
 
   // Show/hide a combo's options by a case-insensitive substring of their label (the "All" option,
@@ -181,6 +193,7 @@
       var openCombo = combo.classList.contains("open");
       closePopovers(combo);
       combo.classList.toggle("open", !openCombo);
+      syncExpanded(combo);
       if (!openCombo) {
         var search = combo.querySelector("[data-combo-search]");
         if (search) {
@@ -199,6 +212,7 @@
       var openInstall = wrap.classList.contains("open");
       closePopovers(wrap);
       wrap.classList.toggle("open", !openInstall);
+      syncExpanded(wrap);
       return;
     }
 

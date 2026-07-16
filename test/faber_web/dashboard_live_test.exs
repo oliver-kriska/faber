@@ -42,6 +42,11 @@ defmodule FaberWeb.DashboardLiveTest do
     # plus a muted id span).
     assert html =~ ~s(<span class="proj-name">fixtures</span>)
 
+    # Every metric header carries its explanation (Errs/Ctx/Tools no longer bare), and the filter
+    # combo advertises collapsed/expanded state to assistive tech.
+    assert html =~ "Peak context-window usage"
+    assert html =~ ~s(aria-expanded="false")
+
     assert render_click(view, "rescan") =~ "Faber"
   end
 

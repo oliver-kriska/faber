@@ -13,7 +13,7 @@
   --line-soft: #191d25; /* row divider / hover fill */
   --accent: #d8a34a; /* gold — friction + active only */
   --accent-ink: #14110b; /* text on an accent fill */
-  --heat: rgba(216, 163, 74, 0.11); /* proportional row friction wash */
+  --heat: rgba(216, 163, 74, 0.15); /* proportional row friction wash */
   --ok: #5faa7f;
   --bad: #d4795f;
 
@@ -54,7 +54,7 @@
   --line-soft: #edeff3; /* hover fill / row divider */
   --accent: #8a5e0b; /* deep ochre — AA ≥4.9:1 as text on white, canvas, and the hover fill */
   --accent-ink: #ffffff;
-  --heat: rgba(138, 94, 11, 0.1);
+  --heat: rgba(138, 94, 11, 0.14);
   --ok: #2f8a5b;
   --bad: #c0472b;
   --shadow: rgba(24, 28, 38, 0.12);
@@ -616,8 +616,10 @@ tbody tr.srow {
 tbody tr.srow:hover {
   background-color: var(--line-soft);
 }
+/* Selected row: a faint accent wash (accent = active, the reserved job), so the open session reads
+   at a glance instead of leaning entirely on the gold project name. */
 tbody tr.srow.selected {
-  background-color: var(--panel);
+  background-color: color-mix(in srgb, var(--accent) 12%, var(--panel));
 }
 tbody tr.srow.selected .proj-name {
   color: var(--accent);
@@ -659,7 +661,9 @@ tbody tr.srow:focus-visible {
   overflow: hidden;
 }
 .detail-inner {
-  min-width: 360px;
+  /* Cap the readable floor at the column width so the pane can't overflow mid-morph while the
+     grid track is still narrower than 360px (the tween briefly passes through small widths). */
+  min-width: min(360px, 100%);
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -1075,9 +1079,13 @@ tbody tr.srow:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .detail-inner,
-  .progress > span {
+  .detail-inner {
     animation: none;
+  }
+  /* A frozen indeterminate bar reads as "stalled"; the "~a minute" line already carries status, so
+     drop the decoration entirely rather than freeze it mid-sweep. */
+  .progress {
+    display: none;
   }
   tbody tr.srow,
   [data-tip]::after {

@@ -710,9 +710,15 @@ defmodule FaberWeb.DashboardLive do
                 <th class="col-num num" data-tip="Messages a human actually typed. Far smaller than events — the agent generates most of a transcript itself.">
                   Turns
                 </th>
-                <th class="col-num num">Tools</th>
-                <th class="col-num num">Errs</th>
-                <th class="col-num num">Ctx</th>
+                <th class="col-num num" data-tip="Tool calls the agent made — edits, searches, shell runs, MCP calls.">
+                  Tools
+                </th>
+                <th class="col-num num" data-tip="Failures in the session — non-zero command exits and errored tool results.">
+                  Errs
+                </th>
+                <th class="col-num num" data-tip="Peak context-window usage. Shown hot (red) when a session pushed near the limit — a compaction risk.">
+                  Ctx
+                </th>
                 <th class="col-tier2" data-tip="Tier-2 eligible: clears the bar to be worth proposing a skill for.">
                   T2
                 </th>
@@ -877,7 +883,13 @@ defmodule FaberWeb.DashboardLive do
   defp filter_combo(assigns) do
     ~H"""
     <div class="combo" id={"combo-#{@facet}"}>
-      <button type="button" class="combo-trigger" data-combo-toggle aria-haspopup="listbox">
+      <button
+        type="button"
+        class="combo-trigger"
+        data-combo-toggle
+        aria-haspopup="listbox"
+        aria-expanded="false"
+      >
         <span class={["combo-value", @value == nil && "is-placeholder"]}>{@value_label}</span>
         <span class="combo-caret" aria-hidden="true">▾</span>
       </button>
@@ -1060,7 +1072,13 @@ defmodule FaberWeb.DashboardLive do
             Copy skill
           </button>
           <div :if={@allow_install} class="install" id={"install-#{@row}"}>
-            <button class="ghost install-btn" type="button" data-install-toggle aria-haspopup="menu">
+            <button
+              class="ghost install-btn"
+              type="button"
+              data-install-toggle
+              aria-haspopup="menu"
+              aria-expanded="false"
+            >
               {if @already, do: "Reinstall ▾", else: "Install ▾"}
             </button>
             <div class="install-menu" role="menu">
