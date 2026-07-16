@@ -520,6 +520,32 @@ defmodule Faber.EvalTest do
       assert {:pass, _r} = Eval.gate(@danger_documented_under_safe_heading, engine: :native)
     end
 
+    test "an empty pattern list falls back to the defaults — it never means 'nothing is dangerous'" do
+      # `params[:patterns] || @dangerous_default` looked right and was not: `[]` is TRUTHY in Elixir,
+      # so an empty list from a pack's eval.yaml survived the `||` and became an empty regex set →
+      # `Enum.find([], …)` is nil → {true, "no dangerous patterns"} on an artifact containing
+      # `rm -rf /`. The assertion was present AND passing, so it read as a clean safety score rather
+      # than a skipped check — the same vacuous-pass class as the empty-haystack bug, one config key
+      # away.
+      assert {false, _} =
+               Matchers.no_dangerous_patterns(@danger_before_first_heading, %{patterns: []})
+
+      # A non-empty list is still honored (a pack may legitimately supply its own set for scoring).
+      assert {true, _} =
+               Matchers.no_dangerous_patterns(@danger_before_first_heading, %{
+                 patterns: ["NEVER-MATCHES"]
+               })
+    end
+
+    test "the empty-pattern fallback matches the Python sidecar's behavior" do
+      # This was a silent native<->sidecar DIVERGENCE, not just a bug: Python's
+      # `patterns or _DANGEROUS_DEFAULT` falls back correctly because `[]` is *falsy* there, while
+      # Elixir's `||` let it through. The parity test never caught it because it doesn't pass
+      # `patterns: []`. Pinned here so the two engines cannot drift apart on it again.
+      assert Matchers.no_dangerous_patterns(@danger_before_first_heading, %{patterns: []}) ==
+               Matchers.no_dangerous_patterns(@danger_before_first_heading, %{})
+    end
+
     test "the safe-heading exemption does not leak into the pre-heading region" do
       # Same body, same words, but the danger sits above the first heading rather than under
       # "## Anti-patterns". Unheaded prose announces nothing, so it gets no exemption.
@@ -545,7 +571,7 @@ defmodule Faber.EvalTest do
       assert r.composite >= r.threshold
       refute r.passed
 
-      assert [%{check_type: "no_dangerous_patterns", dimension: "safety"}] = r.vetoed
+      assert [%{check_type: "no_dangerous_patterns"}] = r.vetoed
     end
 
     test "a merely-poor skill is not vetoed — the veto is per-check, not per-dimension" do
@@ -562,6 +588,143 @@ defmodule Faber.EvalTest do
       assert {:ok, r} = Eval.score(@good_skill, engine: :native)
       assert r.vetoed == []
       assert r.passed
+    end
+
+    test "an adapter pack that omits the safety check cannot escape the veto" do
+      # THE FAIL-OPEN THIS FIXES. A vendored pack's dimensions WHOLLY REPLACE the default eval, so
+      # while the veto was derived from the scorer's report, a pack that simply left
+      # `no_dangerous_patterns` out emitted no such assertion and was un-vetoable: `rm -rf /` scored
+      # 1.0 and passed. Packs are untrusted input (CLAUDE.md), so that made the security boundary
+      # configurable by the thing it is supposed to constrain.
+      #
+      # The veto now runs against the ARTIFACT with the ENGINE's parameters, so what the pack chose
+      # to score is irrelevant to it.
+      pack = %Faber.Adapter{
+        name: "omits-safety",
+        version: "0.1.0",
+        eval: %{
+          "mode" => "vendored",
+          "dimensions" => [
+            %{
+              "name" => "completeness",
+              "weight" => 1.0,
+              "checks" => [%{"type" => "frontmatter_field", "params" => %{"field" => "name"}}]
+            }
+          ]
+        }
+      }
+
+      assert {:ok, r} = Eval.score(@danger_before_first_heading, adapter: pack)
+
+      # The pack's own score is untouched — it graded what it asked to grade, and scored it 1.0.
+      assert r.composite == 1.0
+      refute Map.has_key?(r.dimensions, "safety")
+
+      # ...and the artifact is still refused.
+      refute r.passed
+      assert [%{check_type: "no_dangerous_patterns"}] = r.vetoed
+    end
+
+    test "an adapter pack cannot narrow the veto's pattern set" do
+      # A pack CAN legitimately narrow `patterns` for its own safety dimension. It must not thereby
+      # narrow the veto — hence `params: %{}` in `vetoes/1`, which pins @dangerous_default.
+      pack = %Faber.Adapter{
+        name: "narrow-patterns",
+        version: "0.1.0",
+        eval: %{
+          "mode" => "vendored",
+          "dimensions" => [
+            %{
+              "name" => "safety",
+              "weight" => 1.0,
+              "checks" => [
+                %{
+                  "type" => "no_dangerous_patterns",
+                  "params" => %{"patterns" => ["NEVER-MATCHES"]}
+                }
+              ]
+            }
+          ]
+        }
+      }
+
+      assert {:ok, r} = Eval.score(@danger_before_first_heading, adapter: pack)
+
+      assert r.dimensions["safety"]["score"] == 1.0
+      refute r.passed
+      assert [%{check_type: "no_dangerous_patterns"}] = r.vetoed
+    end
+
+    defmodule LyingSidecar do
+      # Reports a foreign shape (atom keys) AND claims safety passed. Both were fatal to the old
+      # report-derived veto: `assertion["passed"]` on an atom-keyed map is `nil`, so `nil == false`
+      # was false and a failed safety assertion was silently DROPPED (fail-open); a non-map
+      # dimension raised FunctionClauseError out of Access.get/3.
+      @behaviour Faber.Sidecar
+      @impl true
+      def call(_command, _request, _opts) do
+        {:ok,
+         %{
+           "status" => "ok",
+           "result" => %{
+             "composite" => 0.9,
+             "dimensions" => %{
+               "safety" => %{
+                 "assertions" => [%{passed: true, check_type: :no_dangerous_patterns}]
+               }
+             }
+           }
+         }}
+      end
+    end
+
+    defmodule JunkDimensionsSidecar do
+      @behaviour Faber.Sidecar
+      @impl true
+      def call(_command, _request, _opts) do
+        {:ok,
+         %{
+           "status" => "ok",
+           "result" => %{"composite" => 0.9, "dimensions" => %{"safety" => "x"}}
+         }}
+      end
+    end
+
+    test "a scorer that lies about safety cannot get a dangerous artifact past the veto" do
+      # The strongest statement of why the veto reads the ARTIFACT: this scorer reports — in a shape
+      # the old code couldn't even parse — that safety PASSED. It is wrong, and it does not matter.
+      assert {:ok, r} = Eval.score(@danger_before_first_heading, sidecar: LyingSidecar)
+
+      assert r.composite == 0.9
+      refute r.passed
+      assert [%{check_type: "no_dangerous_patterns"}] = r.vetoed
+    end
+
+    test "a foreign report shape does not veto a SAFE artifact either" do
+      # The veto must be indifferent to the report in both directions — no fail-open, no fail-shut.
+      assert {:ok, r} = Eval.score(@good_skill, sidecar: LyingSidecar)
+      assert r.vetoed == []
+      assert r.passed
+    end
+
+    test "structurally junk dimensions do not raise" do
+      # Previously: FunctionClauseError out of Access.get/3, escaping past the callers' fallback.
+      assert {:ok, r} = Eval.score(@good_skill, sidecar: JunkDimensionsSidecar)
+      assert r.passed
+
+      assert {:ok, r2} = Eval.score(@danger_before_first_heading, sidecar: JunkDimensionsSidecar)
+      refute r2.passed
+    end
+
+    test "a @veto_checks name the matchers don't implement would refuse EVERY artifact" do
+      # Pins why `@veto_checks` may only ever name implemented checks: `run_check/3` reports an
+      # unknown name as a FAILED check, and a failed veto check refuses the artifact. So a typo in
+      # `@veto_checks` is not a soft failure — it is a total outage in which nothing can ever be
+      # installed. The guard is that the real name resolves, proven both ways here.
+      assert {false, evidence} = Matchers.run_check("no_dangerous_paterns", @good_skill, %{})
+      assert evidence =~ "unknown check_type"
+
+      assert {true, _} = Matchers.run_check("no_dangerous_patterns", @good_skill, %{})
     end
   end
 

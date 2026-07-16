@@ -125,15 +125,31 @@ defmodule Mix.Tasks.Faber.Propose do
 
     case Eval.score(proposal, eval_opts) do
       {:ok, r} ->
-        verdict = if r.passed, do: "PASS", else: "below threshold"
-        Mix.shell().info("Eval: composite #{fmt(r.composite)} (#{verdict} @ #{r.threshold})")
+        Mix.shell().info("Eval: composite #{fmt(r.composite)} (#{verdict(r)} @ #{r.threshold})")
         for {dim, d} <- r.dimensions, do: Mix.shell().info("  #{dim}: #{fmt(d["score"])}")
+        report_veto(r)
         report_trigger(Map.get(r, :trigger))
 
       {:error, reason} ->
         Mix.shell().error("Eval skipped: #{inspect(reason)}")
     end
   end
+
+  # A vetoed artifact can score ABOVE the threshold and still be refused, so "below threshold" is a
+  # lie for that case — and the worst kind, since it hides a safety refusal behind a scoring
+  # complaint and points the reader at the number instead of the reason.
+  defp verdict(%{vetoed: [_ | _]}), do: "REFUSED"
+  defp verdict(%{passed: true}), do: "PASS"
+  defp verdict(_), do: "below threshold"
+
+  defp report_veto(%{vetoed: [_ | _] = vetoed}) do
+    for %{check_type: check, evidence: evidence} <- vetoed,
+        do: Mix.shell().error("  REFUSED by #{check}: #{evidence}")
+
+    :ok
+  end
+
+  defp report_veto(_), do: :ok
 
   defp report_trigger(nil), do: :ok
   defp report_trigger({:skipped, reason}), do: Mix.shell().info("Trigger: skipped (#{reason})")

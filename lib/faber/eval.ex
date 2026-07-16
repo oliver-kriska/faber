@@ -19,7 +19,7 @@ defmodule Faber.Eval do
   require Logger
 
   alias Faber.{Adapter, Proposal, Propose, Sidecar}
-  alias Faber.Eval.{ExecInPlace, Native}
+  alias Faber.Eval.{ExecInPlace, Matchers, Native}
 
   # `:trigger` is added dynamically when `trigger: true` (behavioral fold); not all callers see it.
   @typedoc """
@@ -39,8 +39,13 @@ defmodule Faber.Eval do
           engine: String.t()
         }
 
-  @typedoc "A failed veto check: fatal to `:passed` regardless of `:composite`. See `@veto_checks`."
-  @type veto :: %{dimension: String.t(), check_type: String.t(), evidence: String.t()}
+  @typedoc """
+  A failed veto check: fatal to `:passed` regardless of `:composite`. See `@veto_checks`.
+
+  Carries no dimension — a veto is a property of the **artifact**, established by re-running the
+  check against it, not a reading of whatever dimension some scorer happened to file it under.
+  """
+  @type veto :: %{check_type: String.t(), evidence: String.t()}
 
   # Fallback contract version if a (legacy) scorer result omits it; the engines (Native +
   # python sidecar) carry their own and the parity test asserts they agree.
@@ -49,7 +54,8 @@ defmodule Faber.Eval do
   @ref_checks ~w(valid_file_refs valid_skill_refs valid_agent_refs)
   @behavioral_weight 0.10
 
-  # Checks whose failure is **fatal to the gate regardless of the composite**.
+  # Checks whose failure is **fatal to the gate regardless of the composite**, run by the engine
+  # against the artifact itself.
   #
   # A weighted average cannot express "never install this". `safety` carries 0.15 (0.10 in the full
   # set), so an otherwise well-formed skill carrying `rm -rf /` scores exactly 0.75 against the 0.75
@@ -98,7 +104,7 @@ defmodule Faber.Eval do
     threshold = opts[:threshold] || Application.get_env(:faber, :eval_threshold, 0.75)
 
     case run_eval(skill_md, opts) do
-      {:ok, result} -> {:ok, build_result(result, threshold)}
+      {:ok, result} -> {:ok, build_result(result, threshold, skill_md)}
       {:error, _} = err -> err
     end
   end
@@ -390,15 +396,14 @@ defmodule Faber.Eval do
 
   defp pct(f), do: "#{round(f * 100)}%"
 
-  defp build_result(result, threshold) do
+  defp build_result(result, threshold, content) do
     composite = result["composite"] || 0.0
-    dimensions = result["dimensions"] || %{}
-    vetoed = vetoes(dimensions)
+    vetoed = vetoes(content)
 
     %{
       schema_version: result["schema_version"] || @schema_version,
       composite: composite,
-      dimensions: dimensions,
+      dimensions: result["dimensions"] || %{},
       threshold: threshold,
       passed: composite >= threshold and vetoed == [],
       vetoed: vetoed,
@@ -407,22 +412,36 @@ defmodule Faber.Eval do
     }
   end
 
-  # Read off the scored `dimensions` rather than re-running matchers: every engine (native, sidecar,
-  # an adapter's exec-in-place scorer) reports the same `assertions` shape, so the veto applies to
-  # whichever one ran without being reimplemented per engine. A scorer that never runs a veto check
-  # cannot veto — it reports no such assertion — which is why `@veto_checks` names checks the
-  # built-in eval sets always include.
-  @spec vetoes(map()) :: [veto()]
-  defp vetoes(dimensions) do
-    for {name, dim} <- dimensions,
-        assertion <- dim["assertions"] || [],
-        assertion["passed"] == false,
-        to_string(assertion["check_type"]) in @veto_checks do
-      %{
-        dimension: to_string(name),
-        check_type: to_string(assertion["check_type"]),
-        evidence: to_string(assertion["evidence"])
-      }
+  # Run the veto checks **against the artifact**, with the ENGINE's own parameters — never off the
+  # scorer's report.
+  #
+  # The first version of this read the scored `dimensions`, on the reasoning that every engine emits
+  # the same `assertions` shape so one implementation would cover them all. That was wrong in the
+  # way that matters: it made a fail-closed check **opt-out by configuration**, and review reproduced
+  # three ways through it.
+  #
+  #   * A vendored pack's `dimensions` *wholly replace* the default eval (see `translate_eval/2`), so
+  #     a pack that simply OMITS `no_dangerous_patterns` emits no such assertion and is un-vetoable —
+  #     `rm -rf /` scored 1.0 and passed. Packs are untrusted input, so the security boundary was
+  #     configurable by the thing it constrains.
+  #   * A pack supplying its own `patterns` could weaken the check even where it ran.
+  #   * A foreign result shape (atom-keyed assertions from an exec-in-place scorer) made
+  #     `assertion["passed"] == false` evaluate `nil == false` → the failed assertion was silently
+  #     dropped and the artifact passed. Fail-OPEN, on the one function that must fail closed.
+  #
+  # Reading the artifact makes all three unreachable: the veto no longer depends on what the scorer
+  # looked at, what it named things, or what shape it reported. `params: %{}` is deliberate — it
+  # pins `@dangerous_default`, so a pack cannot narrow the pattern set for the veto even while
+  # narrowing it for its own score.
+  #
+  # `Matchers.run_check/3` is pure and returns `{bool, evidence}` for a known check; an unknown one
+  # returns `{false, "unknown check_type: …"}`, which would veto everything — so `@veto_checks` may
+  # only ever name checks this module implements (pinned by a test).
+  @spec vetoes(String.t()) :: [veto()]
+  defp vetoes(content) do
+    for check <- @veto_checks,
+        {false, evidence} <- [Matchers.run_check(check, content, %{})] do
+      %{check_type: check, evidence: to_string(evidence)}
     end
   end
 

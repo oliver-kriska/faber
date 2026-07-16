@@ -1002,8 +1002,20 @@ defmodule Faber.CLI do
 
   defp fmt_opp(_), do: "—"
 
+  # `passed: false` used to imply `composite < threshold`, so one message covered every refusal. The
+  # safety veto broke that equivalence: a vetoed artifact can sit at 0.83 against a 0.75 threshold
+  # and still be refused. Reporting that as "below threshold 0.75" is simply false, and false in the
+  # worst place — it hides a SECURITY refusal behind a scoring complaint, and the number it prints
+  # invites the reader to go tune the score until it clears.
+  defp verdict(%{vetoed: [_ | _] = vetoed}) do
+    "REFUSED — " <> Enum.map_join(vetoed, "; ", & &1.evidence)
+  end
+
+  defp verdict(%{passed: true}), do: "PASS"
+  defp verdict(eval), do: "below threshold #{eval.threshold}"
+
   defp render_proposal(proposal, eval, adapter) do
-    verdict = if eval.passed, do: "PASS", else: "below threshold #{eval.threshold}"
+    verdict = verdict(eval)
 
     """
     #{proposal.name} — composite #{fmt(eval.composite)} (#{verdict})

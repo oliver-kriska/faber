@@ -280,7 +280,24 @@ defmodule Faber.Eval.Matchers do
     do: Enum.count(lines, &Regex.match?(~r/^\s*(?:\d+[\.\)]\s+|[-*]\s+)/, &1))
 
   def no_dangerous_patterns(content, params) do
-    patterns = params[:patterns] || @dangerous_default
+    # NOT `params[:patterns] || @dangerous_default`: `[]` is **truthy in Elixir**, so an empty list
+    # survived the `||` and became an empty regex set — `Enum.find([], …)` is `nil`, i.e. `{true,
+    # "no dangerous patterns"}` on an artifact containing `rm -rf /`. The assertion was present AND
+    # passing, so it read as a clean safety score rather than a skipped check. That is the same
+    # vacuous-pass class as the empty-haystack bug this function was just fixed for, one config key
+    # away, and reachable from an untrusted pack's `eval.yaml`.
+    #
+    # It was also a silent **native↔sidecar divergence**: Python's `patterns or _DANGEROUS_DEFAULT`
+    # falls back correctly because `[]` is *falsy* there. Restoring the fallback restores parity.
+    #
+    # An empty pattern list can never mean "nothing is dangerous here" — for a safety check the only
+    # safe reading of "no patterns configured" is "use the engine's".
+    patterns =
+      case params[:patterns] do
+        list when is_list(list) and list != [] -> list
+        _ -> @dangerous_default
+      end
+
     {_, body} = split_frontmatter(content)
 
     # `regions/1`, not `sections/1`: this is the gate deciding what gets written into the user's
