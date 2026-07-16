@@ -147,6 +147,10 @@ defmodule Faber.Adapter do
   Matching is **filesystem-independent** — it runs against the paths the session itself referenced,
   not the project on disk — so it works cross-machine and for sessions whose project has moved. A
   glob matches a path suffix (`lib/**/*.ex` matches `/Users/x/app/lib/a/b.ex`).
+
+  This is the raw primitive and knows nothing about `--force`. Code deciding whether to *draft* for
+  a session wants `Faber.Propose.stack_match?/3` (force-aware) or `Faber.Propose.stack_gate/3`
+  (which returns the refusal) — see those for why the gate lives at the selection site.
   """
   @spec matches_session?(t(), [String.t()]) :: boolean()
   def matches_session?(%Adapter{file_globs: globs}, paths) when is_list(paths) do

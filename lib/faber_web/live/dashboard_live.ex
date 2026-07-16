@@ -63,9 +63,10 @@ defmodule FaberWeb.DashboardLive do
         # session. Read from disk (the `.faber.json` markers), so an install survives a browser
         # refresh: reopening that session shows "installed" even though the assigns above are gone.
         installed_sessions: %{},
-        # The adapter this dashboard drafts for, loaded once per mount so the stack gate can mark
-        # every row without re-reading the pack per row.
-        adapter: load_adapter(),
+        # The adapter this dashboard drafts for — read off disk on connect (below), not here, so
+        # the static first paint doesn't parse the pack for a render that shows only a skeleton.
+        # `nil` until then, which `stack_ok?/2` already reads as "can't tell, don't mark".
+        adapter: nil,
         allow_propose: allow_propose?(),
         allow_install: allow_install?(),
         # Onboarding context for the empty state: where we looked and the message floor, so a
@@ -79,11 +80,18 @@ defmodule FaberWeb.DashboardLive do
     # Scan only on the connected mount, and run it asynchronously so the LiveView process stays
     # responsive — `Scan.run` fans out over hundreds of transcripts and would otherwise block the
     # mount, hiding the "scanning…" state. The static (first-paint) render shows the loading state.
-    # The installed-skills map is a cheap disk read; load it once on connect (refreshed after each
-    # install), so the persistent "installed" markers are present as soon as the table renders.
+    # The installed-skills map and the adapter pack are cheap disk reads; load them once on connect
+    # (installed_sessions is refreshed after each install), so the persistent "installed" markers
+    # and the stack-mismatch markers are present as soon as the table renders. Neither belongs in
+    # the assign list above: mount/3 runs twice per page load, and the disconnected paint renders
+    # only the skeleton — it has no rows to mark and no button to gate.
     socket =
       if connected?(socket),
-        do: socket |> assign(:installed_sessions, load_installed_sessions()) |> start_scan(),
+        do:
+          socket
+          |> assign(:adapter, load_adapter())
+          |> assign(:installed_sessions, load_installed_sessions())
+          |> start_scan(),
         else: socket
 
     {:ok, socket}
@@ -345,6 +353,13 @@ defmodule FaberWeb.DashboardLive do
      |> assign(proposing_i: nil)}
   end
 
+  # Loads the adapter again rather than taking `socket.assigns.adapter`, so the gate below is a
+  # SECOND, independent read — not the mount-time one re-checked. That is what makes the paying
+  # path fail closed: `stack_ok?/2` and `gate_stack/2` deliberately fail *open* on a nil (
+  # unloadable) adapter so the table doesn't accuse every row of being the wrong stack, and this
+  # is where that leniency stops. If the pack can't load, the `with` exits here and no LLM call
+  # happens. It also re-reads a pack that may have changed since mount (`faber sync`, a hand-edited
+  # file_glob). Don't "simplify" this to the cached struct: the two gates are not redundant.
   defp do_propose(result) do
     with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
          :ok <- Propose.stack_gate(adapter, result),

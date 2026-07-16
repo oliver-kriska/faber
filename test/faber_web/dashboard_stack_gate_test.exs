@@ -103,6 +103,9 @@ defmodule FaberWeb.DashboardStackGateTest do
     Application.put_env(:faber, :llm, ReportingLLM)
     Application.put_env(:faber, :test_pid, self())
 
+    # Asymmetric on purpose: `:llm` has a real configured default to put back, while `:test_pid` is
+    # ours alone and has no prior value — `put_env(nil)` would leave it *set* to nil, which is not
+    # the same as unset. Don't "tidy" these into the same shape.
     on_exit(fn ->
       Application.put_env(:faber, :llm, prev_llm)
       Application.delete_env(:faber, :test_pid)
@@ -122,6 +125,76 @@ defmodule FaberWeb.DashboardStackGateTest do
     # The point of gating before start_async: a wrong-stack click costs zero LLM calls. This is
     # what the dashboard used to get wrong — it drafted a Phoenix skill from a Go session, and an
     # equally adapter-scoped eval then graded it PASS.
+    #
+    # The timeout is load-bearing — do NOT swap this for a bare `refute_received`. It looks
+    # redundant (the gate is synchronous, so render_click has already returned by now), but that
+    # reasoning only holds while the gate is *present*, which is the one thing this test exists to
+    # doubt. Without the gate the call happens in a start_async task a few ms later, so
+    # `refute_received` inspects an empty mailbox and passes — measured: it passes against a
+    # deliberately un-gated dashboard, while this line fails it with "Unexpectedly received
+    # message :llm_called". The 200ms is what makes the assertion bite.
+    refute_receive :llm_called, 200
+  end
+
+  # THE CONTROL. Everything above asserts the gate *refuses* — and would all still pass if
+  # `matches_session?/2` returned false for every session on earth, i.e. if Propose were dead
+  # dashboard-wide and Faber shipped a button that never works. This is the only test that fails
+  # in that world. Same gate, same mechanism, a session that DOES match.
+  test "a matching-stack session is untouched by the gate", %{conn: conn} do
+    # test/fixtures ranks the Elixir session (sample_session.jsonl) first, and also contains the
+    # nonelixir/ fixture — so one scan shows both verdicts, which is the discrimination itself.
+    Application.put_env(:faber, :dashboard_scan_opts, base: "test/fixtures", min_messages: 0)
+
+    {:ok, view, _html} = live(conn, "/")
+    html = render_async(view, @async_timeout)
+
+    # Rank 1 matches: the hero keeps its Propose CTA and says nothing about stacks.
+    assert html =~ ~s(phx-click="propose" phx-value-i="1")
+    refute html =~ "Wrong stack for faber-elixir"
+
+    # ...while the wrong-stack row in the SAME table is still marked. Both states at once: the
+    # gate discriminates rather than blanket-refusing.
+    assert html =~ ~s(class="row-stack")
+
+    # And the matching session's detail pane offers the button, not the refusal.
+    detail = render_click(view, "select", %{"i" => "1"})
+    assert detail =~ ~s(class="propose-btn")
+    refute detail =~ ~s(class="badge mismatch")
+  end
+
+  # The `stack_ok?(nil, _) -> true` / `gate_stack(nil, _) -> :ok` branch: when the pack itself
+  # can't be read we cannot know a session's stack, so the UI must not accuse every row of being
+  # wrong. That leniency is cosmetic ONLY — `do_propose/1` re-loads the adapter independently, and
+  # that is where an unreadable pack stops the spend. This test pins both halves of that split.
+  test "an unloadable adapter marks nothing, but still spends nothing", %{conn: conn} do
+    prev_dir = Application.get_env(:faber, :adapter_dir)
+    prev_llm = Application.get_env(:faber, :llm)
+    Application.put_env(:faber, :adapter_dir, "/nonexistent/faber-adapter")
+    Application.put_env(:faber, :llm, ReportingLLM)
+    Application.put_env(:faber, :test_pid, self())
+
+    on_exit(fn ->
+      if prev_dir,
+        do: Application.put_env(:faber, :adapter_dir, prev_dir),
+        else: Application.delete_env(:faber, :adapter_dir)
+
+      Application.put_env(:faber, :llm, prev_llm)
+      Application.delete_env(:faber, :test_pid)
+    end)
+
+    {:ok, view, _html} = live(conn, "/")
+    html = render_async(view, @async_timeout)
+
+    # Fails open, visibly: no accusation we can't substantiate, even though this session really is
+    # the wrong stack — we just can't prove it without the globs.
+    refute html =~ ~s(class="row-stack")
+    refute html =~ "Wrong stack for"
+    assert html =~ ~s(phx-click="propose" phx-value-i="1")
+
+    # Fails closed where it costs money: the click gets through the cosmetic gate and is stopped by
+    # do_propose/1's own Adapter.load, before the LLM.
+    render_click(view, "propose", %{"i" => "1"})
+    render_async(view, @async_timeout)
     refute_receive :llm_called, 200
   end
 end

@@ -633,6 +633,10 @@ defmodule Faber.CLI do
   # The decision itself lives in `Faber.Propose` — the CLI is one selection site among several
   # (the dashboard is another), and a gate each caller re-implements is a gate the next caller
   # forgets.
+  #
+  # `!!force` is for the type, not the behaviour: `opts[:force]` is `true | nil` (OptionParser's
+  # `:boolean` omits absent switches), and `stack_match?/3` already treats nil as falsy by falling
+  # through to its catch-all clause. The coercion is what satisfies the `boolean()` spec.
   defp stack_match?(adapter, result, force), do: Propose.stack_match?(adapter, result, !!force)
 
   defp stack_gate(adapter, result, force), do: Propose.stack_gate(adapter, result, !!force)
