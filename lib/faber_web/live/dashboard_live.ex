@@ -105,10 +105,13 @@ defmodule FaberWeb.DashboardLive do
   # Close the detail pane, back to the overview table.
   def handle_event("deselect", _params, socket), do: {:noreply, assign(socket, :selected_i, nil)}
 
-  # Facet filters (project / type / signal), picked from the custom combo dropdowns. `value` is a
-  # blank string for "All". Any change re-scopes the table, so drop the current selection and
-  # proposal (their 1-based indices point into the old row set).
-  def handle_event("pick_filter", %{"facet" => facet, "value" => value}, socket)
+  # Facet filters (project / type / signal), picked from the custom combo dropdowns. The chosen
+  # value rides in on `phx-value-choice` (NOT `phx-value-value`: on a <button>, LiveView's client
+  # overwrites the reserved `value` key with the element's own empty `.value`, so a `value`-named
+  # facet payload always arrived blank — see `filter_combo/1`). Blank string means "All". Any
+  # change re-scopes the table, so drop the current selection and proposal (their 1-based indices
+  # point into the old row set).
+  def handle_event("pick_filter", %{"facet" => facet, "choice" => value}, socket)
       when facet in ["project", "type", "signal"] do
     filters = Map.put(socket.assigns.filters, String.to_existing_atom(facet), blank_to_nil(value))
     {:noreply, socket |> assign(:filters, filters) |> reset_selection() |> apply_view()}
@@ -904,6 +907,8 @@ defmodule FaberWeb.DashboardLive do
             aria-label={"Search #{@search_label}"}
           />
         </div>
+        <%!-- The pick rides on phx-value-choice, not -value: on a <button> LiveView overwrites the
+        reserved `value` key with the element's own (empty) `.value`, silently blanking the facet. --%>
         <ul class="combo-list">
           <li>
             <button
@@ -911,7 +916,7 @@ defmodule FaberWeb.DashboardLive do
               class={["combo-option", @value == nil && "selected"]}
               phx-click="pick_filter"
               phx-value-facet={@facet}
-              phx-value-value=""
+              phx-value-choice=""
             >
               All {@label_plural}
             </button>
@@ -922,7 +927,7 @@ defmodule FaberWeb.DashboardLive do
               class={["combo-option", @value == val && "selected"]}
               phx-click="pick_filter"
               phx-value-facet={@facet}
-              phx-value-value={val}
+              phx-value-choice={val}
             >
               {label}
             </button>

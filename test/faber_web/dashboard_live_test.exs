@@ -100,16 +100,36 @@ defmodule FaberWeb.DashboardLiveTest do
     assert html =~ ~s(phx-value-facet="signal")
     assert html =~ ~s(data-combo-search)
 
+    # The chosen value MUST ride on `phx-value-choice`, never the reserved `phx-value-value`: on a
+    # <button>, LiveView's client overwrites the `value` key with the element's own (empty) `.value`,
+    # so a `value`-named payload reaches the server blank and every pick silently no-ops. Guard the
+    # wiring so nobody "simplifies" it back to the colliding key.
+    assert html =~ ~s(phx-value-choice=)
+    refute html =~ ~s(phx-value-value=)
+
+    # Drive the pick through the *rendered* combo button (element/2 reads its phx-value-* straight
+    # from the DOM), not a hand-built payload — the hand-built form is exactly what masked the
+    # collision. A real project keeps a populated table.
+    choice =
+      Regex.run(~r/phx-value-choice="([^"]+)"/, html, capture: :all_but_first) |> hd()
+
+    narrowed =
+      view
+      |> element(~s(#combo-project button[phx-value-choice="#{choice}"]))
+      |> render_click()
+
+    assert narrowed =~ ~s(<table class="ranked")
+
     # Picking a project that matches nothing filters the table out → the filtered-empty state, not
     # the "no scan results" one, and the table is gone.
     filtered =
-      render_click(view, "pick_filter", %{"facet" => "project", "value" => "does-not-exist"})
+      render_click(view, "pick_filter", %{"facet" => "project", "choice" => "does-not-exist"})
 
     assert filtered =~ "No sessions match these filters"
     refute filtered =~ ~s(<table class="ranked")
 
     # An unknown facet is a safe no-op (guard falls through).
-    assert render_click(view, "pick_filter", %{"facet" => "bogus", "value" => "x"}) =~
+    assert render_click(view, "pick_filter", %{"facet" => "bogus", "choice" => "x"}) =~
              "No sessions match these filters"
 
     # Clearing restores the full table.
