@@ -31,7 +31,10 @@ defmodule Faber.MixProject do
       plt_local_path: "_build/plts",
       plt_core_path: "_build/plts",
       # `:mix` — the CLI ships `Mix.Tasks.Faber.*`; `:ex_unit` — test/support helpers.
-      plt_add_apps: [:mix, :ex_unit],
+      # `:owl` — it is `runtime: false` (see deps/0), so it is absent from the runtime tree the PLT
+      # is built from, and `Owl.Data.tag/2` would read as `unknown_function`. The dep is real and
+      # called; only its *application* is unused.
+      plt_add_apps: [:mix, :ex_unit, :owl],
       ignore_warnings: ".dialyzer_ignore.exs",
       # Fail the gate if an entry in .dialyzer_ignore.exs stops matching, so the exception list
       # can't quietly outlive the code it was written for.
@@ -45,6 +48,28 @@ defmodule Faber.MixProject do
   defp releases do
     [
       faber: [
+        # Ship Owl's modules, but never start its application. Faber calls exactly one Owl
+        # function — the pure `Owl.Data.tag/2` — and deliberately never `Owl.LiveScreen` (that
+        # path deadlocks when piped; see Faber.CLI.Render). Left alone, `Owl.Application` boots a
+        # Registry, LiveScreen and three supervisors on every one-shot CLI run, none ever used.
+        #
+        # This line and `runtime: false` on the dep are a PAIR; neither works alone, and the two
+        # failure modes are quite different:
+        #
+        #   * `runtime: false` alone → Mix omits the dep from the release entirely, so
+        #     `Owl.Data.tag/2` raises UndefinedFunctionError in the binary. Burrito boots
+        #     `-mode embedded` (no autoload), so it fails hard — and `mix test` never sees it,
+        #     because dev/test run against the full tree. Every badge breaks in the shipped
+        #     artifact while the suite stays green.
+        #   * `applications: [owl: :load]` alone → Mix REFUSES to assemble: ":faber has mode
+        #     :permanent but it depends on :owl which is set to :load". A permanent app's deps
+        #     must be started, so the release would fail to boot.
+        #
+        # Together they work: `runtime: false` keeps owl out of `:faber`'s own applications list
+        # (dissolving the permanent→load conflict), and this line puts it back into the release as
+        # load-only. Verified against the real binary: `faber feedback` piped → 0 escape bytes,
+        # under a pty → 24, both rc=0 — same as before the change.
+        applications: [owl: :load],
         # Copy the declarative adapter pack into the release root so the packaged binary can load
         # it (resolved at runtime via Faber.adapter_dir/0 → RELEASE_ROOT). Runs after assemble,
         # before Burrito wraps the release dir into the self-extracting binary.
@@ -143,8 +168,12 @@ defmodule Faber.MixProject do
     [
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.12"},
-      # Terminal UX for the CLI (progress bars, verdict badges). Pure Elixir, no NIF.
-      {:owl, "~> 0.13"},
+      # Terminal styling for the CLI (verdict badges). Pure Elixir, no NIF.
+      #
+      # `runtime: false` + `applications: [owl: :load]` in releases/0 is a PAIR — see the comment
+      # there. Faber only ever calls the pure `Owl.Data.tag/2`, so the app never needs starting;
+      # this keeps it out of `:faber`'s own applications list so the release may load-not-start it.
+      {:owl, "~> 0.13", runtime: false},
       {:req_llm, "~> 1.0"},
       {:phoenix, "~> 1.7"},
       {:phoenix_live_view, "~> 1.0"},

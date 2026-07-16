@@ -1287,17 +1287,29 @@ defmodule Faber.CLITest do
       assert err =~ "faber propose --top"
     end
 
-    test "the alias defaults --top rather than degrading to a single proposal" do
+    test "bare `consolidate` IS `propose --top 5` — the default is pinned, not just present" do
       # Bare `consolidate` drafted several sessions and clustered them; forwarding it to a plain
       # one-session propose would quietly change what the command does.
-      out =
+      #
+      # Asserting equality against an EXPLICIT `--top 5` rather than matching a literal "(5)":
+      # the literal would also have to track the fixture count (min(top, available)), so it would
+      # break when a fixture is added for unrelated reasons. Equality pins the only claim that
+      # matters — the default IS 5 — and stays true whatever the corpus size. Verified by mutation:
+      # `@default_top 3` leaves every other test in this file green and fails only this one.
+      bare =
         capture_io(fn ->
           capture_io(:stderr, fn ->
             assert CLI.run(:consolidate, @fixtures ++ [dry_run: true, force: true]) == 0
           end)
         end)
 
-      assert out =~ "sessions to draft"
+      explicit =
+        capture_io(fn ->
+          assert CLI.run(:propose, @fixtures ++ [top: 5, dry_run: true, force: true]) == 0
+        end)
+
+      assert bare =~ "sessions to draft"
+      assert bare == explicit
     end
 
     test "parse accepts --dry-run on the commands that spend" do
