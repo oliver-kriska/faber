@@ -806,6 +806,11 @@ tbody tr.srow:focus-visible {
 .proposing-block {
   margin-top: var(--space-4);
 }
+/* Abort control for the in-flight paid call — a quiet ghost, since it's the exit from an action the
+   user just confirmed, not a primary path. */
+.cancel-propose {
+  margin-top: var(--space-3);
+}
 
 /* ── Hover tooltips + affordance ──────────────────────────────────────────────
    Instant, dark-themed (native `title` is delayed and off-theme). Tooltipped things advertise

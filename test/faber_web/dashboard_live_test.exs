@@ -207,6 +207,26 @@ defmodule FaberWeb.DashboardLiveTest do
     assert html =~ "Codex"
   end
 
+  test "an in-flight Propose can be cancelled back to a ready state", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+    render_async(view, @async_timeout)
+    render_click(view, "select", %{"i" => "1"})
+
+    # The click sets the in-flight state synchronously, and the paid call now offers an exit: the
+    # "Proposing…" line carries a Cancel button (the P2 "no cancel for an in-flight paid Propose").
+    loading = render_click(view, "propose", %{"i" => "1"})
+    assert loading =~ "Proposing"
+    assert loading =~ ~s(phx-click="cancel_propose")
+
+    # Cancelling clears the in-flight state (cancel_async discards the task's result, so no card
+    # arrives) and hands back a ready Propose button. Robust to the stub resolving first: either way
+    # the pane ends not-proposing, with no Cancel button.
+    cancelled = render_click(view, "cancel_propose")
+    refute cancelled =~ "Proposing a skill for"
+    refute cancelled =~ ~s(phx-click="cancel_propose")
+    assert cancelled =~ "Propose a skill"
+  end
+
   test "an install with an unknown agent is a safe no-op (writes nothing)", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
     render_async(view, @async_timeout)

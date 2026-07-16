@@ -161,6 +161,21 @@ defmodule FaberWeb.DashboardLive do
     end
   end
 
+  # Abort an in-flight paid Propose. `cancel_async` kills the task (closing the `claude -p` port with
+  # it, which may stop the model mid-generation and save the tail tokens — best-effort, not
+  # guaranteed) and discards its result, so no `handle_async` fires. We clear `proposing_i` ourselves.
+  # A no-op if nothing is proposing (a stale click after it already resolved).
+  def handle_event("cancel_propose", _params, %{assigns: %{proposing_i: nil}} = socket),
+    do: {:noreply, socket}
+
+  def handle_event("cancel_propose", _params, socket) do
+    {:noreply,
+     socket
+     |> cancel_async(:propose)
+     |> assign(:proposing_i, nil)
+     |> put_flash(:info, "Propose cancelled — no skill was drafted.")}
+  end
+
   # Write the shown proposal's SKILL.md into the chosen agent's world (skills dir + managed pointer).
   # Gated like Propose (a raw client can't drive it with the flag off) and only ever installs the
   # proposal currently on screen for the selected session — never a stale or mismatched one.
@@ -1063,6 +1078,9 @@ defmodule FaberWeb.DashboardLive do
             Proposing a skill for <strong>{project(@session)}</strong> — this calls the LLM and can take ~a minute.
           </p>
           <div class="progress"><span></span></div>
+          <button type="button" class="ghost cancel-propose" phx-click="cancel_propose">
+            Cancel
+          </button>
         </div>
 
         <.proposal_card
