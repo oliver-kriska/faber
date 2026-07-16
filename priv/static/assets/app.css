@@ -895,8 +895,17 @@ tbody tr.srow:focus-visible {
   gap: var(--space-2);
 }
 .proposal-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-4) 0 0.2rem;
+}
+.proposal-error-msg {
+  margin: 0;
   color: var(--bad);
-  padding: var(--space-3) 0 0.2rem;
+  max-width: 60ch;
+  line-height: 1.6;
 }
 .composite {
   color: var(--muted);

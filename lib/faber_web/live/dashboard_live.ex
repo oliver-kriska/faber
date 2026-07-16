@@ -15,6 +15,8 @@ defmodule FaberWeb.DashboardLive do
   """
   use FaberWeb, :live_view
 
+  require Logger
+
   alias Faber.{Adapter, Eval, Propose, Scan}
   alias Faber.Proposal.Store
 
@@ -247,10 +249,15 @@ defmodule FaberWeb.DashboardLive do
      |> apply_view()}
   end
 
-  def handle_async(:scan, {:exit, _reason}, socket) do
+  def handle_async(:scan, {:exit, reason}, socket) do
+    Logger.error("dashboard scan crashed: #{inspect(reason)}")
+
     {:noreply,
      socket
-     |> put_flash(:error, "Scan failed — see server logs.")
+     |> put_flash(
+       :error,
+       "Couldn't scan your sessions. #{humanize_error(reason)} Use Rescan to try again."
+     )
      |> assign(
        scanned: true,
        scanning: false,
@@ -272,10 +279,15 @@ defmodule FaberWeb.DashboardLive do
      assign(socket, proposal: data, proposal_i: socket.assigns.proposing_i, proposing_i: nil)}
   end
 
-  def handle_async(:propose, {:exit, _reason}, socket) do
+  def handle_async(:propose, {:exit, reason}, socket) do
+    Logger.error("dashboard propose crashed: #{inspect(reason)}")
+
     {:noreply,
      socket
-     |> put_flash(:error, "Proposal failed — see server logs.")
+     |> put_flash(
+       :error,
+       "Couldn't draft a skill. #{humanize_error(reason)} The Propose button is ready to try again."
+     )
      |> assign(proposing_i: nil)}
   end
 
@@ -298,9 +310,26 @@ defmodule FaberWeb.DashboardLive do
 
       Map.merge(scores, %{name: proposal.name, md: md})
     else
-      {:error, reason} -> %{error: inspect(reason)}
+      {:error, reason} ->
+        Logger.error("dashboard propose failed: #{inspect(reason)}")
+        %{error: humanize_error(reason)}
     end
   end
+
+  # Turn an internal error term into one plain sentence for the UI. The raw term is logged (above),
+  # never shown — a dashboard user gets a cause they can act on, not an Elixir `inspect`. Converges
+  # with the CLI's error humanizer later; kept dashboard-local for now.
+  defp humanize_error(msg) when is_binary(msg), do: msg
+  defp humanize_error(:timeout), do: "It ran too long and was stopped."
+  defp humanize_error(:killed), do: "The task was stopped before it finished."
+  defp humanize_error({:shutdown, _}), do: "The task was shut down before it finished."
+  defp humanize_error({:exit, inner}), do: humanize_error(inner)
+
+  defp humanize_error({exception, stack}) when is_exception(exception) and is_list(stack),
+    do: Exception.message(exception)
+
+  defp humanize_error(exception) when is_exception(exception), do: Exception.message(exception)
+  defp humanize_error(_reason), do: "An unexpected error stopped it."
 
   # Which row a keypress moves to: `nil` closes the pane, an integer opens that rank (1-based,
   # clamped to the row count). Split out of the handler so the navigation table stays readable on
@@ -957,7 +986,18 @@ defmodule FaberWeb.DashboardLive do
 
   defp proposal_card(assigns) do
     ~H"""
-    <p :if={@proposal[:error]} class="proposal-error">Proposal failed: {@proposal.error}</p>
+    <div :if={@proposal[:error]} class="proposal-error">
+      <p class="proposal-error-msg">Couldn't draft a skill for this session. {@proposal.error}</p>
+      <button
+        class="ghost"
+        type="button"
+        phx-click="propose"
+        phx-value-i={@row}
+        data-confirm="This calls the configured LLM (claude -p by default) and spends tokens. Try proposing again?"
+      >
+        Try again
+      </button>
+    </div>
     <div :if={!@proposal[:error]} class="proposal-card">
       <div class="proposal-head">
         <div class="proposal-meta">

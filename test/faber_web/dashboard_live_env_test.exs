@@ -74,7 +74,14 @@ defmodule FaberWeb.DashboardLiveEnvTest do
     render_click(view, "propose", %{"i" => "1"})
     html = render_async(view, @async_timeout)
 
-    assert html =~ "Proposal failed:"
+    # Plain-language failure copy — no raw `inspect` term leaked to the user (that goes to the
+    # server logs) — plus an explicit, token-spend-confirmed Retry affordance. (The apostrophe in
+    # the static copy renders HTML-escaped, so the asserted fragment avoids it.)
+    assert html =~ "draft a skill for this session."
+    assert html =~ "An unexpected error stopped it."
+    assert html =~ "Try again"
+    assert html =~ ~s(class="proposal-error")
+    refute html =~ ":llm_unavailable"
     # The LiveView process survived the failed async and still re-renders.
     assert render(view) =~ "session friction"
   end
