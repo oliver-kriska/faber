@@ -629,26 +629,18 @@ defmodule Faber.CLI do
   # (one session — a mismatch is a refusal); consolidate *partitions* on it (a batch — a mismatch is
   # a skip). Different consequences, but they must never disagree about the question itself, which
   # they did while consolidate asked it inline (audit item 9).
-  defp stack_match?(_adapter, _result, true), do: true
+  #
+  # The decision itself lives in `Faber.Propose` — the CLI is one selection site among several
+  # (the dashboard is another), and a gate each caller re-implements is a gate the next caller
+  # forgets.
+  defp stack_match?(adapter, result, force), do: Propose.stack_match?(adapter, result, !!force)
 
-  defp stack_match?(adapter, result, _force),
-    do: Adapter.matches_session?(adapter, result.file_paths)
-
-  # Stack-aware gate: refuse to draft a skill when the chosen session doesn't belong to the
-  # adapter's stack (e.g. proposing an Elixir skill for a Codex/Next.js session). `--force` skips it.
-  defp stack_gate(adapter, result, force) do
-    if stack_match?(adapter, result, force),
-      do: :ok,
-      else: {:error, {:stack_mismatch, adapter, result}}
-  end
+  defp stack_gate(adapter, result, force), do: Propose.stack_gate(adapter, result, !!force)
 
   defp stack_mismatch_message(adapter, result) do
     exts =
-      result.file_paths
-      |> Enum.map(&Path.extname/1)
-      |> Enum.reject(&(&1 == ""))
-      |> Enum.frequencies()
-      |> Enum.sort_by(fn {_ext, n} -> -n end)
+      result
+      |> Propose.touched_extensions()
       |> Enum.map_join(", ", fn {ext, n} -> "#{ext}×#{n}" end)
 
     """

@@ -63,6 +63,9 @@ defmodule FaberWeb.DashboardLive do
         # session. Read from disk (the `.faber.json` markers), so an install survives a browser
         # refresh: reopening that session shows "installed" even though the assigns above are gone.
         installed_sessions: %{},
+        # The adapter this dashboard drafts for, loaded once per mount so the stack gate can mark
+        # every row without re-reading the pack per row.
+        adapter: load_adapter(),
         allow_propose: allow_propose?(),
         allow_install: allow_install?(),
         # Onboarding context for the empty state: where we looked and the message floor, so a
@@ -150,9 +153,14 @@ defmodule FaberWeb.DashboardLive do
     # driving raw events must be refused when the flag is off — the hidden button alone is not
     # a boundary. `i` is a client-supplied string — parse defensively so a malformed value
     # can't crash the LiveView process (it would just be ignored).
+    #
+    # The stack gate is checked here as well as in `do_propose/1`: refusing before `start_async`
+    # keeps a wrong-stack click from costing a task and an LLM call, and lets the answer be a
+    # flash the user can read rather than an error card.
     with true <- allow_propose?(),
          {idx, ""} <- Integer.parse(i),
-         result when not is_nil(result) <- Enum.at(socket.assigns.results, idx - 1) do
+         result when not is_nil(result) <- Enum.at(socket.assigns.results, idx - 1),
+         :ok <- gate_stack(socket.assigns.adapter, result) do
       {:noreply,
        socket
        |> assign(
@@ -171,6 +179,9 @@ defmodule FaberWeb.DashboardLive do
            :error,
            "Propose is disabled — set `config :faber, :web_allow_propose, true`."
          )}
+
+      {:error, {:stack_mismatch, adapter, result}} ->
+        {:noreply, put_flash(socket, :error, stack_mismatch_message(adapter, result))}
 
       _ ->
         {:noreply, socket}
@@ -336,6 +347,7 @@ defmodule FaberWeb.DashboardLive do
 
   defp do_propose(result) do
     with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
+         :ok <- Propose.stack_gate(adapter, result),
          {:ok, proposal} <- Propose.propose(result, adapter),
          {:ok, eval} <- Eval.score(proposal, adapter: adapter) do
       md = Propose.render_skill_md(proposal, adapter)
@@ -353,10 +365,52 @@ defmodule FaberWeb.DashboardLive do
 
       Map.merge(scores, %{name: proposal.name, md: md})
     else
+      # Ordered before the catch-all: a mismatch is a considered refusal with an explanation the
+      # user can act on, not an "unexpected error".
+      {:error, {:stack_mismatch, adapter, result}} ->
+        %{error: stack_mismatch_message(adapter, result)}
+
       {:error, reason} ->
         Logger.error("dashboard propose failed: #{inspect(reason)}")
         %{error: humanize_error(reason)}
     end
+  end
+
+  # The adapter this dashboard drafts for. `nil` when the pack can't be loaded: the stack markers
+  # then stay silent and `do_propose/1` surfaces the real load error, rather than the table
+  # accusing every session of being the wrong stack because we couldn't read the globs.
+  defp load_adapter do
+    case Adapter.load(Faber.adapter_dir()) do
+      {:ok, adapter} ->
+        adapter
+
+      {:error, reason} ->
+        Logger.error("dashboard couldn't load adapter: #{inspect(reason)}")
+        nil
+    end
+  end
+
+  # Does this session belong to the adapter's stack? An unloadable adapter (nil) reads as "can't
+  # tell" → don't mark the row (see `load_adapter/0`).
+  defp stack_ok?(nil, _result), do: true
+  defp stack_ok?(adapter, result), do: Propose.stack_match?(adapter, result)
+
+  defp gate_stack(nil, _result), do: :ok
+  defp gate_stack(adapter, result), do: Propose.stack_gate(adapter, result)
+
+  # Why a session was refused, in one sentence with the evidence — the file types it actually
+  # touched. The dashboard has no `--force`, so unlike the CLI's message this doesn't offer one:
+  # the honest answer for a Go session under an Elixir adapter is that Faber has no Go pack yet.
+  defp stack_mismatch_message(adapter, result) do
+    exts =
+      result
+      |> Propose.touched_extensions()
+      |> Enum.take(3)
+      |> Enum.map_join(", ", fn {ext, n} -> "#{n} #{ext}" end)
+
+    "Wrong stack for #{adapter.name}: this session touched #{if exts == "", do: "no recognizable source files", else: exts}, " <>
+      "and the adapter targets #{Enum.join(adapter.file_globs, ", ")}. " <>
+      "A skill drafted from it would describe a stack the session never used."
   end
 
   # Turn an internal error term into one plain sentence for the UI. The raw term is logged (above),
@@ -744,6 +798,7 @@ defmodule FaberWeb.DashboardLive do
       <.hero
         :if={@scanned and @results != [] and is_nil(@selected_i)}
         session={hd(@results)}
+        adapter={@adapter}
         allow_propose={@allow_propose}
         installed_skill={installed_skill(hd(@results), @installed_sessions)}
       />
@@ -823,7 +878,12 @@ defmodule FaberWeb.DashboardLive do
                       class="row-skill"
                       data-tip="A Faber skill from this session is already installed."
                       aria-label="Skill installed"
-                    >✓ skill</span></span>
+                    >✓ skill</span><span
+                      :if={not stack_ok?(@adapter, r)}
+                      class="row-stack"
+                      data-tip={"This session isn't #{@adapter.name}'s stack — Faber won't draft a skill from it."}
+                      aria-label="Wrong stack — cannot propose"
+                    >wrong stack</span></span>
                   <span class="srow-meta">{r.fingerprint} · {signal(r.dominant_signal)}</span>
                 </td>
                 <td class="col-type">{r.fingerprint}</td>
@@ -859,6 +919,7 @@ defmodule FaberWeb.DashboardLive do
           :if={@selected_i}
           session={Enum.at(@results, @selected_i - 1)}
           selected_i={@selected_i}
+          adapter={@adapter}
           allow_propose={@allow_propose}
           allow_install={@allow_install}
           agents={agents()}
@@ -906,6 +967,7 @@ defmodule FaberWeb.DashboardLive do
   # It leads the overview; selecting any row swaps it for the detail pane. It never auto-proposes:
   # the button is an explicit, token-spend-confirmed click, so merely loading the page costs nothing.
   attr :session, :map, required: true
+  attr :adapter, :map, default: nil
   attr :allow_propose, :boolean, required: true
   attr :installed_skill, :map, default: nil
 
@@ -936,7 +998,7 @@ defmodule FaberWeb.DashboardLive do
           ✓ skill installed
         </span>
         <button
-          :if={@allow_propose}
+          :if={@allow_propose and stack_ok?(@adapter, @session)}
           type="button"
           class="propose-btn hero-cta"
           phx-click="propose"
@@ -945,6 +1007,12 @@ defmodule FaberWeb.DashboardLive do
         >
           Propose a skill
         </button>
+        <%!-- Reachable only when `stack_ok?/2` said no, which a nil adapter never does — so
+              `@adapter` is a struct here, and the compiler's type checker enforces it. --%>
+        <p :if={@allow_propose and not stack_ok?(@adapter, @session)} class="hero-note stack-note">
+          Your highest-friction session isn't {@adapter.name}'s stack, so Faber won't draft from
+          it. The friction is real — the skill would just describe the wrong language.
+        </p>
         <button type="button" class="ghost hero-open" phx-click="select" phx-value-i="1">
           Open session
         </button>
@@ -1040,6 +1108,7 @@ defmodule FaberWeb.DashboardLive do
   # the place to act — Propose, Copy, Install — where the session lives, not in a modal.
   attr :session, :map, required: true
   attr :selected_i, :integer, required: true
+  attr :adapter, :map, default: nil
   attr :allow_propose, :boolean, required: true
   attr :allow_install, :boolean, required: true
   attr :agents, :list, required: true
@@ -1078,6 +1147,13 @@ defmodule FaberWeb.DashboardLive do
           <span class="tag">{signal(@session.dominant_signal)}</span>
           <span :if={@session.tier2} class="badge tier">tier-2 eligible</span>
           <span
+            :if={not stack_ok?(@adapter, @session)}
+            class="badge mismatch"
+            data-tip="Faber won't draft a skill from a session outside the adapter's stack."
+          >
+            wrong stack
+          </span>
+          <span
             :if={skill = installed_skill(@session, @installed_sessions)}
             class="badge installed"
             data-tip="A Faber skill from this session is installed in your skills dir — it survives a browser refresh."
@@ -1113,7 +1189,7 @@ defmodule FaberWeb.DashboardLive do
 
         <div class="detail-actions">
           <button
-            :if={@allow_propose}
+            :if={@allow_propose and stack_ok?(@adapter, @session)}
             class="propose-btn"
             phx-click="propose"
             phx-value-i={@selected_i}
@@ -1122,6 +1198,9 @@ defmodule FaberWeb.DashboardLive do
           >
             {if @proposing, do: "Proposing…", else: "Propose a skill"}
           </button>
+          <p :if={@allow_propose and not stack_ok?(@adapter, @session)} class="stack-note">
+            {stack_mismatch_message(@adapter, @session)}
+          </p>
           <span :if={!@allow_propose} class="muted">
             Propose is disabled (<code>web_allow_propose: false</code>).
           </span>

@@ -72,6 +72,54 @@ defmodule Faber.Propose do
   end
 
   @doc """
+  Does `adapter`'s stack apply to `result`? `force?` short-circuits to `true`.
+
+  The single stack-match decision, shared by every site that *selects* a session to draft for.
+  `propose/3` deliberately does not call it (see `stack_gate/3`), so each selection site asks
+  explicitly — but they must all ask the same question, of the same function.
+  """
+  @spec stack_match?(Adapter.t(), Scan.Result.t(), boolean()) :: boolean()
+  def stack_match?(adapter, result, force? \\ false)
+  def stack_match?(%Adapter{}, %Scan.Result{}, true), do: true
+
+  def stack_match?(%Adapter{} = adapter, %Scan.Result{} = result, _force?),
+    do: Adapter.matches_session?(adapter, result.file_paths)
+
+  @doc """
+  Stack-aware gate: refuse to draft a skill when `result` doesn't belong to `adapter`'s stack.
+
+  Without it a Go session's friction is drafted into a Phoenix skill — and then graded against the
+  Elixir bar by an equally adapter-scoped `Faber.Eval`, which is why a wrong-stack draft can still
+  score a confident PASS. The eval cannot catch this; only the gate can.
+
+  Lives here, at the propose *boundary*, rather than inside `propose/3`: `Faber.Loop` re-proposes
+  the same result repeatedly and a gate in the call itself would break refinement. Every selection
+  site (`Faber.CLI`, `FaberWeb.DashboardLive`, the MCP tool) must call it before `propose/3`.
+  """
+  @spec stack_gate(Adapter.t(), Scan.Result.t(), boolean()) ::
+          :ok | {:error, {:stack_mismatch, Adapter.t(), Scan.Result.t()}}
+  def stack_gate(%Adapter{} = adapter, %Scan.Result{} = result, force? \\ false) do
+    if stack_match?(adapter, result, force?),
+      do: :ok,
+      else: {:error, {:stack_mismatch, adapter, result}}
+  end
+
+  @doc """
+  The file extensions `result` touched, most-frequent first, as `{ext, count}` pairs.
+
+  The evidence a stack mismatch is explained with (`.go×74` says more than "wrong stack"). Shared
+  so the CLI's refusal and the dashboard's badge cite the same numbers.
+  """
+  @spec touched_extensions(Scan.Result.t()) :: [{String.t(), pos_integer()}]
+  def touched_extensions(%Scan.Result{file_paths: paths}) do
+    paths
+    |> Enum.map(&Path.extname/1)
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.frequencies()
+    |> Enum.sort_by(fn {_ext, n} -> -n end)
+  end
+
+  @doc """
   Assemble the `{system, user}` prompt for a friction finding. Pure — no LLM call — so the
   prompt content is unit-testable.
   """
