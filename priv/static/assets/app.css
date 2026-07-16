@@ -669,6 +669,20 @@ tbody tr.srow:focus-visible {
   }
 }
 
+/* "Show more" footer under the ranked table: a ghost button plus a quiet "N of M shown" tally.
+   Only rendered while rows remain hidden, so it never sits under a fully-revealed list. */
+.show-more-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4) 0;
+}
+.show-more-count {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-family: var(--font-mono);
+}
+
 /* ── Detail pane ──────────────────────────────────────────────────────────── */
 .detail {
   min-width: 0;

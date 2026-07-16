@@ -152,6 +152,24 @@ defmodule FaberWeb.DashboardLiveTest do
     assert render_click(view, "clear_filters") =~ ~s(<table class="ranked")
   end
 
+  test "the 'Show more' control is absent while the whole set already fits on screen", %{
+    conn: conn
+  } do
+    {:ok, view, _html} = live(conn, "/")
+    html = render_async(view, @async_timeout)
+
+    # The paginating footer is gated on `@shown < @match_count`. The fixture corpus is far under the
+    # 25-row display cap, so every matching session is already rendered and the control must not
+    # appear — a fresh scan must not leave a dangling "Show more" that reveals nothing. (The reveal
+    # path itself needs >25 rows and is exercised against the live dev corpus, not these fixtures.)
+    refute html =~ ~s(phx-click="show_more")
+    refute html =~ "Show more"
+    refute html =~ "show-more-count"
+
+    # And the tally reads as "everything shown", the precondition for the control's absence.
+    assert html =~ "sessions scanned"
+  end
+
   test "clicking a row collapses to detail mode and opens that session in the pane", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
     render_async(view, @async_timeout)

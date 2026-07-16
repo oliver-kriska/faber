@@ -20,9 +20,12 @@ defmodule FaberWeb.DashboardLive do
   alias Faber.{Adapter, Eval, Propose, Scan}
   alias Faber.Proposal.Store
 
-  # How many ranked rows the table shows. We keep the *full* scan (`all_results`) so filters run
-  # across every session, then take this many of the filtered set for display.
-  @display_cap 25
+  # How many ranked rows the table shows before "Show more". We keep the *full* scan
+  # (`all_results`) so filters run across every session, then take a cap-sized slice of the filtered
+  # set for display, raising the limit a cap at a time on demand. Runtime-configurable (like
+  # `dashboard_scan_opts`) so a huge corpus can page bigger and tests can shrink it — see
+  # `display_cap/0`.
+  @default_display_cap 25
 
   @impl true
   def mount(_params, _session, socket) do
@@ -38,6 +41,9 @@ defmodule FaberWeb.DashboardLive do
         results: [],
         shown: 0,
         match_count: 0,
+        # How many of the filtered set to render. Starts at the cap; "Show more" raises it by a cap
+        # at a time. Reset to the cap whenever the scope changes (a filter pick or a fresh scan).
+        display_limit: display_cap(),
         max_raw: 1.0,
         # Facet filters over the table. nil = "All". Distinct option lists come from `all_results`.
         filters: default_filters(),
@@ -121,6 +127,16 @@ defmodule FaberWeb.DashboardLive do
 
   def handle_event("clear_filters", _params, socket) do
     {:noreply, socket |> assign(:filters, default_filters()) |> reset_selection() |> apply_view()}
+  end
+
+  # "Show more": reveal the next cap-sized slice of the current (filtered) set. The button only
+  # renders while `@shown < @match_count`, so no upper clamp is needed here — apply_view's
+  # `Enum.take` naturally stops at the end of the set once the limit outgrows it.
+  def handle_event("show_more", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:display_limit, socket.assigns.display_limit + display_cap())
+     |> apply_view()}
   end
 
   # Present (not install): propose + eval a skill for one session, async, rendered inline under
@@ -271,6 +287,7 @@ defmodule FaberWeb.DashboardLive do
      # A fresh scan starts unfiltered and on the overview table (no session open).
      |> assign(:filters, default_filters())
      |> assign(:selected_i, nil)
+     |> assign(:display_limit, display_cap())
      |> apply_view()}
   end
 
@@ -423,7 +440,7 @@ defmodule FaberWeb.DashboardLive do
   # heat bars to the visible top row.
   defp apply_view(socket) do
     matching = filter_results(socket.assigns.all_results, socket.assigns.filters)
-    shown = Enum.take(matching, @display_cap)
+    shown = Enum.take(matching, socket.assigns.display_limit)
 
     socket
     |> assign(:results, shown)
@@ -467,9 +484,15 @@ defmodule FaberWeb.DashboardLive do
       proposing_i: nil,
       proposal: nil,
       proposal_i: nil,
-      installed: nil
+      installed: nil,
+      # A scope change (this runs on every filter pick/clear) starts over at the top of the new set.
+      display_limit: display_cap()
     )
   end
+
+  # The row cap, runtime-configurable so a large corpus can page bigger and tests can shrink it to
+  # exercise the "Show more" reveal against a small fixture set. Mirrors `scan_opts/0`.
+  defp display_cap, do: Application.get_env(:faber, :dashboard_display_cap, @default_display_cap)
 
   defp blank_to_nil(""), do: nil
   defp blank_to_nil(nil), do: nil
@@ -799,6 +822,16 @@ defmodule FaberWeb.DashboardLive do
               </tr>
             </tbody>
           </table>
+
+          <%!-- The table renders at most `display_limit` rows; when the set is larger, reveal the
+                next slice a cap at a time. Only shown while rows remain hidden, so the count
+                doubles as "you're not seeing everything yet". --%>
+          <div :if={@shown < @match_count} class="show-more-row">
+            <button type="button" class="ghost show-more" phx-click="show_more">
+              Show more
+            </button>
+            <span class="show-more-count">{@shown} of {@match_count} shown</span>
+          </div>
         </div>
 
         <.detail_pane
