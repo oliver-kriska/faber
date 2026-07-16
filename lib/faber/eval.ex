@@ -8,9 +8,12 @@ defmodule Faber.Eval do
   the same matcher port and stays available via `engine: :sidecar` (or by injecting a `:sidecar`
   module in tests) for parity and as the future home for GEPA / trigger accuracy.
 
-  `score/2` returns `{:ok, %{composite, dimensions, threshold, passed}}`. `gate/2` is the
+  `score/2` returns `{:ok, %{composite, dimensions, threshold, passed, vetoed}}`. `gate/2` is the
   pass/fail form the loop uses. Both accept either a rendered `SKILL.md` string or a
   `Faber.Proposal` (rendered via `Faber.Propose.render_skill_md/1`).
+
+  `:passed` is **not** simply `composite >= threshold`: a failed *veto* check (`:vetoed`) fails the
+  gate outright, because a weighted average cannot express "never install this". See `@veto_checks`.
   """
 
   require Logger
@@ -31,9 +34,13 @@ defmodule Faber.Eval do
           dimensions: map(),
           threshold: float(),
           passed: boolean(),
+          vetoed: [veto()],
           weight_total: float(),
           engine: String.t()
         }
+
+  @typedoc "A failed veto check: fatal to `:passed` regardless of `:composite`. See `@veto_checks`."
+  @type veto :: %{dimension: String.t(), check_type: String.t(), evidence: String.t()}
 
   # Fallback contract version if a (legacy) scorer result omits it; the engines (Native +
   # python sidecar) carry their own and the parity test asserts they agree.
@@ -41,6 +48,18 @@ defmodule Faber.Eval do
 
   @ref_checks ~w(valid_file_refs valid_skill_refs valid_agent_refs)
   @behavioral_weight 0.10
+
+  # Checks whose failure is **fatal to the gate regardless of the composite**.
+  #
+  # A weighted average cannot express "never install this". `safety` carries 0.15 (0.10 in the full
+  # set), so an otherwise well-formed skill carrying `rm -rf /` scores exactly 0.75 against the 0.75
+  # gate and *passes*: detected, reported, installed anyway. This gate decides what gets written
+  # into the user's `~/.claude/skills`, and for a check asserting the artifact will **harm** the
+  # user, the only correct posture is fail-closed — no amount of good structure buys it back.
+  #
+  # Per-CHECK, not per-dimension: `has_iron_laws` also lives in `safety`, and a skill merely missing
+  # Iron Laws is *poor*, not *dangerous* — it should score badly and stay gradeable, not be vetoed.
+  @veto_checks ~w(no_dangerous_patterns)
 
   @doc """
   Score a proposal or SKILL.md string.
@@ -278,8 +297,8 @@ defmodule Faber.Eval do
   end
 
   @doc """
-  Gate a proposal: `{:pass, result}` if `composite >= threshold`, else `{:fail, result}`. Errors
-  pass through unchanged.
+  Gate a proposal: `{:pass, result}` if it scored `composite >= threshold` **and** tripped no veto
+  check (`:vetoed == []`), else `{:fail, result}`. Errors pass through unchanged.
   """
   @spec gate(Proposal.t() | String.t(), keyword()) ::
           {:pass, result()} | {:fail, result()} | {:error, term()}
@@ -362,7 +381,9 @@ defmodule Faber.Eval do
       | composite: composite,
         weight_total: Float.round(struct_mass + @behavioral_weight, 4),
         dimensions: Map.put(result.dimensions, "behavioral", dimension),
-        passed: composite >= result.threshold
+        # Re-derive `passed` from the *new* composite, but keep the veto: folding in a behavioral
+        # score must never resurrect an artifact the structural gate refused to install.
+        passed: composite >= result.threshold and result.vetoed == []
     }
     |> Map.put(:trigger, trigger)
   end
@@ -371,16 +392,38 @@ defmodule Faber.Eval do
 
   defp build_result(result, threshold) do
     composite = result["composite"] || 0.0
+    dimensions = result["dimensions"] || %{}
+    vetoed = vetoes(dimensions)
 
     %{
       schema_version: result["schema_version"] || @schema_version,
       composite: composite,
-      dimensions: result["dimensions"] || %{},
+      dimensions: dimensions,
       threshold: threshold,
-      passed: composite >= threshold,
+      passed: composite >= threshold and vetoed == [],
+      vetoed: vetoed,
       weight_total: result["weight_total"] || 1.0,
       engine: result["engine"] || "native"
     }
+  end
+
+  # Read off the scored `dimensions` rather than re-running matchers: every engine (native, sidecar,
+  # an adapter's exec-in-place scorer) reports the same `assertions` shape, so the veto applies to
+  # whichever one ran without being reimplemented per engine. A scorer that never runs a veto check
+  # cannot veto — it reports no such assertion — which is why `@veto_checks` names checks the
+  # built-in eval sets always include.
+  @spec vetoes(map()) :: [veto()]
+  defp vetoes(dimensions) do
+    for {name, dim} <- dimensions,
+        assertion <- dim["assertions"] || [],
+        assertion["passed"] == false,
+        to_string(assertion["check_type"]) in @veto_checks do
+      %{
+        dimension: to_string(name),
+        check_type: to_string(assertion["check_type"]),
+        evidence: to_string(assertion["evidence"])
+      }
+    end
   end
 
   defp maybe_put(map, _key, nil), do: map

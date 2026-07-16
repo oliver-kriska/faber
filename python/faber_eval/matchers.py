@@ -51,23 +51,39 @@ def split_frontmatter(content: str) -> tuple[dict, str]:
     return fm, body
 
 
-def _sections(body: str) -> list[tuple[str, list[str]]]:
-    """Return ``[(heading_name, body_lines), ...]`` for ``##``/``###`` sections of the body."""
-    sections: list[tuple[str, list[str]]] = []
-    current = None
+def _regions(body: str) -> list[tuple[str | None, list[str]]]:
+    """Return ``[(heading_or_None, body_lines), ...]`` covering every line of the body.
+
+    Unlike :func:`_sections`, this keeps the **pre-heading** region under a ``None`` heading.
+    Anything that must not miss content has to walk this, not ``_sections``: the region between the
+    H1 and the first ``##`` is where a skill's opening prose goes, and a body with no headings at
+    all -- a hook script -- is *entirely* pre-heading, i.e. entirely invisible to ``_sections``.
+
+    A pre-heading region of pure whitespace is not a region (a body that opens on a heading).
+    """
+    regions: list[tuple[str | None, list[str]]] = []
+    current: str | None = None
     buf: list[str] = []
+
+    def flush() -> None:
+        if current is not None or any(ln.strip() for ln in buf):
+            regions.append((current, buf))
+
     for line in body.split("\n"):
         m = re.match(r"^#{2,3}\s+(.*)$", line)
         if m:
-            if current is not None:
-                sections.append((current, buf))
+            flush()
             current = m.group(1).strip()
             buf = []
-        elif current is not None:
+        else:
             buf.append(line)
-    if current is not None:
-        sections.append((current, buf))
-    return sections
+    flush()
+    return regions
+
+
+def _sections(body: str) -> list[tuple[str, list[str]]]:
+    """Return ``[(heading_name, body_lines), ...]`` for ``##``/``###`` sections of the body."""
+    return [(name, lines) for name, lines in _regions(body) if name is not None]
 
 
 # ── structure ──────────────────────────────────────────────────────────────
@@ -227,10 +243,17 @@ _SAFE_SECTION_HINTS = (
 def no_dangerous_patterns(content, patterns=None, **_):
     patterns = patterns or _DANGEROUS_DEFAULT
     _, body = split_frontmatter(content)
-    # Exclude sections that legitimately document dangerous patterns as warnings, and table rows.
+    # ``_regions``, not ``_sections``: this is the gate deciding what gets written into the user's
+    # ``~/.claude/skills``, so it must search the *whole* body. Searching ``_sections`` let a valid
+    # SKILL.md carrying ``rm -rf /`` between its H1 and first ``##`` score a clean pass, and made
+    # any heading-less body (a hook script) a vacuous pass against an empty haystack.
+    #
+    # ``_SAFE_SECTION_HINTS`` exempts a section that *announces* it documents dangerous patterns --
+    # a skill listing ``rm -rf /`` under "Anti-patterns" is doing its job. Unheaded prose announces
+    # nothing, so the pre-heading region (``None``) is never exempt. Table rows are still excluded.
     safe_body_lines = []
-    for name, lines in _sections(body):
-        if any(h in name.lower() for h in _SAFE_SECTION_HINTS):
+    for name, lines in _regions(body):
+        if name is not None and any(h in name.lower() for h in _SAFE_SECTION_HINTS):
             continue
         safe_body_lines.extend(ln for ln in lines if not ln.strip().startswith("|"))
     haystack = "\n".join(safe_body_lines)

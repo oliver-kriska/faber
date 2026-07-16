@@ -64,18 +64,34 @@ defmodule Faber.Eval.Matchers do
   @doc "Return `[{heading, body_lines}, ...]` for `##`/`###` sections of `body`."
   @spec sections(String.t()) :: [{String.t(), [String.t()]}]
   def sections(body) do
+    body |> regions() |> Enum.reject(fn {name, _} -> is_nil(name) end)
+  end
+
+  # Every line of `body`, grouped as `{heading_or_nil, lines}` — including the **pre-heading**
+  # region (`nil`), which `sections/1` drops. Anything that must not miss content has to walk this,
+  # not `sections/1`: the region between the H1 and the first `##` is where a skill's opening prose
+  # goes (the renderer emits `# Title` right before `## Usage`), and a body with no headings at all
+  # — a hook script — is *entirely* pre-heading, i.e. entirely invisible to `sections/1`.
+  @spec regions(String.t()) :: [{String.t() | nil, [String.t()]}]
+  defp regions(body) do
     body
     |> String.split("\n")
     |> Enum.reduce({nil, [], []}, fn line, {cur, buf, acc} ->
       case Regex.run(~r/^\#\#+\s+(.*)$/, line) do
         [_, name] -> {String.trim(name), [], push(acc, cur, buf)}
-        _ -> if cur, do: {cur, [line | buf], acc}, else: {cur, buf, acc}
+        _ -> {cur, [line | buf], acc}
       end
     end)
     |> close()
   end
 
-  defp push(acc, nil, _buf), do: acc
+  # A pre-heading region of pure whitespace is not a region (a body that opens on a heading).
+  defp push(acc, nil, buf) do
+    if Enum.any?(buf, &(String.trim(&1) != "")),
+      do: [{nil, Enum.reverse(buf)} | acc],
+      else: acc
+  end
+
   defp push(acc, cur, buf), do: [{cur, Enum.reverse(buf)} | acc]
   defp close({cur, buf, acc}), do: Enum.reverse(push(acc, cur, buf))
 
@@ -267,13 +283,14 @@ defmodule Faber.Eval.Matchers do
     patterns = params[:patterns] || @dangerous_default
     {_, body} = split_frontmatter(content)
 
+    # `regions/1`, not `sections/1`: this is the gate deciding what gets written into the user's
+    # `~/.claude/skills`, so it must search the *whole* body. Searching `sections/1` let a valid
+    # SKILL.md carrying `rm -rf /` between its H1 and first `##` score a clean pass, and made any
+    # heading-less body (a hook script) a vacuous pass against an empty haystack.
     haystack =
       body
-      |> sections()
-      |> Enum.reject(fn {name, _} ->
-        downcased = String.downcase(name)
-        Enum.any?(@safe_section_hints, &String.contains?(downcased, &1))
-      end)
+      |> regions()
+      |> Enum.reject(fn {name, _} -> safe_section?(name) end)
       |> Enum.flat_map(fn {_, lines} ->
         Enum.reject(lines, &String.starts_with?(String.trim(&1), "|"))
       end)
@@ -287,6 +304,16 @@ defmodule Faber.Eval.Matchers do
         pat -> {false, "dangerous pattern: #{inspect(Regex.source(pat))}"}
       end
     end
+  end
+
+  # `@safe_section_hints` exempts a section that *announces* it documents dangerous patterns — a
+  # skill listing `rm -rf /` under "Anti-patterns" is doing its job. Unheaded prose announces
+  # nothing, so the pre-heading region is never exempt.
+  defp safe_section?(nil), do: false
+
+  defp safe_section?(name) do
+    downcased = String.downcase(name)
+    Enum.any?(@safe_section_hints, &String.contains?(downcased, &1))
   end
 
   # Accepts a mix of compiled `%Regex{}` (e.g. `@dangerous_default`) and strings from a pack's
