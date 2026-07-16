@@ -1099,7 +1099,7 @@ defmodule Faber.CLI do
   # the ingest registry so it can't drift behind a newly-added agent.
   defp render_table([], ms, scope),
     do:
-      "#{scope_line(scope)}\nNo sessions matched (scanned in #{ms}ms). " <>
+      "#{Render.scope_line(scope)}\nNo sessions matched (scanned in #{ms}ms). " <>
         "Usually one of these:\n" <> causes_block(scope)
 
   defp render_table(results, ms, scope) do
@@ -1112,31 +1112,9 @@ defmodule Faber.CLI do
       |> Enum.with_index(1)
       |> Enum.map_join("\n", fn {r, i} -> scan_row(r, i, session_w) end)
 
-    "#{scope_line(scope)}\n#{scan_summary(results, ms, scope)}\n\n" <>
+    "#{Render.scope_line(scope)}\n#{scan_summary(results, ms, scope)}\n\n" <>
       "#{scan_header()}\n#{rows}\n\n#{@scan_legend}"
   end
-
-  # The scope line is printed on EVERY scan, scoped or not. A scan that quietly changed which
-  # sessions it ranks — and this one now does, by default — has to say so on the surface the user
-  # actually reads, or the number in the table is unreadable: 9 sessions out of what?
-  defp scope_line(%Scope{kind: :project} = scope),
-    do: "project: #{scope.label} (#{scope.root}) — use --all for every project"
-
-  defp scope_line(%Scope{kind: :all} = scope), do: "all projects#{all_because(scope)}"
-  defp scope_line(_scope), do: "all projects"
-
-  # Why we're showing everything, when the user didn't ask for everything. `:unknown_cwd` is the one
-  # that must never be silent: it is a scoped scan that FELL BACK, and without a word here the user
-  # reads a 60-project table as this project's.
-  defp all_because(%Scope{reason: :unknown_cwd}),
-    do:
-      " — no sessions recorded for this directory, so nothing to scope to " <>
-        "(`--base DIR` sets the transcript root explicitly)"
-
-  defp all_because(%Scope{reason: :no_cwd}),
-    do: " — the working directory could not be read, so nothing to scope to"
-
-  defp all_because(_scope), do: ""
 
   # `--min-messages` leads for a scoped scan and `--base`/`--format` lead for a global one, because
   # they are what actually went wrong in each case: inside a project whose directory we FOUND, the

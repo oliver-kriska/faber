@@ -22,6 +22,8 @@ defmodule Faber.CLI.Render do
   one. Plain `X of Y` lines are used instead; see the plan's P4-T2 notes.
   """
 
+  alias Faber.Scan.Scope
+
   @typedoc """
   What a word *means*, not what color it is. Call sites name the meaning; the palette lives here,
   so re-theming is one map rather than a grep across every `render_*`.
@@ -110,6 +112,45 @@ defmodule Faber.CLI.Render do
   # `n * 1.0` rather than `n / 1`: float_to_binary/2 raises on an integer, and `/` would too if the
   # value ever arrived as something exotic. Ints reach here — `raw` is 9 in the fixtures.
   defp decimals(n, places), do: :erlang.float_to_binary(n * 1.0, decimals: places)
+
+  # ── scope ────────────────────────────────────────────────────────────────────────────────────
+
+  @doc """
+  How a scan announces which sessions it ranked.
+
+  Printed on EVERY scan, scoped or not. A scan that quietly changed which sessions it ranks — and a
+  scoped one does, by default — has to say so on the surface the user actually reads, or the count
+  in the table is unreadable: 9 sessions out of what?
+
+  Lives here rather than in `Faber.CLI` because the `mix faber.*` tasks scan too, and a scope line
+  each surface phrases for itself is how `mix faber.scan` came to say nothing at all while `faber
+  scan` explained itself.
+
+      iex> Faber.CLI.Render.scope_line(%Faber.Scan.Scope{kind: :all, reason: :requested})
+      "all projects"
+
+      iex> Faber.CLI.Render.scope_line(nil)
+      "all projects"
+  """
+  @spec scope_line(Scope.t() | nil) :: String.t()
+  def scope_line(%Scope{kind: :project} = scope),
+    do: "project: #{scope.label} (#{scope.root}) — use --all for every project"
+
+  def scope_line(%Scope{kind: :all} = scope), do: "all projects#{all_because(scope)}"
+  def scope_line(_scope), do: "all projects"
+
+  # Why we're showing everything, when the user didn't ask for everything. `:unknown_cwd` is the one
+  # that must never be silent: it is a scoped scan that FELL BACK, and without a word here the user
+  # reads a 60-project table as this project's.
+  defp all_because(%Scope{reason: :unknown_cwd}),
+    do:
+      " — no sessions recorded for this directory, so nothing to scope to " <>
+        "(`--base DIR` sets the transcript root explicitly)"
+
+  defp all_because(%Scope{reason: :no_cwd}),
+    do: " — the working directory could not be read, so nothing to scope to"
+
+  defp all_because(_scope), do: ""
 
   # ── verdicts ─────────────────────────────────────────────────────────────────────────────────
 

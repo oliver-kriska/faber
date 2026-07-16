@@ -126,18 +126,23 @@ development: Burrito keys its self-extraction on the **app version**, not on a p
 re-extracts only when that cache is absent — so at a pinned `0.1.0` a rebuilt binary would
 otherwise silently keep running the previously extracted code. `make uninstall` removes both.
 
-The binary embeds the Erlang runtime and ships the `adapters/` packs beside it. Every command
-below exists in both forms:
+The binary embeds the Erlang runtime and ships the `adapters/` packs beside it. **The binary is the
+product; `mix faber.*` is the dev bench.** They are not two spellings of one command — only
+`faber refine` and `mix faber.refine` are (the task delegates to `Faber.CLI`, so the flags cannot
+drift). For `scan` and `propose` each surface carries flags the other does not:
 
-| Binary | Dev-mode equivalent |
-|---|---|
-| `faber scan` | `mix faber.scan` |
-| `faber propose` | `mix faber.propose` |
-| `faber refine` | `mix faber.refine` |
-| `faber propose --top N` | — (library: `Faber.Consolidate.run/3`) |
-| `faber feedback` | — (library: `Faber.Feedback.report/1`) |
-| `faber sync` | — (library: `Faber.Install.sync_pointer/2`) |
-| `faber serve` | `iex -S mix phx.server` (dashboard on port 4010) |
+| Binary | From a checkout | How they differ |
+|---|---|---|
+| `faber scan` | `mix faber.scan` | task adds `--top N` (rows) and `--no-dedupe`; binary adds `--rank-by`, `--source`/`--db`, `--json`, `--quiet` |
+| `faber propose` | `mix faber.propose` | task adds `--adapter DIR`, `--write DIR`, `--no-eval`, `--trigger-samples N`; binary adds `--install`/`--force`, `--top N`/`--cluster-threshold`, `--dry-run`, `--source`/`--db`, `--min-messages N` |
+| `faber refine` | `mix faber.refine` | identical — the task is a thin delegate |
+| `faber propose --top N` | — | library: `Faber.Consolidate.run/3` |
+| `faber feedback` | — | library: `Faber.Feedback.report/1` |
+| `faber sync` | — | library: `Faber.Install.sync_pointer/2` |
+| `faber serve` | `iex -S mix phx.server` | dashboard on port 4010 |
+
+Both surfaces scope to the project you're standing in and take `--all` to opt out (§5), and both
+print the same scope line — that one is shared code (`Faber.CLI.Render`), not a convention.
 
 ---
 
@@ -288,8 +293,10 @@ at `--min-messages` and `--all` rather than at `--base`/`--format`. See §21.
 | `--min-messages N` | skip sessions shorter than N user+assistant messages | 4 |
 | `--quiet` | suppress status/progress lines on stderr; results still go to stdout | off |
 
-Dev mode: `mix faber.scan [--top N] [--limit N] [--min-messages N] [--base DIR] [--format F]`
-prints a fuller report (`--top` controls rows shown, default 20).
+Dev mode: `mix faber.scan [--top N] [--all] [--limit N] [--min-messages N] [--base DIR] [--format F]`
+prints a fuller report (`--top` controls rows shown, default 20). It scopes to the current project
+and honors `--all` exactly as the binary does, but has no `--json` — it is a reading surface, not a
+scripting one.
 
 Scanning is pure analysis — no LLM, no writes.
 

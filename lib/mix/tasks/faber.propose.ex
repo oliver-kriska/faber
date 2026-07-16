@@ -31,10 +31,14 @@ defmodule Mix.Tasks.Faber.Propose do
 
   use Mix.Task
 
+  alias Faber.CLI.Render
+  alias Faber.Scan.Scope
+
   alias Faber.{Adapter, Eval, Propose}
 
   @switches [
     rank: :integer,
+    all: :boolean,
     adapter: :string,
     limit: :integer,
     base: :string,
@@ -67,14 +71,30 @@ defmodule Mix.Tasks.Faber.Propose do
   end
 
   defp pick_session(opts, rank) do
-    # No default :limit — score all sessions so `--rank N` selects from the true friction ranking.
-    # (A `:limit`, if passed, now samples an even spread; see Faber.Scan.) `--limit` still works.
-    scan_opts = opts |> Keyword.take([:limit, :base]) |> put_format(opts[:format])
+    scan_opts = scan_opts(opts)
 
-    case Faber.Scan.run(scan_opts) |> Enum.at(rank - 1) do
+    # Say which corpus `--rank N` indexes into BEFORE spending a call on it. Unscoped, rank 1 is the
+    # worst session on the machine — this task used to draft (and pay) for that while standing in a
+    # project, which is the whole reason the scope landed here.
+    Mix.shell().info(Render.scope_line(scan_opts[:scope]))
+
+    case scan_opts |> Faber.Scan.run() |> Enum.at(rank - 1) do
       nil -> {:error, :no_session_at_rank}
       result -> {:ok, result}
     end
+  end
+
+  @doc false
+  # Public (`@doc false`) so the scope decision is unit-testable without proposing against the
+  # developer's real `~/.claude` — the same reason `Faber.CLI.humanize_error/1` is.
+  #
+  # No default `:limit` — score all sessions so `--rank N` selects from the true friction ranking.
+  # (A `:limit`, if passed, samples an even spread; see `Faber.Scan`.) Resolution mirrors
+  # `Faber.CLI.scan_opts/2` through the same public `Scope` API, so the policy has ONE owner.
+  def scan_opts(opts) do
+    resolved = opts |> Keyword.take([:limit, :base]) |> put_format(opts[:format])
+    scope = Scope.resolve(Keyword.put(resolved, :all, opts[:all] == true))
+    Keyword.put(resolved, :scope, scope)
   end
 
   # Validate `--format` against the ingest registry; fail loudly on a typo rather than silently
@@ -96,7 +116,7 @@ defmodule Mix.Tasks.Faber.Propose do
 
   defp propose(result, adapter) do
     Mix.shell().info(
-      "Proposing for #{result.fingerprint} session (raw #{fmt(result.raw)}, " <>
+      "Proposing for #{result.fingerprint} session (raw #{Render.raw_score(result.raw)}, " <>
         "dominant #{result.dominant_signal}) via #{inspect(Faber.LLM.impl())}…\n"
     )
 
@@ -125,8 +145,13 @@ defmodule Mix.Tasks.Faber.Propose do
 
     case Eval.score(proposal, eval_opts) do
       {:ok, r} ->
-        Mix.shell().info("Eval: composite #{fmt(r.composite)} (#{verdict(r)} @ #{r.threshold})")
-        for {dim, d} <- r.dimensions, do: Mix.shell().info("  #{dim}: #{fmt(d["score"])}")
+        Mix.shell().info(
+          "Eval: composite #{Render.score(r.composite)} (#{verdict(r)} @ #{r.threshold})"
+        )
+
+        for {dim, d} <- r.dimensions,
+            do: Mix.shell().info("  #{dim}: #{Render.score(d["score"])}")
+
         report_veto(r)
         report_trigger(Map.get(r, :trigger))
 
@@ -157,11 +182,11 @@ defmodule Mix.Tasks.Faber.Propose do
   defp report_trigger(%{accuracy: acc, correct: c, total: t, samples: n, accuracy_stdev: sd}),
     do:
       Mix.shell().info(
-        "Trigger accuracy: #{fmt(acc)} (#{c}/#{t} pooled over #{n} samples, σ=#{fmt(sd)})"
+        "Trigger accuracy: #{Render.score(acc)} (#{c}/#{t} pooled over #{n} samples, σ=#{Render.score(sd)})"
       )
 
   defp report_trigger(%{accuracy: acc, correct: c, total: t}),
-    do: Mix.shell().info("Trigger accuracy: #{fmt(acc)} (#{c}/#{t})")
+    do: Mix.shell().info("Trigger accuracy: #{Render.score(acc)} (#{c}/#{t})")
 
   defp write(dir, proposal, md) do
     path = Path.join([dir, proposal.name, "SKILL.md"])
@@ -169,7 +194,4 @@ defmodule Mix.Tasks.Faber.Propose do
     File.write!(path, md)
     Mix.shell().info("Wrote #{path}")
   end
-
-  defp fmt(n) when is_float(n), do: :erlang.float_to_binary(n, decimals: 2)
-  defp fmt(n), do: to_string(n)
 end
