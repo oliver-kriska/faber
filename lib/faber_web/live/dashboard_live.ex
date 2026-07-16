@@ -128,7 +128,13 @@ defmodule FaberWeb.DashboardLive do
          result when not is_nil(result) <- Enum.at(socket.assigns.results, idx - 1) do
       {:noreply,
        socket
-       |> assign(proposing_i: idx, proposal: nil, proposal_i: nil, installed: nil)
+       |> assign(
+         selected_i: idx,
+         proposing_i: idx,
+         proposal: nil,
+         proposal_i: nil,
+         installed: nil
+       )
        |> start_async(:propose, fn -> do_propose(result) end)}
     else
       false ->
@@ -284,7 +290,11 @@ defmodule FaberWeb.DashboardLive do
       # on disk it exists only in one process's assigns — a browser refresh would destroy it and
       # the only way back would be paying again. Best-effort: a store failure is logged there and
       # must not deny the user the proposal they already bought.
-      Store.put(result, %{name: proposal.name, md: md, eval: scores, adapter: adapter.name})
+      # Store the WHOLE eval, not just the three scores the view happens to render: `:engine` is
+      # what separates the adapter's stack-specific verdict from a `native:fallback` that only
+      # certifies generic markdown structure, and a reader of this artifact must not have to guess
+      # which one it is holding. (The store round-trips every eval key as of format 2.)
+      Store.put(result, %{name: proposal.name, md: md, eval: eval, adapter: adapter.name})
 
       Map.merge(scores, %{name: proposal.name, md: md})
     else
@@ -607,6 +617,13 @@ defmodule FaberWeb.DashboardLive do
         </span>
       </div>
 
+      <.hero
+        :if={@scanned and @results != [] and is_nil(@selected_i)}
+        session={hd(@results)}
+        allow_propose={@allow_propose}
+        installed_skill={installed_skill(hd(@results), @installed_sessions)}
+      />
+
       <%!-- One stage, two modes. Overview: the full ranked table. Detail: the same `.index`
             table shrinks to a sidebar (a container query drops its metric columns) while the
             pane reveals on the right. `data-mode` is the end state; the `StageMorph` hook
@@ -622,6 +639,9 @@ defmodule FaberWeb.DashboardLive do
       >
         <div class="index" id="index">
           <table class="ranked">
+            <caption class="ranked-caption">
+              Ranked by friction. Arrow keys or <kbd>j</kbd> / <kbd>k</kbd> move, <kbd>Enter</kbd> opens.
+            </caption>
             <thead>
               <tr>
                 <th class="col-rank">#</th>
@@ -651,8 +671,13 @@ defmodule FaberWeb.DashboardLive do
                 class={["srow", i == @selected_i && "selected"]}
                 style={bar_style(r.raw, @max_raw)}
                 data-friction={fmt(r.raw)}
+                tabindex="0"
+                role="button"
+                aria-label={"Open session #{i}: #{project_name(r)}, friction #{fmt(r.raw)}"}
                 phx-click="select"
                 phx-value-i={i}
+                phx-keydown="select"
+                phx-key="Enter"
                 phx-hook={i == @selected_i && "SelectedIntoView"}
                 aria-current={i == @selected_i && "true"}
               >
@@ -706,6 +731,56 @@ defmodule FaberWeb.DashboardLive do
         <button type="button" class="filter-clear" phx-click="clear_filters">Clear filters</button>
       </p>
     </main>
+    """
+  end
+
+  # The opinionated landing lead: the single highest-friction session in the current scan (the top
+  # of the ranked list), stated in prose with the one action that matters — Propose a skill for it.
+  # It leads the overview; selecting any row swaps it for the detail pane. It never auto-proposes:
+  # the button is an explicit, token-spend-confirmed click, so merely loading the page costs nothing.
+  attr :session, :map, required: true
+  attr :allow_propose, :boolean, required: true
+  attr :installed_skill, :map, default: nil
+
+  defp hero(assigns) do
+    ~H"""
+    <section class="hero" aria-label="Highest-friction session">
+      <div class="hero-body">
+        <p class="hero-context">Your highest-friction session — where a skill would have helped most.</p>
+        <h2 class="hero-title">
+          <span class="proj-name">{project_name(@session)}</span><span class="proj-id">/{project_short(@session)}</span>
+          <span class="hero-score" data-tip={friction_tip()}>
+            {fmt(@session.raw)} <span class="hero-score-label">friction</span>
+          </span>
+        </h2>
+        <p class="hero-explain">{explain(@session)}</p>
+        <div :if={@session.missed != []} class="hero-missed">
+          <span class="hero-missed-label">Would have helped:</span>
+          <span :for={m <- @session.missed} class="chip">/{m}</span>
+        </div>
+      </div>
+      <div class="hero-aside">
+        <span :if={@installed_skill} class="badge installed" data-tip="A Faber skill from this session is already installed.">
+          ✓ skill installed
+        </span>
+        <button
+          :if={@allow_propose}
+          type="button"
+          class="propose-btn hero-cta"
+          phx-click="propose"
+          phx-value-i="1"
+          data-confirm="This calls the configured LLM (claude -p by default) and spends tokens. Propose a skill for this session?"
+        >
+          Propose a skill
+        </button>
+        <button type="button" class="ghost hero-open" phx-click="select" phx-value-i="1">
+          Open session
+        </button>
+        <p :if={not @allow_propose} class="hero-note">
+          Proposing is off in this view — enable it in your Faber web config to draft skills in place.
+        </p>
+      </div>
+    </section>
     """
   end
 

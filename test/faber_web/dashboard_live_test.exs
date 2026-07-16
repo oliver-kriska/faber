@@ -45,6 +45,44 @@ defmodule FaberWeb.DashboardLiveTest do
     assert render_click(view, "rescan") =~ "Faber"
   end
 
+  test "the overview leads with a hero for the top session and keyboard-operable rows", %{
+    conn: conn
+  } do
+    {:ok, view, _html} = live(conn, "/")
+    html = render_async(view, @async_timeout)
+
+    # The opinionated landing: a hero featuring the single highest-friction session, with the one
+    # action that matters — Propose — as an explicit, token-spend-confirmed click. It must NOT
+    # auto-propose on load (that would spend LLM tokens on every page view).
+    assert html =~ ~s(class="hero")
+    assert html =~ "highest-friction session"
+    assert html =~ ~s(phx-click="propose" phx-value-i="1")
+    assert html =~ "spends tokens"
+
+    # Every ranked row is a focusable, button-role control (Enter activates it server-side via
+    # phx-keydown); the caption advertises the keyboard model up front.
+    assert html =~ ~s(tabindex="0")
+    assert html =~ ~s(role="button")
+    assert html =~ ~s(phx-keydown="select")
+    assert html =~ ~s(class="ranked-caption")
+
+    # The hero is the overview lead only: opening a session swaps it for the detail pane.
+    detail = render_click(view, "select", %{"i" => "1"})
+    assert detail =~ ~s(data-mode="detail")
+    refute detail =~ ~s(class="hero")
+  end
+
+  test "Enter on a focused row opens it (keyboard parity with click)", %{conn: conn} do
+    {:ok, view, _html} = live(conn, "/")
+    render_async(view, @async_timeout)
+
+    # The row binds `phx-keydown="select"` with `phx-key="Enter"` and carries `phx-value-i`, so an
+    # Enter press is delivered as the same select event a click is — opening the detail pane.
+    html = render_keydown(view, "select", %{"key" => "Enter", "i" => "2"})
+    assert html =~ ~s(data-mode="detail")
+    assert html =~ ~s(id="session-2" class="srow selected")
+  end
+
   test "the facet filters narrow the table and can be cleared", %{conn: conn} do
     {:ok, view, _html} = live(conn, "/")
     html = render_async(view, @async_timeout)

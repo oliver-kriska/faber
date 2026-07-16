@@ -231,8 +231,24 @@
     if (search) filterCombo(search.closest(".combo"), search.value);
   });
 
-  // Escape closes any open popover (keyboard parity with click-away).
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape") closePopovers(null);
+    // Escape closes any open popover (keyboard parity with click-away).
+    if (e.key === "Escape") { closePopovers(null); return; }
+
+    // Typing in a field must never reach the LiveView window-level nav. The `.stage` binds
+    // `phx-window-keydown="nav"` (arrows / j / k move the selection), which listens on `window`;
+    // stopping the event at `document` keeps it from bubbling up to that handler while the user is
+    // typing into the project filter search — otherwise every keystroke also moved the ranking.
+    if (e.target.closest("input, textarea, select, [contenteditable]")) {
+      e.stopPropagation();
+      return;
+    }
+
+    // A focused ranked row is operated like a button: Space activates it (Enter is wired
+    // server-side via `phx-keydown="select"` on the row). preventDefault stops Space scrolling.
+    if (e.key === " " || e.key === "Spacebar") {
+      var row = e.target.closest(".srow");
+      if (row) { e.preventDefault(); row.click(); }
+    }
   });
 })();

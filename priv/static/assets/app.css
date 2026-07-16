@@ -373,6 +373,98 @@ button.ghost.copied {
   padding: var(--space-6) 0;
 }
 
+/* ── Hero: the opinionated landing lead ───────────────────────────────────────
+   The single highest-friction session, stated in prose with the one action worth taking. A framed
+   editorial panel (hairline + raised surface) — deliberately NOT a big-number metric card: the
+   friction figure sits inline in the title, never centred as a scoreboard. Prose left, one primary
+   action right. Hidden the moment a row is selected (the detail pane takes over). */
+.hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-5) var(--space-6);
+  flex-wrap: wrap;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: var(--space-5) var(--space-5) var(--space-5) var(--space-6);
+  margin-bottom: var(--space-6);
+}
+.hero-body {
+  min-width: 0;
+  flex: 1 1 26rem;
+}
+.hero-context {
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.hero-title {
+  margin: 0 0 var(--space-3);
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 var(--space-3);
+}
+.hero-score {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+.hero-score-label {
+  font-family: var(--font-sans);
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  margin-left: 0.2ch;
+}
+.hero-explain {
+  margin: 0;
+  color: var(--fg-dim);
+  line-height: 1.65;
+  max-width: 60ch;
+  text-wrap: pretty;
+}
+.hero-missed {
+  margin-top: var(--space-4);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.hero-missed-label {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.hero-aside {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+  min-width: 11rem;
+}
+.hero-cta,
+.hero-open {
+  width: 100%;
+  text-align: center;
+}
+.hero-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.5;
+  max-width: 15rem;
+  text-align: right;
+}
+
 /* ── Stage: overview table ⇄ detail sidebar ───────────────────────────────────
    One grid, two modes. Overview = the full ranked table at full width. Detail = the same table
    shrinks (a container query on `.index` drops its metric columns to a sidebar) while the pane
@@ -401,6 +493,23 @@ button.ghost.copied {
 table.ranked {
   width: 100%;
   border-collapse: collapse;
+}
+/* Keyboard affordance: the list is a focusable, arrow/j-k navigable control — say so up front. */
+.ranked-caption {
+  caption-side: top;
+  text-align: left;
+  color: var(--muted);
+  font-size: 0.76rem;
+  padding: 0 var(--space-4) var(--space-3);
+}
+.ranked-caption kbd {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  background: var(--line-soft);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 0.02rem 0.32rem;
+  color: var(--fg-dim);
 }
 .ranked th,
 .ranked td {
@@ -478,11 +587,18 @@ tbody tr.srow.selected {
 tbody tr.srow.selected .proj-name {
   color: var(--accent);
 }
+/* The rows are keyboard-operable (tabindex + role="button", Enter/Space activate). A clear inset
+   ring on focus — inset so `.index`'s overflow:hidden never clips it at the row edges. */
+tbody tr.srow:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 
 /* Container query: when `.index` is squeezed to the sidebar, drop the metric columns and the
    header, surface the meta line. Motion masks the one-time column pop. */
 @container (max-width: 460px) {
   .ranked thead,
+  .ranked-caption,
   .ranked .col-type,
   .ranked .col-signal,
   .ranked .col-missed,
@@ -646,6 +762,7 @@ tbody tr.srow.selected .proj-name {
 }
 .ranked th[data-tip],
 .stat[data-tip],
+.hero-score[data-tip],
 .summary [data-tip] {
   text-decoration: underline dotted color-mix(in srgb, var(--muted) 55%, transparent);
   text-underline-offset: 4px;
