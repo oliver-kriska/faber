@@ -42,11 +42,31 @@ defmodule Faber.Proposal.Store do
 
   require Logger
 
-  @format 1
+  @format 2
+
+  # Every format this reader understands, NOT just the one it writes. `read/1` drops anything it
+  # cannot match (`_ -> nil`), so shipping `@format 2` without listing 1 here would make every
+  # artifact written before the bump silently vanish from `list/0` — in the one module whose entire
+  # purpose is that paid work survives. A format leaves this list only when its records are actually
+  # gone, and then loudly, never by a bump.
+  @readable_formats [1, 2]
 
   # The exact shape of `id/2`: two truncated-sha256 hex hashes. Used to validate ids that reach
   # `delete/1` from outside this module.
   @id_re ~r/\A[0-9a-f]{12}-[0-9a-f]{12}\z/
+
+  @typedoc """
+  What this artifact *is*, which changes what it means and how it can be reproduced:
+
+    * `:single` — one session, one draft (`propose`/`refine`, or the dashboard).
+    * `:merged` — an LLM merge of several drafts that passed the eval gate. Spans sessions, so
+      `propose --rank N` cannot reproduce it: this record is the only copy.
+    * `:kept` — a singleton cluster in a consolidate run, passed through untouched.
+    * `:kept_original` — an original that survived because its cluster's merge did not: the merge
+      scored below the gate, or the merge call itself failed. Either way the original is a real
+      draft that cost real tokens.
+  """
+  @type outcome :: :single | :merged | :kept | :kept_original
 
   @type t :: %{
           id: String.t(),
@@ -57,6 +77,8 @@ defmodule Faber.Proposal.Store do
           md: String.t(),
           eval: map(),
           adapter: String.t() | nil,
+          outcome: outcome(),
+          source_sessions: [String.t()],
           created_at: String.t()
         }
 
@@ -74,9 +96,16 @@ defmodule Faber.Proposal.Store do
   @doc """
   Persist a proposal for `result`'s session. Durable once it returns `{:ok, record}`.
 
-  `attrs` carries the paid output: `:name`, `:md`, and optionally `:eval` and `:adapter`. Writing
-  the same content twice for the same session is idempotent (same id, refreshed on disk); writing
-  *different* content adds a record and leaves the earlier one alone.
+  `attrs` carries the paid output: `:name`, `:md`, and optionally `:eval`, `:adapter`, `:outcome`
+  (default `:single`) and `:source_sessions`. Writing the same content twice for the same session is
+  idempotent (same id, refreshed on disk); writing *different* content adds a record and leaves the
+  earlier one alone.
+
+  `:source_sessions` is every session that fed this artifact, defaulting to `[session_key]`. It
+  exists for `:merged`, which is drawn from several sessions at once — `session_key` can only name
+  one of them (it is what the id and the read glob are built from), so without this the other
+  originals of a merge would be unrecorded, and a merge is exactly the artifact that no `propose
+  --rank N` can reproduce.
   """
   @spec put(Scan.Result.t() | String.t(), map()) :: {:ok, t()} | {:error, term()}
   def put(result_or_key, attrs)
@@ -96,7 +125,6 @@ defmodule Faber.Proposal.Store do
     md = Map.fetch!(attrs, :md)
 
     record = %{
-      format: @format,
       id: id(session_key, md),
       session_key: session_key,
       session_path: meta[:session_path],
@@ -105,11 +133,19 @@ defmodule Faber.Proposal.Store do
       md: md,
       eval: Map.get(attrs, :eval, %{}),
       adapter: Map.get(attrs, :adapter),
+      outcome: Map.get(attrs, :outcome, :single),
+      source_sessions: Map.get(attrs, :source_sessions) || [session_key],
       created_at: DateTime.utc_now() |> DateTime.to_iso8601()
     }
 
     with :ok <- if(enabled?(), do: :ok, else: {:error, :disabled}),
-         {:ok, json} <- encode(record),
+         # `:format` is added for the ENCODE only, never to the returned record: it is a property of
+         # the file, not of the proposal, and `read/1` strips it back off. Returning it here made
+         # `put/2` and `latest/1` hand back different shapes for the same record — the same
+         # writer/reader asymmetry @eval_keys exists to prevent, and one dialyzer caught the moment
+         # a caller first pattern-matched on `put/2` (the dashboard, the only writer until now,
+         # ignores its return).
+         {:ok, json} <- encode(Map.put(record, :format, @format)),
          :ok <- Faber.mkdir_private(dir()),
          :ok <- Faber.write_private(path_for(record.id), json) do
       {:ok, record}
@@ -173,6 +209,35 @@ defmodule Faber.Proposal.Store do
   end
 
   @doc """
+  Find one stored proposal by id or by an unambiguous **prefix** of one (git-style).
+
+  Returns `{:ok, record}`, `{:error, :not_found}`, or `{:error, {:ambiguous, [record]}}` with every
+  candidate so a caller can show them rather than guess.
+
+  Ids are two 12-hex hashes, `<session>-<content>`, which is stable and greppable but not something
+  anyone retypes. Note the FIRST segment is the session: every proposal drafted from one session
+  shares that prefix, so a short prefix is ambiguous exactly where it gets used most (re-proposing
+  the same session). That is why ambiguity is an error carrying the candidates, not a first-match.
+  """
+  @spec find(String.t()) :: {:ok, t()} | {:error, :not_found | {:ambiguous, [t()]}}
+  def find(id_or_prefix) when is_binary(id_or_prefix) do
+    case Enum.filter(list(), &String.starts_with?(&1.id, id_or_prefix)) do
+      [record] -> {:ok, record}
+      [] -> {:error, :not_found}
+      # An exact id is never ambiguous, even though it is also a prefix of itself: prefer it over
+      # the longer ids it happens to prefix.
+      many -> exact_or_ambiguous(many, id_or_prefix)
+    end
+  end
+
+  defp exact_or_ambiguous(candidates, id) do
+    case Enum.find(candidates, &(&1.id == id)) do
+      nil -> {:error, {:ambiguous, candidates}}
+      record -> {:ok, record}
+    end
+  end
+
+  @doc """
   Delete one stored proposal by id.
 
   Faber only ever calls this on the user's explicit instruction — see the moduledoc.
@@ -186,6 +251,23 @@ defmodule Faber.Proposal.Store do
     # it is free.
     if Regex.match?(@id_re, id), do: File.rm(path_for(id))
     :ok
+  end
+
+  @doc """
+  Delete all but the `keep` newest proposals. Returns the records that were removed.
+
+  This is the **only** thing that removes a proposal, and it exists solely because a human asked
+  (`faber proposals --prune`). It is not eviction, not expiry, and nothing calls it on Faber's
+  initiative — see the moduledoc's table: losing an entry here costs tokens, unrecoverably, so the
+  decision belongs to the person who paid for them. Newest-first by `created_at`, matching what
+  `list/0` shows, so the user prunes what they were looking at.
+  """
+  @spec prune(pos_integer()) :: [t()]
+  def prune(keep) when is_integer(keep) and keep >= 0 do
+    {_kept, dropped} = list() |> Enum.split(keep)
+
+    Enum.each(dropped, &delete(&1.id))
+    dropped
   end
 
   @doc """
@@ -252,23 +334,47 @@ defmodule Faber.Proposal.Store do
 
   defp read(path) do
     with {:ok, body} <- File.read(path),
-         {:ok, %{"format" => @format} = raw} <- Jason.decode(body) do
-      %{
-        id: raw["id"],
-        session_key: raw["session_key"],
-        session_path: raw["session_path"],
-        session_stamp: raw["session_stamp"],
-        name: raw["name"],
-        md: raw["md"],
-        eval: normalize_eval(raw["eval"]),
-        adapter: raw["adapter"],
-        created_at: raw["created_at"]
-      }
+         {:ok, raw} <- Jason.decode(body),
+         true <- raw["format"] in @readable_formats do
+      decode(raw)
     else
       # A single unreadable file must not blind the reader to the rest of a session's proposals.
       _ -> nil
     end
   end
+
+  defp decode(raw) do
+    session_key = raw["session_key"]
+
+    %{
+      id: raw["id"],
+      session_key: session_key,
+      session_path: raw["session_path"],
+      session_stamp: raw["session_stamp"],
+      name: raw["name"],
+      md: raw["md"],
+      eval: normalize_eval(raw["eval"]),
+      adapter: raw["adapter"],
+      # Defaults that carry a format-1 record forward rather than dropping it. A v1 record is a
+      # single-session draft by construction: the CLI did not write to this store at all when v1 was
+      # the only format, and the dashboard's only writer proposes exactly one session.
+      outcome: decode_outcome(raw["outcome"]),
+      source_sessions: raw["source_sessions"] || List.wrap(session_key),
+      created_at: raw["created_at"]
+    }
+  end
+
+  # Allowlisted for the same reason as @eval_keys: these files are hand-editable, and
+  # String.to_atom/1 on their contents grows a table that is never garbage-collected. An
+  # unrecognized (or absent, i.e. format-1) outcome reads as :single.
+  @outcomes %{
+    "single" => :single,
+    "merged" => :merged,
+    "kept" => :kept,
+    "kept_original" => :kept_original
+  }
+
+  defp decode_outcome(value), do: Map.get(@outcomes, value, :single)
 
   # JSON has no atoms, so a naive round-trip hands back `%{"composite" => _}` for something that
   # went in as `%{composite: _}` — an asymmetry every caller would eventually get wrong. Map the
@@ -287,11 +393,22 @@ defmodule Faber.Proposal.Store do
   # Still an allowlist, for the original reason: these files are hand-editable, and atomizing
   # arbitrary keys from them would grow a table that is never garbage-collected. An unrecognized
   # key keeps its string rather than being dropped — an unknown score is still paid-for information.
+  # Every key of `t:Faber.Eval.result/0`, plus `trigger` (folded in dynamically under `trigger:
+  # true`). Listing only four of them was the very asymmetry the note above warns about: `:engine`
+  # went in as an atom and came back as `"engine"`, so a reader that stored the eval and one that
+  # re-read it disagreed about the same map. `:engine` matters most of all — it distinguishes the
+  # adapter's stack-specific verdict from `"native:fallback"`, which certifies generic markdown
+  # structure and not the stack's bar (see Faber.Eval's @typedoc). A reader must not have to guess
+  # which one it is holding.
   @eval_keys %{
     "composite" => :composite,
     "passed" => :passed,
     "threshold" => :threshold,
-    "dimensions" => :dimensions
+    "dimensions" => :dimensions,
+    "engine" => :engine,
+    "schema_version" => :schema_version,
+    "weight_total" => :weight_total,
+    "trigger" => :trigger
   }
 
   defp normalize_eval(eval) when is_map(eval) do

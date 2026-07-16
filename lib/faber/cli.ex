@@ -16,8 +16,14 @@ defmodule Faber.CLI do
 
   alias Faber.{Adapter, Consolidate, Eval, Install, Loop, Proposal, Propose, Scan}
   alias Faber.Ingest.Format
+  alias Faber.Proposal.Store
 
   @default_port 4710
+
+  # How many proposals `faber proposals --prune` keeps by default. Generous on purpose: these are
+  # paid artifacts on the user's own disk (a few KB each), so an over-large store is a far smaller
+  # problem than pruning something someone wanted back.
+  @default_keep 50
 
   @typedoc "A subcommand name, or `nil` for top-level (`faber --help`)."
   @type subcommand :: atom() | nil
@@ -34,6 +40,8 @@ defmodule Faber.CLI do
   @type command ::
           {:help, subcommand()}
           | {:parse_error, subcommand(), [String.t()]}
+          | {:missing_id, subcommand()}
+          | {:extra_args, subcommand(), [String.t()]}
           | {atom(), keyword()}
 
   @doc "Parsed command when running as a Burrito release, else `nil` (dev/test/iex)."
@@ -138,6 +146,19 @@ defmodule Faber.CLI do
     )
   end
 
+  def parse(["proposals" | rest]) do
+    parse_sub(:proposals, rest, prune: :boolean, keep: :integer, dir: :string)
+  end
+
+  # `show`/`install` take a positional id, which `parse_sub/3` discards along with every other
+  # non-switch arg. Pull it out of OptionParser's remaining-args list and carry it in the opts, so
+  # `parse/1` still returns pure data and `run/2` still does all the I/O.
+  def parse(["show" | rest]), do: parse_with_id(:show, rest, [])
+
+  def parse(["install" | rest]) do
+    parse_with_id(:install, rest, force: :boolean, dir: :string)
+  end
+
   def parse(["feedback" | rest]) do
     parse_sub(:feedback, rest,
       dir: :string,
@@ -172,6 +193,24 @@ defmodule Faber.CLI do
     else
       case OptionParser.parse(argv, strict: strict) do
         {opts, _argv, []} -> {subcommand, opts}
+        {_opts, _argv, invalid} -> {:parse_error, subcommand, Enum.map(invalid, &elem(&1, 0))}
+      end
+    end
+  end
+
+  # Like parse_sub/3, but for the two commands that take a positional id. A missing id is
+  # `{:missing_id, sub}` rather than a runnable command with `id: nil` — same reason parse_sub/3
+  # honors OptionParser's invalid list: a command that can't know what it was asked to do must not
+  # run. A SECOND positional is an error too; silently ignoring it would make `faber install a b`
+  # quietly install only `a`.
+  defp parse_with_id(subcommand, argv, strict) do
+    if help?(argv) do
+      {:help, subcommand}
+    else
+      case OptionParser.parse(argv, strict: strict) do
+        {opts, [id], []} -> {subcommand, Keyword.put(opts, :id, id)}
+        {_opts, [], []} -> {:missing_id, subcommand}
+        {_opts, [_ | _] = extra, []} -> {:extra_args, subcommand, extra}
         {_opts, _argv, invalid} -> {:parse_error, subcommand, Enum.map(invalid, &elem(&1, 0))}
       end
     end
@@ -222,6 +261,12 @@ defmodule Faber.CLI do
 
   def dispatch({:help, subcommand}) when is_atom(subcommand),
     do: dispatch({:help, [subcommand: subcommand]})
+
+  def dispatch({:missing_id, subcommand}) when is_atom(subcommand),
+    do: dispatch({:missing_id, [subcommand: subcommand]})
+
+  def dispatch({:extra_args, subcommand, extra}),
+    do: dispatch({:extra_args, [subcommand: subcommand, extra: extra]})
 
   def dispatch({:serve, opts}), do: serve(opts)
 
@@ -314,6 +359,63 @@ defmodule Faber.CLI do
     1
   end
 
+  def run(:missing_id, opts) do
+    sub = opts[:subcommand]
+
+    IO.puts(
+      :stderr,
+      "faber: #{sub} needs an artifact id — `faber #{sub} <id>`. " <>
+        "List what you have with `faber proposals`.\n"
+    )
+
+    IO.puts(:stderr, usage(sub))
+    1
+  end
+
+  def run(:extra_args, opts) do
+    sub = opts[:subcommand]
+
+    IO.puts(
+      :stderr,
+      "faber: #{sub} takes exactly one artifact id, but also got: " <>
+        "#{Enum.join(opts[:extra], ", ")}\n"
+    )
+
+    IO.puts(:stderr, usage(sub))
+    1
+  end
+
+  def run(:proposals, opts) do
+    if opts[:prune] == true do
+      prune_proposals(opts[:keep] || @default_keep)
+    else
+      list_proposals(opts)
+    end
+  end
+
+  def run(:show, opts) do
+    case resolve_id(opts[:id]) do
+      {:ok, record} ->
+        IO.puts(render_show(record))
+        0
+
+      {:error, reason} ->
+        IO.puts(:stderr, "faber show failed: #{humanize_error(reason)}")
+        1
+    end
+  end
+
+  def run(:install, opts) do
+    case resolve_id(opts[:id]) do
+      {:ok, record} ->
+        install_skill(record.name, record.md, opts)
+
+      {:error, reason} ->
+        IO.puts(:stderr, "faber install failed: #{humanize_error(reason)}")
+        1
+    end
+  end
+
   def run(:scan, opts) do
     scan_opts =
       opts
@@ -350,7 +452,10 @@ defmodule Faber.CLI do
          :ok <- stack_gate(adapter, result, opts[:force]),
          {:ok, proposal} <- propose_with_status(result, adapter),
          {:ok, eval} <- Eval.score(proposal, adapter: adapter, trigger: trigger?) do
-      IO.puts(render_proposal(proposal, eval, adapter))
+      # Filed before it is printed, not after: the print is what the user sees, the file is what
+      # they keep.
+      record = store_artifact(result, proposal, eval, adapter, :single)
+      IO.puts(render_proposal(proposal, eval, adapter) <> render_artifact(record))
       maybe_install(proposal, adapter, opts[:install])
       0
     else
@@ -393,7 +498,10 @@ defmodule Faber.CLI do
          {:ok, result} <- select_session(Scan.run(scan_opts), rank, scan_opts),
          :ok <- stack_gate(adapter, result, opts[:force]),
          %Loop.State{} = state <- refine_with_status(result, adapter, refine_opts) do
-      IO.puts(render_refinement(state, adapter))
+      # A refine is the most expensive thing here — up to `--iterations` real LLM calls to arrive at
+      # one skill. Losing that was the same bug as losing a propose, several times over.
+      record = store_refinement(state, result, adapter)
+      IO.puts(render_refinement(state, adapter) <> render_artifact(record))
       maybe_install_best(state, adapter, opts[:install])
       0
     else
@@ -601,6 +709,20 @@ defmodule Faber.CLI do
   # friendly sentence for an error we haven't actually seen would trade an honest dump for a
   # confident guess, and a wrong explanation costs more debugging time than a raw tuple.
   @spec humanize_error(term()) :: String.t()
+  def humanize_error(:not_found),
+    do: "no proposal with that id. List what you have with `faber proposals`."
+
+  def humanize_error(:missing_id),
+    do: "an artifact id is required. List what you have with `faber proposals`."
+
+  # Show the candidates rather than making the user re-run `proposals` and eyeball it: ids share a
+  # session prefix, so this is the *expected* outcome of a short prefix, not a rare mistake.
+  def humanize_error({:ambiguous, candidates}) do
+    lines = Enum.map_join(candidates, "\n", fn r -> "  #{r.id}  #{r.name}" end)
+
+    "that prefix matches #{length(candidates)} proposals:\n#{lines}\nUse more of the id."
+  end
+
   def humanize_error({:no_sessions, root}),
     do: "no sessions found under #{root}. Three things usually cause this:\n" <> scan_causes()
 
@@ -893,11 +1015,360 @@ defmodule Faber.CLI do
   defp maybe_install(_proposal, _adapter, install) when install in [nil, false], do: :ok
 
   defp maybe_install(proposal, adapter, true) do
-    case Install.install(proposal, adapter: adapter) do
-      {:ok, path} -> IO.puts("installed → #{path}")
-      {:error, reason} -> IO.puts(:stderr, "install failed: #{humanize_error(reason)}")
+    # `propose --install` and `install <id>` are the same operation on the same bytes — the rendered
+    # SKILL.md — so they go through one function. Two paths would mean the diff-first guard applies
+    # to one and not the other, which is exactly the kind of drift that makes a blind overwrite
+    # possible again.
+    _ = install_skill(proposal.name, Propose.render_skill_md(proposal, adapter), [])
+    :ok
+  end
+
+  # Never a blind overwrite. An existing skill under the same name may be hand-edited, or may be a
+  # better version than the one being installed — so the conflict prints what would change and
+  # refuses, and the user decides. This is `terraform plan`'s bargain, and the reason `--force`
+  # exists rather than being the default.
+  defp install_skill(name, md, opts) do
+    case Install.install({name, md}, Keyword.take(opts, [:dir, :force])) do
+      {:ok, path} ->
+        IO.puts("installed → #{path}")
+        0
+
+      {:error, {:exists, path}} ->
+        IO.puts(:stderr, render_install_conflict(name, md, path))
+        1
+
+      {:error, reason} ->
+        IO.puts(:stderr, "faber install failed: #{humanize_error(reason)}")
+        1
     end
   end
+
+  defp render_install_conflict(name, md, path) do
+    """
+    #{name} is already installed at #{path}.
+    #{render_drift(path)}
+    #{diff_or_identical(path, md)}
+
+    Replace it with --force, or `faber refine` the installed one instead.
+    """
+  end
+
+  # The diff shows WHAT differs; this says WHOSE change it is, which is the part that decides
+  # whether --force is safe. Replacing Faber's own output costs nothing recoverable — replacing
+  # someone's hand-edits destroys work that exists nowhere else.
+  defp render_drift(path) do
+    if Install.drift?(path) do
+      "\nDRIFT — this skill has been hand-edited since Faber installed it. --force discards\n" <>
+        "those edits permanently; they are not in the proposal store.\n"
+    else
+      ""
+    end
+  end
+
+  defp diff_or_identical(path, md) do
+    case File.read(path) do
+      {:ok, ^md} ->
+        "The installed skill is byte-identical to this proposal — nothing would change."
+
+      {:ok, installed} ->
+        "Installed (-) vs this proposal (+):\n\n#{text_diff(installed, md)}"
+
+      {:error, reason} ->
+        "Could not read the installed skill to compare (#{:file.format_error(reason)})."
+    end
+  end
+
+  # Lines of context kept either side of a change.
+  @diff_context 3
+
+  # `List.myers_difference/2` is stdlib — no dep for something this small, per the minimal-deps rule
+  # (Owl in P4 is the one dep this plan is allowed, and it isn't a differ).
+  defp text_diff(old, new) do
+    old
+    |> String.split("\n")
+    |> List.myers_difference(String.split(new, "\n"))
+    |> Enum.flat_map(fn {op, lines} -> Enum.map(lines, &{op, &1}) end)
+    |> collapse_unchanged()
+    |> Enum.map_join("\n", &diff_line/1)
+  end
+
+  # A SKILL.md is mostly unchanged text; printing all of it buries the three lines that differ. Runs
+  # of equal lines longer than 2×context collapse to a count.
+  defp collapse_unchanged(tagged) do
+    tagged
+    |> Enum.chunk_by(fn {op, _line} -> op == :eq end)
+    |> Enum.flat_map(fn
+      [{:eq, _} | _] = run -> collapse_run(run)
+      changed -> changed
+    end)
+  end
+
+  defp collapse_run(run) when length(run) <= 2 * @diff_context + 1, do: run
+
+  defp collapse_run(run) do
+    hidden = length(run) - 2 * @diff_context
+
+    Enum.take(run, @diff_context) ++
+      [{:skip, "⋯ #{hidden} unchanged #{if hidden == 1, do: "line", else: "lines"}"}] ++
+      Enum.take(run, -@diff_context)
+  end
+
+  defp diff_line({:eq, line}), do: "  #{line}"
+  defp diff_line({:del, line}), do: "- #{line}"
+  defp diff_line({:ins, line}), do: "+ #{line}"
+  defp diff_line({:skip, note}), do: "  #{note}"
+
+  # ── artifacts ──────────────────────────────────────────────────────────────
+
+  # Every paid outcome reaches disk BEFORE it is printed. This is Phase 2's whole point: a live
+  # `consolidate --top 10` spent ~10 LLM calls, produced 4 eval-passing skills (two merges at
+  # composite 0.8016), printed a 7-line summary, and lost every byte the moment the process exited.
+  # The merges especially — they are drawn from several sessions at once, so no `propose --rank N`
+  # can reproduce them; the artifact is the only copy there will ever be.
+  #
+  # Best-effort, deliberately: `Store.put/2` logs its own failure, and a store that cannot write is
+  # a lost artifact, never a failed command. Refusing to print output the user has already paid for
+  # because we could not also file it would destroy the very thing this exists to protect.
+  defp store_artifact(key_or_result, proposal, eval, adapter, outcome, source_sessions \\ nil) do
+    attrs = %{
+      name: proposal.name,
+      md: Propose.render_skill_md(proposal, adapter),
+      eval: eval || %{},
+      adapter: adapter.name,
+      outcome: outcome,
+      source_sessions: source_sessions
+    }
+
+    case Store.put(key_or_result, attrs) do
+      {:ok, record} -> record
+      # `:disabled` is the configured-off store (the test suite), not a failure — say nothing.
+      {:error, :disabled} -> nil
+      {:error, _reason} -> nil
+    end
+  end
+
+  # Mirrors `Store`'s own session_key/1 — the session id is the identity, the path the fallback —
+  # for the consolidate path, which holds proposals rather than the `%Scan.Result{}` they came from.
+  # A merged proposal's source carries `session_ids` (plural, the union of its originals').
+  defp proposal_sessions(%Proposal{source: source}) when is_map(source) do
+    cond do
+      is_list(source[:session_ids]) and source[:session_ids] != [] -> source[:session_ids]
+      is_binary(source[:session_id]) -> [source[:session_id]]
+      is_binary(source[:path]) -> [source[:path]]
+      true -> []
+    end
+  end
+
+  defp proposal_sessions(_proposal), do: []
+
+  # An artifact whose session is unknown has nowhere to be keyed, so it is not stored — but that is
+  # a fact worth saying out loud rather than a silent drop, since the whole promise here is "nothing
+  # paid for is lost".
+  defp store_proposal(proposal, eval, adapter, outcome) do
+    case proposal_sessions(proposal) do
+      [] ->
+        status("could not file #{proposal.name}: its source session is unknown")
+        nil
+
+      [primary | _] = sessions ->
+        store_artifact(primary, proposal, eval, adapter, outcome, sessions)
+    end
+  end
+
+  # The loop tracks its best as a proposal when it has one; a content-only run has no proposal to
+  # render a SKILL.md from, so there is nothing to file.
+  defp store_refinement(%Loop.State{best_proposal: %Proposal{} = p} = state, result, adapter),
+    do: store_artifact(result, p, refinement_eval(state), adapter, :single)
+
+  defp store_refinement(_state, _result, _adapter), do: nil
+
+  # `best_eval` is the full eval map when the eval_fn supplied one (`{:ok, comp, meta}`); otherwise
+  # the composite the ratchet kept is genuinely all we know. Record that rather than inventing the
+  # rest of the shape.
+  defp refinement_eval(%Loop.State{best_eval: eval}) when is_map(eval), do: eval
+  defp refinement_eval(%Loop.State{best_composite: c}), do: %{composite: c}
+
+  defp store_outcomes(outcomes, adapter) do
+    outcomes
+    |> Enum.flat_map(fn
+      # A singleton was never merged and never gated, so it has no eval of its own to record.
+      {:kept, p} ->
+        [store_proposal(p, nil, adapter, :kept)]
+
+      # `eval` here IS the merged skill's score, so it belongs to the merged skill.
+      {:merged, merged, eval, _originals} ->
+        [store_proposal(merged, eval, adapter, :merged)]
+
+      # ...and here it is NOT. This eval scored the MERGE that failed the gate; the originals are
+      # what survived, and attaching the merge's composite to each would claim they scored something
+      # they never scored. Their own scores aren't in this outcome, so record none.
+      {:kept_originals, originals, _merge_eval} ->
+        Enum.map(originals, &store_proposal(&1, nil, adapter, :kept_original))
+
+      # The merge LLM call failed — but each original is still a real draft that cost real tokens,
+      # which is exactly the thing not to throw away because a later step broke.
+      {:error, originals, _reason} ->
+        Enum.map(originals, &store_proposal(&1, nil, adapter, :kept_original))
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp render_artifacts([]), do: ""
+
+  defp render_artifacts(records) do
+    lines = Enum.map_join(records, "\n", fn r -> "  #{r.id}  #{r.name}" end)
+
+    "\n\n#{length(records)} #{pluralize("artifact", records)} written to " <>
+      "#{Faber.proposals_dir()}:\n#{lines}\n\nInspect one with `faber show <id>`."
+  end
+
+  defp render_artifact(nil), do: ""
+
+  # The full id, not an abbreviation. Ids are two 12-hex hashes and their FIRST segment is the
+  # session — so every proposal from one session shares a prefix, and a git-style short form would
+  # be ambiguous exactly where it's most used (re-proposing the same session). Printing it whole is
+  # unambiguous and still copy-pasteable; `resolve_id/1` is what lets you type fewer characters.
+  defp render_artifact(%{id: id}),
+    do: "\nartifact #{id}\n  faber show #{id}  ·  faber install #{id}"
+
+  # ── proposals / show ───────────────────────────────────────────────────────
+
+  defp list_proposals(opts) do
+    case Store.list() do
+      [] ->
+        IO.puts(empty_store_message())
+        0
+
+      records ->
+        IO.puts(render_proposals(records, opts[:dir]))
+        0
+    end
+  end
+
+  # The only thing that ever deletes a proposal, and only because a human typed --prune. Reports
+  # exactly what went, by name: "pruned 12 proposals" with no names is indistinguishable from having
+  # deleted the wrong twelve.
+  defp prune_proposals(keep) do
+    case Store.prune(keep) do
+      [] ->
+        IO.puts("Nothing to prune — #{length(Store.list())} proposals, keeping #{keep}.")
+        0
+
+      dropped ->
+        lines = Enum.map_join(dropped, "\n", fn r -> "  #{r.id}  #{r.name}" end)
+
+        IO.puts(
+          "Pruned #{length(dropped)} #{pluralize("proposal", dropped)}, kept the #{keep} " <>
+            "newest:\n#{lines}"
+        )
+
+        0
+    end
+  end
+
+  # `Store.find/1` already distinguishes not-found from ambiguous; this only adds the guard for an
+  # id that never arrived (defence in depth — `parse_with_id/3` refuses that case first).
+  defp resolve_id(nil), do: {:error, :missing_id}
+  defp resolve_id(id) when is_binary(id), do: Store.find(id)
+
+  defp empty_store_message do
+    if Store.enabled?() do
+      "No proposals yet. `faber propose` or `faber consolidate` writes one per drafted skill\n" <>
+        "to #{Faber.proposals_dir()}."
+    else
+      "The proposal store is disabled (`config :faber, :proposal_store, false`), so nothing is\n" <>
+        "being kept. Enable it to stop paying for the same skill twice."
+    end
+  end
+
+  @proposals_columns [
+    {"id", 25, :left},
+    {"skill", 30, :left},
+    {"composite", 9, :right},
+    {"outcome", 14, :left},
+    {"engine", 22, :left},
+    {"src", 3, :right}
+  ]
+
+  defp render_proposals(records, dir) do
+    installed = installed_names(dir)
+
+    header =
+      @proposals_columns
+      |> Enum.map_join(" ", fn {label, w, align} -> pad_cell(label, w, align) end)
+      |> Kernel.<>("  installed")
+
+    rows = Enum.map_join(records, "\n", &proposals_row(&1, installed))
+
+    "#{length(records)} #{pluralize("proposal", records)} in #{Faber.proposals_dir()}\n\n" <>
+      "#{header}\n#{rows}\n\nsrc = sessions this was drawn from. `faber show <id>` for the full skill."
+  end
+
+  defp proposals_row(record, installed) do
+    values = [
+      record.id,
+      truncate(to_string(record.name), 30),
+      fmt4(record.eval[:composite]),
+      to_string(record.outcome),
+      truncate(to_string(record.eval[:engine] || "—"), 22),
+      to_string(length(record.source_sessions))
+    ]
+
+    @proposals_columns
+    |> Enum.zip(values)
+    |> Enum.map_join(" ", fn {{_l, w, align}, v} -> pad_cell(v, w, align) end)
+    |> Kernel.<>("  #{if(record.name in installed, do: "✓", else: "")}")
+  end
+
+  # `list_faber_installed/1`, not `list_installed/1`: the generic primitive would enumerate skills
+  # Faber never created and claim them as ours (the provenance rule — see .claude/solutions/
+  # 2026-06-25-sync-pointer-over-claim-provenance.md).
+  defp installed_names(dir) do
+    dir
+    |> then(
+      &if(is_binary(&1),
+        do: Install.list_faber_installed(&1),
+        else: Install.list_faber_installed()
+      )
+    )
+    |> MapSet.new(& &1.name)
+  end
+
+  defp render_show(record) do
+    """
+    #{record.name} — #{record.outcome}, composite #{fmt4(record.eval[:composite])} \
+    (#{record.eval[:engine] || "engine unrecorded"})
+    id #{record.id}
+    adapter #{record.adapter || "—"} · created #{record.created_at}
+    #{render_sources(record)}
+    #{render_dimensions(record.eval[:dimensions])}
+    #{String.duplicate("─", 72)}
+    #{record.md}
+    """
+  end
+
+  defp render_sources(%{source_sessions: sessions}) do
+    "sessions #{Enum.join(sessions, ", ")}"
+  end
+
+  defp render_dimensions(dims) when is_map(dims) and map_size(dims) > 0 do
+    lines =
+      dims
+      |> Enum.sort_by(fn {name, _} -> name end)
+      |> Enum.map_join("\n", fn {name, d} ->
+        "  #{String.pad_trailing(to_string(name), 16)} #{fmt4(dimension_score(d))}"
+      end)
+
+    "\ndimensions:\n#{lines}"
+  end
+
+  defp render_dimensions(_), do: ""
+
+  # A dimension's score survives the JSON round-trip under a string key (only the eval's TOP-level
+  # keys are atomized — see the store's @eval_keys), so read both rather than assuming either.
+  defp dimension_score(%{score: s}), do: s
+  defp dimension_score(%{"score" => s}), do: s
+  defp dimension_score(_), do: nil
 
   # ── consolidate ─────────────────────────────────────────────────────────────
 
@@ -953,7 +1424,10 @@ defmodule Faber.CLI do
             Keyword.put(consolidate_opts, :on_progress, &consolidate_progress/1)
           )
 
-        IO.puts(render_outcomes(outcomes))
+        # Filed before printed. THIS is the line whose absence cost 4 eval-passing skills and ~10
+        # LLM calls in a single live run.
+        records = store_outcomes(outcomes, adapter)
+        IO.puts(render_outcomes(outcomes) <> render_artifacts(records))
         0
     end
   end
@@ -1229,6 +1703,19 @@ defmodule Faber.CLI do
                                                     Jaccard, threshold 0.3), and LLM-merge each
                                                     cluster — a merge must pass the eval gate or
                                                     the originals are kept
+      faber proposals [--prune] [--keep N] [--dir PATH]
+                                                    List every skill faber has drafted and kept
+                                                    (#{Faber.proposals_dir()}) — id, composite,
+                                                    outcome, scoring engine, whether it's installed
+                                                    (--prune: delete all but the newest --keep N,
+                                                     default 50 — the ONLY thing that ever removes
+                                                     a proposal, and only when you ask)
+      faber show <id>                               Print one proposal's SKILL.md plus its
+                                                    per-dimension eval breakdown and provenance
+                                                    (<id> may be any unambiguous prefix)
+      faber install <id> [--force] [--dir PATH]     Install a proposal as a skill. If one is already
+                                                    installed under that name, prints a diff and
+                                                    refuses — --force replaces it
       faber feedback [--dir PATH] [--source S] [--format F] [--db PATH] [--base DIR]
                      [--min-messages N]             The outer loop: for every Faber-installed
                                                     skill, report whether sessions since install

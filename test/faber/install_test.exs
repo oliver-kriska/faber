@@ -93,7 +93,14 @@ defmodule Faber.InstallTest do
       data = path |> Path.dirname() |> Path.join(".faber.json") |> File.read!() |> Jason.decode!()
 
       # adapter/source_session/fingerprint were all nil → dropped; only the always-present keys remain.
-      assert Enum.sort(Map.keys(data)) == ["installed_at", "installed_by", "name"]
+      # This test is about drop_nils: an ABSENT provenance value must not become a null key.
+      # skill_sha256 is always written (it records what Faber put on disk, for drift?/1), so it
+      # belongs here — the point is that adapter/source_session/fingerprint do not.
+      assert Enum.sort(Map.keys(data)) ==
+               ["installed_at", "installed_by", "name", "skill_sha256"]
+
+      refute Map.has_key?(data, "adapter")
+      refute Map.has_key?(data, "source_session")
       assert {:ok, _, _} = DateTime.from_iso8601(data["installed_at"])
     end
   end

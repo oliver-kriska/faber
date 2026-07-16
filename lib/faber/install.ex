@@ -68,7 +68,7 @@ defmodule Faber.Install do
          :ok <- ensure_writable(path, opts),
          :ok <- File.mkdir_p(skill_dir),
          :ok <- File.write(path, skill_md),
-         :ok <- write_marker(skill_dir, name, opts) do
+         :ok <- write_marker(skill_dir, name, Keyword.put(opts, :skill_md, skill_md)) do
       {:ok, path}
     end
   end
@@ -94,12 +94,44 @@ defmodule Faber.Install do
         %{
           "installed_by" => "faber",
           "name" => name,
-          "installed_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+          "installed_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+          # What Faber actually wrote. Without it, a later install can see that the file on disk
+          # differs from what it is about to write, but not WHOSE change that is — Faber's own
+          # newer draft, or the user's hand-edit. Only the second is destructive, and that is the
+          # distinction `drift?/1` exists to make (same idea as the managed block's digest in
+          # `sync`, which refuses to clobber hand-edited text).
+          "skill_sha256" => digest(opts[:skill_md] || "")
         },
         opts[:provenance] || %{}
       )
 
     File.write(Path.join(skill_dir, @marker), Jason.encode!(data) <> "\n")
+  end
+
+  @doc """
+  Whether the installed `SKILL.md` at `path` has been edited since Faber wrote it.
+
+  `false` when there is no marker, no recorded hash (a skill installed before this was tracked), or
+  the file is unreadable: **unknown is reported as not-drifted**, never as drifted. Claiming someone
+  hand-edited a file we simply can't verify would train them to `--force` past a warning that cries
+  wolf, which is worse than not warning at all.
+  """
+  @spec drift?(Path.t()) :: boolean()
+  def drift?(path) do
+    marker = path |> Path.dirname() |> Path.join(@marker)
+
+    with {:ok, marker_body} <- File.read(marker),
+         {:ok, %{"skill_sha256" => recorded}} when is_binary(recorded) <-
+           Jason.decode(marker_body),
+         {:ok, installed} <- File.read(path) do
+      digest(installed) != recorded
+    else
+      _ -> false
+    end
+  end
+
+  defp digest(contents) do
+    :sha256 |> :crypto.hash(contents) |> Base.encode16(case: :lower)
   end
 
   defp drop_nils(map), do: :maps.filter(fn _k, v -> not is_nil(v) end, map)

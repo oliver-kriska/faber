@@ -50,6 +50,10 @@ defmodule Faber.ProposalStoreTest do
     %{name: name, md: md, eval: %{composite: 0.82, passed: true}, adapter: "faber-elixir"}
   end
 
+  # The same base attrs with fields overridden — for the put/2 options (`:outcome`,
+  # `:source_sessions`, a full `:eval`) that proposal/2's positional name+md can't reach.
+  defp attrs(overrides), do: Map.merge(proposal(), overrides)
+
   describe "durability" do
     test "a stored proposal is readable back — the refresh bug" do
       r = result()
@@ -87,6 +91,23 @@ defmodule Faber.ProposalStoreTest do
       path = Path.join(Application.get_env(:faber, :proposals_dir), "#{record.id}.json")
       assert File.exists?(path)
       assert File.read!(path) =~ "phx-debug"
+    end
+
+    # put/2 and latest/1 must hand back the SAME shape for the same record. They didn't: `put/2`
+    # included `:format` (a property of the file, not the proposal) and `read/1` stripped it, so a
+    # caller that stored a record and a caller that re-read one disagreed. Dialyzer only caught it
+    # once something pattern-matched on put/2's return — the dashboard, the only writer until the
+    # CLI, ignores it.
+    test "put/2 returns the same shape latest/1 does" do
+      r = result()
+      assert {:ok, written} = Store.put(r, proposal())
+
+      assert written == Store.latest(r)
+      refute Map.has_key?(written, :format)
+
+      # ...and the format is still on disk, where it belongs — that's what the reader gates on.
+      path = Path.join(Faber.proposals_dir(), "#{written.id}.json")
+      assert %{"format" => 2} = path |> File.read!() |> Jason.decode!()
     end
 
     test "latest/1 returns nil for a session with no proposals" do
@@ -253,6 +274,196 @@ defmodule Faber.ProposalStoreTest do
       assert File.exists?(victim), "delete/1 escaped the proposals dir"
 
       File.rm(victim)
+    end
+  end
+
+  describe "format 2: outcome + multi-session provenance" do
+    test "defaults to a single-session outcome" do
+      assert {:ok, record} = Store.put(result(), proposal())
+      assert record.outcome == :single
+      assert record.source_sessions == ["sess-abc"]
+    end
+
+    # The artifact that motivated the whole store: a merge is drawn from several sessions at once,
+    # so `session_key` (which the id and read glob are built from) can only name one of them. Without
+    # source_sessions the other originals are unrecorded — and a merge is exactly the artifact no
+    # `propose --rank N` can reproduce.
+    test "a merge records every session that fed it, not just the one in its id" do
+      sessions = ["sess-abc", "sess-def", "sess-ghi"]
+
+      assert {:ok, record} =
+               Store.put(
+                 "sess-abc",
+                 attrs(%{outcome: :merged, source_sessions: sessions})
+               )
+
+      assert record.outcome == :merged
+      assert record.source_sessions == sessions
+
+      # ...and it survives the disk round-trip, which is the only part that matters.
+      assert [read_back] = Store.list_for("sess-abc")
+      assert read_back.outcome == :merged
+      assert read_back.source_sessions == sessions
+    end
+
+    test "every outcome kind round-trips" do
+      for outcome <- [:single, :merged, :kept, :kept_original] do
+        assert {:ok, record} =
+                 Store.put("sess-#{outcome}", attrs(%{outcome: outcome, md: "# #{outcome}\n"}))
+
+        assert [read_back] = Store.list_for("sess-#{outcome}")
+        assert read_back.outcome == outcome, "#{outcome} did not round-trip"
+        assert read_back.id == record.id
+      end
+    end
+  end
+
+  describe "eval round-trip" do
+    # :engine went in as an atom and came back as "engine" — so a writer and a reader disagreed
+    # about the same map. It matters more than the rest: it separates the adapter's stack-specific
+    # verdict from "native:fallback", which only certifies generic markdown structure.
+    test "the full eval result keeps its atom keys, engine included" do
+      eval = %{
+        composite: 0.8016,
+        passed: true,
+        threshold: 0.75,
+        dimensions: %{"clarity" => %{"score" => 0.9}},
+        engine: "adapter:exec-in-place",
+        schema_version: "1.0",
+        weight_total: 1.0
+      }
+
+      assert {:ok, _} = Store.put(result(), attrs(%{eval: eval}))
+      assert [read_back] = Store.list_for("sess-abc")
+
+      assert read_back.eval[:engine] == "adapter:exec-in-place"
+      assert read_back.eval[:composite] == 0.8016
+      assert read_back.eval[:schema_version] == "1.0"
+      assert read_back.eval[:weight_total] == 1.0
+      refute Map.has_key?(read_back.eval, "engine")
+    end
+
+    test "a fallback engine stays distinguishable from the adapter's verdict" do
+      assert {:ok, _} =
+               Store.put(result(), attrs(%{eval: %{composite: 0.8, engine: "native:fallback"}}))
+
+      assert [read_back] = Store.list_for("sess-abc")
+      assert read_back.eval[:engine] == "native:fallback"
+    end
+  end
+
+  describe "format compatibility" do
+    # Bumping @format without teaching the reader the old one would make every artifact written
+    # before the bump vanish from list/0 — read/1 drops what it cannot match, silently. In THIS
+    # module that is the exact failure it exists to prevent.
+    test "a format-1 record written before the bump is still readable" do
+      File.mkdir_p!(Faber.proposals_dir())
+
+      v1 = %{
+        "format" => 1,
+        "id" => "aaaaaaaaaaaa-bbbbbbbbbbbb",
+        "session_key" => "sess-old",
+        "session_path" => "/tmp/proj/old.jsonl",
+        "session_stamp" => 12_345,
+        "name" => "paid-for-skill",
+        "md" => "---\nname: paid-for-skill\n---\n# Paid\n",
+        "eval" => %{"composite" => 0.81, "passed" => true},
+        "adapter" => "faber-elixir",
+        "created_at" => "2026-07-01T00:00:00Z"
+      }
+
+      Faber.proposals_dir()
+      |> Path.join("aaaaaaaaaaaa-bbbbbbbbbbbb.json")
+      |> File.write!(Jason.encode!(v1))
+
+      # list/0, not list_for/1: the read glob is keyed on `hash(session_key)`, which this test
+      # cannot reproduce from outside the module — and a filename it can't predict would make the
+      # assertion pass on a glob miss rather than on the reader accepting format 1.
+      assert [record] = Store.list()
+      assert record.name == "paid-for-skill"
+      assert record.md == "---\nname: paid-for-skill\n---\n# Paid\n"
+      assert record.eval[:composite] == 0.81
+
+      # v1 predates both fields, so they take the defaults its shape implies: it can only have been
+      # a single-session draft (the CLI wasn't a writer yet, and the dashboard proposes one session).
+      assert record.outcome == :single
+      assert record.source_sessions == ["sess-old"]
+    end
+
+    test "a record from an unknown FUTURE format is skipped, not crashed on" do
+      File.mkdir_p!(Faber.proposals_dir())
+
+      Faber.proposals_dir()
+      |> Path.join("cccccccccccc-dddddddddddd.json")
+      |> File.write!(Jason.encode!(%{"format" => 99, "session_key" => "sess-future"}))
+
+      # Again list/0 — the point is that the READER rejects format 99, and a hash-keyed glob would
+      # return [] without ever opening the file.
+      assert Store.list() == []
+
+      # ...and it doesn't blind the reader to a readable neighbour.
+      assert {:ok, _} = Store.put(result(), proposal())
+      assert [only] = Store.list()
+      assert only.name == "phx-debug"
+    end
+  end
+
+  describe "prune/1 — the only thing that removes a proposal" do
+    defp seed(n) do
+      for i <- 1..n do
+        {:ok, record} = Store.put("sess-#{i}", attrs(%{md: "# skill #{i}\n", name: "skill-#{i}"}))
+
+        # created_at has second-ish resolution; stamp explicit times so newest-first is deterministic
+        # rather than dependent on how fast the loop ran.
+        path = Path.join(Faber.proposals_dir(), "#{record.id}.json")
+        raw = path |> File.read!() |> Jason.decode!()
+
+        File.write!(
+          path,
+          Jason.encode!(Map.put(raw, "created_at", "2026-07-#{pad(i)}T00:00:00Z"))
+        )
+
+        record
+      end
+    end
+
+    defp pad(i), do: String.pad_leading(to_string(i), 2, "0")
+
+    test "keeps the newest N and returns exactly what it removed" do
+      seed(5)
+
+      dropped = Store.prune(2)
+
+      assert length(dropped) == 3
+      # The oldest three went...
+      assert Enum.map(dropped, & &1.name) |> Enum.sort() == ["skill-1", "skill-2", "skill-3"]
+      # ...and the newest two stayed.
+      assert Store.list() |> Enum.map(& &1.name) |> Enum.sort() == ["skill-4", "skill-5"]
+    end
+
+    test "pruning to more than exists removes nothing" do
+      seed(3)
+      assert Store.prune(50) == []
+      assert length(Store.list()) == 3
+    end
+
+    test "the files are actually gone, not just hidden from list/0" do
+      seed(3)
+      Store.prune(1)
+
+      assert Faber.proposals_dir() |> Path.join("*.json") |> Path.wildcard() |> length() == 1
+    end
+
+    # The store's contract (see its moduledoc table): nothing is evicted, expired, or invalidated on
+    # Faber's initiative. Reading and writing must never remove anything — only an explicit prune.
+    test "ordinary reads and writes never remove a proposal" do
+      seed(3)
+
+      _ = Store.list()
+      _ = Store.latest("sess-1")
+      {:ok, _} = Store.put("sess-4", attrs(%{md: "# new\n"}))
+
+      assert length(Store.list()) == 4
     end
   end
 

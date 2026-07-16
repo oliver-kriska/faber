@@ -286,6 +286,10 @@ What happens:
 — naming the session, its score, and the backend about to be spent. Progress and diagnostics always
 go to stderr; **stdout carries only results**, so `faber propose > skill.md` stays clean.
 
+**The draft is kept.** Before anything is printed, the proposal is written to `~/.faber/proposals/`
+and the run ends by naming its id. You never pay for the same skill twice, and nothing is lost by
+closing the terminal — see §9.
+
 Dev mode has a few extras:
 
 ```sh
@@ -409,18 +413,69 @@ state.history          # every iteration's keep/reject entry
 
 ## 9. Step 5 — Install & sync across agents
 
-**Install** writes `<skills_dir>/<name>/SKILL.md` (default `~/.claude/skills`) plus the
-`.faber.json` provenance marker (installer, name, `installed_at`, source session — never the
-transcript path). Existing skills are never silently overwritten; pass `force: true` /
-re-run with `--force`.
+### Proposals are kept
+
+Every skill Faber drafts costs real LLM tokens, so **every one is written to disk before it is
+printed** — `~/.faber/proposals/`, one JSON file per proposal, readable with `cat` and removable
+with `rm`. Nothing is ever evicted, expired, or invalidated on Faber's initiative; the only thing
+that removes a proposal is you asking (`--prune`).
 
 ```sh
-faber propose --install          # or: faber refine --install
+faber proposals                  # everything drafted and kept
+faber show <id>                  # one proposal's SKILL.md + eval breakdown + provenance
+faber install <id>               # install it (diff-first — see below)
+faber proposals --prune --keep 20
 ```
+
+`<id>` is `<session-hash>-<content-hash>`, and **any unambiguous prefix works** (git-style). Note
+the first segment is the session, so proposals from the same session share a prefix — an ambiguous
+prefix lists the candidates rather than guessing.
+
+| Column | Meaning |
+|---|---|
+| `composite` | the eval score this artifact was gated on |
+| `outcome` | `single` (one session), `merged` (a consolidate merge), `kept` (singleton cluster), `kept_original` (its cluster's merge failed) |
+| `engine` | which scorer produced the composite — `adapter:exec-in-place` is the stack's real bar, `native:fallback` only certifies generic markdown structure |
+| `src` | how many sessions fed it (a `merged` artifact spans several) |
+
+A **`merged` artifact is the only copy there will ever be**: it's drawn from several sessions at
+once, so no `propose --rank N` can reproduce it. That's why it's recorded with every session that
+fed it.
+
+### Installing
+
+**Install** writes `<skills_dir>/<name>/SKILL.md` (default `~/.claude/skills`) plus the
+`.faber.json` provenance marker (installer, name, `installed_at`, source session, and a hash of
+what Faber wrote — never the transcript path).
+
+```sh
+faber install <id>               # from an artifact
+faber propose --install          # or: faber refine --install (same code path)
+```
+
+An existing skill is **never silently overwritten**. If one is already installed under that name,
+`install` prints a diff of what would change and exits 1:
+
+```
+investigate-retry-loops is already installed at ~/.claude/skills/investigate-retry-loops/SKILL.md.
+
+DRIFT — this skill has been hand-edited since Faber installed it. --force discards
+those edits permanently; they are not in the proposal store.
+
+Installed (-) vs this proposal (+):
+    ## Iron Laws
+  - - MY OWN HAND-EDITED LAW
+    ⋯ 34 unchanged lines
+```
+
+**DRIFT** appears only when the installed file differs from what Faber itself wrote — i.e. when
+`--force` would destroy *your* edits rather than Faber's own earlier output. A skill Faber can't
+verify (no recorded hash) is reported as *not* drifted, never as drifted.
 
 ```elixir
 Faber.Install.install(proposal, adapter: adapter)          # library form
 Faber.Install.list_faber_installed()                       # only Faber's own skills
+Faber.Install.drift?(path)                                 # hand-edited since we wrote it?
 ```
 
 **Sync** makes *other* agents aware of the installed skills. It maintains one managed,
@@ -495,8 +550,13 @@ faber consolidate --trigger                # score merges with the behavioral tr
 (`--source`, `--format`, `--db`, `--base`, `--min-messages`, `--limit` pass through to the scan,
 same as `faber propose`.) Output is one line per cluster outcome — `MERGED` (with the merge's
 eval composite), `kept` (singleton), `kept-originals` (merge scored below the gate), `error`
-(merge LLM call failed) — plus a summary count. Nothing is installed automatically; install
-winners with `faber propose --install` or the library API.
+(merge LLM call failed) — plus a summary count.
+
+**Every outcome is kept** (§9): merges, kept singletons, and the originals of a merge that failed
+its gate are each written to `~/.faber/proposals/` before anything prints, and the run ends by
+listing their ids. This matters most for a `merged` artifact — it's drawn from several sessions at
+once, so no `propose --rank N` can reproduce it. Nothing is installed automatically; install a
+winner with `faber install <id>`.
 
 **Progress.** A `--top 10` run is ~10 LLM calls for the drafts plus one per cluster merge, so each
 step reports to stderr as it happens: `drafting 3/10 faber/a1b2c3d4…`, then `merging cluster 2/4 —
@@ -696,6 +756,8 @@ is a valid setup.
 | `:eval_threshold` | `0.75` | gate bar |
 | `:adapter_dir` | `adapters/faber-elixir` | active adapter pack |
 | `:skills_dir` | `~/.claude/skills` | install target |
+| `:proposal_store` | `true` | keep every drafted proposal on disk (§9). Off ⇒ nothing is kept and you pay again for anything you didn't copy out |
+| `:proposals_dir` | `~/.faber/proposals` | where kept proposals live. Retention is manual: `faber proposals --prune [--keep N]` (default 50) is the only thing that removes one |
 | `:ingest_format` | `:claude` | default `--format` |
 | `:ingest_source` | `:files` | default `--source` |
 | `:python` / `FABER_PYTHON` | `"python3"` | sidecar interpreter |

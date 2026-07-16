@@ -5,6 +5,7 @@ defmodule Faber.CLITest do
   import ExUnit.CaptureIO
 
   alias Faber.CLI
+  alias Faber.Proposal.Store
 
   @fixtures [base: "test/fixtures", min_messages: 0]
 
@@ -66,7 +67,7 @@ defmodule Faber.CLITest do
   # The audit reproduced exactly that. parse/1 stays pure — it returns the outcome as data.
   describe "parse/1 refuses to run a command it didn't understand" do
     # Every subcommand with a parse clause — a new one must be added here too [codex #9].
-    @subcommands ~w(scan propose refine consolidate feedback serve sync)
+    @subcommands ~w(scan propose refine consolidate feedback serve sync proposals show install)
 
     test "an unknown switch never yields a runnable command, for any subcommand" do
       for sub <- @subcommands do
@@ -218,6 +219,351 @@ defmodule Faber.CLITest do
     test "a throw becomes exit status 1" do
       err = capture_io(:stderr, fn -> assert CLI.guarded(fn -> throw(:boom) end) == 1 end)
       assert err =~ "uncaught throw"
+    end
+  end
+
+  # The plan's centerpiece, and a real loss event: a live `consolidate --top 10` spent ~10 LLM calls,
+  # produced 4 eval-passing skills (two merges at composite 0.8016), printed a 7-line summary, and
+  # lost every byte. The merges especially — drawn from several sessions at once, so no
+  # `propose --rank N` can reproduce them.
+  #
+  # The suite runs with the store OFF (config/test.exs) so async tests that propose stay
+  # independent; these turn it on against a per-test dir, which is also what proves the CLI is a
+  # writer at all — it wasn't, before Phase 2. Only the dashboard was.
+  describe "artifacts are written for every paid outcome" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: tmp_dir} do
+      Application.put_env(:faber, :proposal_store, true)
+      Application.put_env(:faber, :proposals_dir, Path.join(tmp_dir, "proposals"))
+
+      on_exit(fn ->
+        Application.put_env(:faber, :proposal_store, false)
+        Application.delete_env(:faber, :proposals_dir)
+      end)
+
+      :ok
+    end
+
+    test "propose files its draft before printing it" do
+      out = capture_io(fn -> assert CLI.run(:propose, @fixtures ++ [force: true]) == 0 end)
+
+      assert [record] = Store.list()
+      assert record.outcome == :single
+      assert record.md =~ "investigate-retry-loops"
+      assert record.eval[:composite]
+
+      # ...and tells the user the id, or the artifact may as well not exist.
+      assert out =~ record.id
+      assert out =~ "faber show"
+    end
+
+    test "refine files its best" do
+      out =
+        capture_io(fn ->
+          assert CLI.run(:refine, @fixtures ++ [force: true, iterations: 1]) == 0
+        end)
+
+      assert [record] = Store.list()
+      assert record.outcome == :single
+      assert record.eval[:composite]
+      assert out =~ record.id
+    end
+
+    # THE regression test for the live loss.
+    test "consolidate files the merge, with every session that fed it" do
+      out =
+        capture_io(fn ->
+          assert CLI.run(:consolidate, @fixtures ++ [top: 2, force: true]) == 0
+        end)
+
+      assert [record] = Store.list()
+      assert record.outcome == :merged
+      assert record.md =~ "investigate-retry-loops"
+
+      # The merge's own eval — the number the gate passed it on — not a guess.
+      assert record.eval[:composite]
+
+      # Provenance is the whole point: a merge spans sessions, and `session_key` names only one.
+      refute record.source_sessions == []
+      assert out =~ record.id
+      assert out =~ "artifact"
+    end
+
+    test "a kept singleton is filed too — it was a real LLM draft" do
+      # top: 1 → one proposal → one singleton cluster, never merged, never gated.
+      capture_io(fn -> assert CLI.run(:consolidate, @fixtures ++ [top: 1, force: true]) == 0 end)
+
+      assert [record] = Store.list()
+      assert record.outcome == :kept
+    end
+
+    # A store that cannot write must not deny the user output they already paid for.
+    test "a disabled store never fails the command" do
+      Application.put_env(:faber, :proposal_store, false)
+
+      out = capture_io(fn -> assert CLI.run(:propose, @fixtures ++ [force: true]) == 0 end)
+
+      assert out =~ "investigate-retry-loops"
+      refute out =~ "artifact"
+    end
+  end
+
+  describe "proposals / show" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: tmp_dir} do
+      Application.put_env(:faber, :proposal_store, true)
+      Application.put_env(:faber, :proposals_dir, Path.join(tmp_dir, "proposals"))
+
+      on_exit(fn ->
+        Application.put_env(:faber, :proposal_store, false)
+        Application.delete_env(:faber, :proposals_dir)
+      end)
+
+      capture_io(fn -> CLI.run(:propose, @fixtures ++ [force: true]) end)
+      [record] = Store.list()
+      {:ok, record: record}
+    end
+
+    test "proposals lists what was kept, with the engine that scored it", %{record: record} do
+      out = capture_io(fn -> assert CLI.run(:proposals, []) == 0 end)
+
+      assert out =~ record.id
+      assert out =~ record.name
+      assert out =~ "single"
+      # The engine separates the adapter's verdict from a native:fallback — it must be visible
+      # without opening the artifact.
+      assert out =~ to_string(record.eval[:engine])
+    end
+
+    test "show renders the full SKILL.md and the eval breakdown", %{record: record} do
+      out = capture_io(fn -> assert CLI.run(:show, id: record.id) == 0 end)
+
+      assert out =~ record.md
+      assert out =~ "dimensions:"
+      assert out =~ "sessions"
+      assert out =~ record.id
+    end
+
+    test "show accepts an unambiguous prefix", %{record: record} do
+      prefix = String.slice(record.id, 0, 20)
+      out = capture_io(fn -> assert CLI.run(:show, id: prefix) == 0 end)
+      assert out =~ record.name
+    end
+
+    # Ids are <session>-<content>, so every proposal from ONE session shares the first segment —
+    # a short prefix is ambiguous exactly where it's most used, and must never resolve to a guess.
+    test "an ambiguous prefix lists the candidates instead of picking one" do
+      capture_io(fn -> CLI.run(:propose, @fixtures ++ [force: true, rank: 2]) end)
+      records = Store.list()
+      assert length(records) >= 2
+
+      err =
+        capture_io(:stderr, fn ->
+          capture_io(fn -> assert CLI.run(:show, id: "") == 1 end)
+        end)
+
+      assert err =~ "matches"
+      for r <- records, do: assert(err =~ r.id)
+    end
+
+    test "an unknown id says so and points at proposals" do
+      err =
+        capture_io(:stderr, fn ->
+          capture_io(fn -> assert CLI.run(:show, id: "ffffffffffff-ffffffffffff") == 1 end)
+        end)
+
+      assert err =~ "no proposal with that id"
+      assert err =~ "faber proposals"
+    end
+
+    test "--prune names what it removed", %{record: record} do
+      capture_io(fn -> CLI.run(:propose, @fixtures ++ [force: true, rank: 2]) end)
+      assert length(Store.list()) >= 2
+
+      out = capture_io(fn -> assert CLI.run(:proposals, prune: true, keep: 1) == 0 end)
+
+      # "pruned 12 proposals" with no names is indistinguishable from having deleted the wrong 12.
+      assert out =~ "Pruned"
+      assert out =~ "kept the 1 newest"
+      assert length(Store.list()) == 1
+      refute is_nil(record)
+    end
+
+    test "--prune with nothing to remove says so instead of claiming a prune" do
+      out = capture_io(fn -> assert CLI.run(:proposals, prune: true, keep: 50) == 0 end)
+
+      assert out =~ "Nothing to prune"
+      assert length(Store.list()) == 1
+    end
+
+    test "show without an id refuses rather than running" do
+      assert CLI.parse(["show"]) == {:missing_id, :show}
+
+      err = capture_io(:stderr, fn -> assert CLI.run(:missing_id, subcommand: :show) == 1 end)
+      assert err =~ "needs an artifact id"
+    end
+
+    # `faber install a b` must not quietly install only `a`.
+    test "a second positional is an error, not a silent drop" do
+      assert CLI.parse(["install", "abc", "def"]) == {:extra_args, :install, ["abc", "def"]}
+
+      err =
+        capture_io(:stderr, fn ->
+          assert CLI.run(:extra_args, subcommand: :install, extra: ["abc", "def"]) == 1
+        end)
+
+      assert err =~ "exactly one artifact id"
+    end
+  end
+
+  describe "install <id> — diff first, never a blind overwrite" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: tmp_dir} do
+      Application.put_env(:faber, :proposal_store, true)
+      Application.put_env(:faber, :proposals_dir, Path.join(tmp_dir, "proposals"))
+
+      on_exit(fn ->
+        Application.put_env(:faber, :proposal_store, false)
+        Application.delete_env(:faber, :proposals_dir)
+      end)
+
+      capture_io(fn -> CLI.run(:propose, @fixtures ++ [force: true]) end)
+      [record] = Store.list()
+      {:ok, record: record, dir: Path.join(tmp_dir, "skills")}
+    end
+
+    test "installs an artifact by id", %{record: record, dir: dir} do
+      out = capture_io(fn -> assert CLI.run(:install, id: record.id, dir: dir) == 0 end)
+
+      assert out =~ "installed →"
+      path = Path.join([dir, record.name, "SKILL.md"])
+      assert File.read!(path) == record.md
+    end
+
+    test "installs by an unambiguous prefix too", %{record: record, dir: dir} do
+      prefix = String.slice(record.id, 0, 20)
+
+      assert capture_io(fn -> assert CLI.run(:install, id: prefix, dir: dir) == 0 end) =~
+               "installed"
+    end
+
+    # The centrepiece of P2-T3: an existing skill is never silently replaced.
+    test "a hand-edited skill gets a diff and a refusal, not an overwrite", %{
+      record: record,
+      dir: dir
+    } do
+      capture_io(fn -> CLI.run(:install, id: record.id, dir: dir) end)
+
+      path = Path.join([dir, record.name, "SKILL.md"])
+
+      edited =
+        String.replace(record.md, "## Iron Laws", "## Iron Laws\n\n- MY OWN HAND-EDITED LAW")
+
+      File.write!(path, edited)
+
+      err =
+        capture_io(:stderr, fn ->
+          capture_io(fn -> assert CLI.run(:install, id: record.id, dir: dir) == 1 end)
+        end)
+
+      assert err =~ "already installed"
+      assert err =~ "--force"
+      assert err =~ "faber refine"
+
+      # The diff shows what WOULD be lost, which is the whole point of showing it.
+      assert err =~ "- - MY OWN HAND-EDITED LAW"
+
+      # And the edit is still on disk: refusing means refusing.
+      assert File.read!(path) == edited
+    end
+
+    # The diff says WHAT changed; drift says WHOSE change it is. Only one of those is destructive.
+    test "drift is called out when the user's own edits are at stake", %{record: record, dir: dir} do
+      capture_io(fn -> CLI.run(:install, id: record.id, dir: dir) end)
+      path = Path.join([dir, record.name, "SKILL.md"])
+      refute Faber.Install.drift?(path), "a freshly-installed skill has not drifted"
+
+      File.write!(path, record.md <> "\n- my own law\n")
+      assert Faber.Install.drift?(path)
+
+      err =
+        capture_io(:stderr, fn ->
+          capture_io(fn -> assert CLI.run(:install, id: record.id, dir: dir) == 1 end)
+        end)
+
+      assert err =~ "DRIFT"
+      assert err =~ "hand-edited"
+    end
+
+    # Unknown must read as not-drifted: a warning that fires on skills it cannot verify teaches
+    # people to --force past it, which is worse than not warning.
+    test "a skill with no recorded hash is not accused of drifting", %{record: record, dir: dir} do
+      capture_io(fn -> CLI.run(:install, id: record.id, dir: dir) end)
+      path = Path.join([dir, record.name, "SKILL.md"])
+
+      # Simulate a skill installed before skill_sha256 was tracked.
+      marker = Path.join([dir, record.name, ".faber.json"])
+      data = marker |> File.read!() |> Jason.decode!() |> Map.delete("skill_sha256")
+      File.write!(marker, Jason.encode!(data))
+      File.write!(path, "# totally different\n")
+
+      refute Faber.Install.drift?(path)
+
+      err =
+        capture_io(:stderr, fn ->
+          capture_io(fn -> assert CLI.run(:install, id: record.id, dir: dir) == 1 end)
+        end)
+
+      # Still refuses (it exists) and still diffs — it just doesn't claim to know who edited it.
+      assert err =~ "already installed"
+      refute err =~ "DRIFT"
+    end
+
+    test "--force replaces it", %{record: record, dir: dir} do
+      capture_io(fn -> CLI.run(:install, id: record.id, dir: dir) end)
+      path = Path.join([dir, record.name, "SKILL.md"])
+      File.write!(path, "# clobber me\n")
+
+      out =
+        capture_io(fn -> assert CLI.run(:install, id: record.id, dir: dir, force: true) == 0 end)
+
+      assert out =~ "installed →"
+      assert File.read!(path) == record.md
+    end
+
+    test "re-installing the identical skill says so rather than printing a diff of nothing", %{
+      record: record,
+      dir: dir
+    } do
+      capture_io(fn -> CLI.run(:install, id: record.id, dir: dir) end)
+
+      err =
+        capture_io(:stderr, fn ->
+          capture_io(fn -> assert CLI.run(:install, id: record.id, dir: dir) == 1 end)
+        end)
+
+      assert err =~ "byte-identical"
+    end
+
+    test "a long unchanged run collapses instead of reprinting the file", %{
+      record: record,
+      dir: dir
+    } do
+      capture_io(fn -> CLI.run(:install, id: record.id, dir: dir) end)
+
+      path = Path.join([dir, record.name, "SKILL.md"])
+      File.write!(path, record.md <> "\n\nA TRAILING HAND-EDIT\n")
+
+      err =
+        capture_io(:stderr, fn ->
+          capture_io(fn -> CLI.run(:install, id: record.id, dir: dir) end)
+        end)
+
+      assert err =~ "unchanged lines"
+      assert err =~ "A TRAILING HAND-EDIT"
     end
   end
 
