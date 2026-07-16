@@ -52,9 +52,9 @@
   --muted: #5c6470; /* AA ≥5.5:1 on canvas + white */
   --line: #e3e6ec; /* hairline */
   --line-soft: #edeff3; /* hover fill / row divider */
-  --accent: #9a6a0d; /* deep ochre — gold stays legible on white */
+  --accent: #8a5e0b; /* deep ochre — AA ≥4.9:1 as text on white, canvas, and the hover fill */
   --accent-ink: #ffffff;
-  --heat: rgba(154, 106, 13, 0.1);
+  --heat: rgba(138, 94, 11, 0.1);
   --ok: #2f8a5b;
   --bad: #c0472b;
   --shadow: rgba(24, 28, 38, 0.12);
