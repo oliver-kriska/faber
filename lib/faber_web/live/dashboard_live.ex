@@ -895,17 +895,24 @@ defmodule FaberWeb.DashboardLive do
   defp filter_combo(assigns) do
     ~H"""
     <div class="combo" id={"combo-#{@facet}"}>
+      <%!-- A disclosure button controlling a menu of mutually-exclusive choices. The options are
+            `menuitemradio` (not a listbox — the earlier `role="listbox"` had no `option` children and
+            announced as an empty listbox), so a screen reader reads "menu, N items, <label> checked".
+            `aria-expanded` is synced client-side by app.js; the trigger's name carries the facet so
+            it isn't announced as a bare "All projects". --%>
       <button
         type="button"
         class="combo-trigger"
         data-combo-toggle
-        aria-haspopup="listbox"
+        aria-haspopup="menu"
+        aria-controls={"combo-#{@facet}-list"}
         aria-expanded="false"
+        aria-label={"#{String.capitalize(@facet)} filter: #{@value_label}"}
       >
         <span class={["combo-value", @value == nil && "is-placeholder"]}>{@value_label}</span>
         <span class="combo-caret" aria-hidden="true">▾</span>
       </button>
-      <div class="combo-menu" role="listbox">
+      <div class="combo-menu">
         <div :if={@searchable} class="combo-search-wrap">
           <input
             type="text"
@@ -918,10 +925,12 @@ defmodule FaberWeb.DashboardLive do
         </div>
         <%!-- The pick rides on phx-value-choice, not -value: on a <button> LiveView overwrites the
         reserved `value` key with the element's own (empty) `.value`, silently blanking the facet. --%>
-        <ul class="combo-list">
-          <li>
+        <ul class="combo-list" id={"combo-#{@facet}-list"} role="menu" aria-label={"#{String.capitalize(@facet)} options"}>
+          <li role="none">
             <button
               type="button"
+              role="menuitemradio"
+              aria-checked={to_string(@value == nil)}
               class={["combo-option", @value == nil && "selected"]}
               phx-click="pick_filter"
               phx-value-facet={@facet}
@@ -930,9 +939,11 @@ defmodule FaberWeb.DashboardLive do
               All {@label_plural}
             </button>
           </li>
-          <li :for={{val, label} <- @options} data-combo-item={String.downcase(label)}>
+          <li :for={{val, label} <- @options} role="none" data-combo-item={String.downcase(label)}>
             <button
               type="button"
+              role="menuitemradio"
+              aria-checked={to_string(@value == val)}
               class={["combo-option", @value == val && "selected"]}
               phx-click="pick_filter"
               phx-value-facet={@facet}
@@ -962,12 +973,12 @@ defmodule FaberWeb.DashboardLive do
 
   defp detail_pane(assigns) do
     ~H"""
-    <section class="detail">
+    <section class="detail" aria-labelledby="detail-heading">
       <div class="detail-inner">
         <header class="detail-head">
-          <div class="detail-id">
+          <h2 class="detail-id" id="detail-heading">
             <span class="proj-name">{project_name(@session)}</span><span class="proj-id">/{project_short(@session)}</span>
-          </div>
+          </h2>
           <div
             class="detail-score"
             tabindex="0"

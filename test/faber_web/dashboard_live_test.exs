@@ -108,6 +108,14 @@ defmodule FaberWeb.DashboardLiveTest do
     assert html =~ ~s(phx-value-facet="signal")
     assert html =~ ~s(data-combo-search)
 
+    # The combo is a menu of mutually-exclusive choices (menuitemradio + aria-checked), NOT the old
+    # `role="listbox"` that announced as an empty listbox (it never had `option` children). The
+    # trigger names its facet so a screen reader doesn't hear a bare "All projects".
+    assert html =~ ~s(aria-haspopup="menu")
+    assert html =~ ~s(role="menuitemradio")
+    assert html =~ ~s(aria-label="Project filter:)
+    refute html =~ ~s(role="listbox")
+
     # The chosen value MUST ride on `phx-value-choice`, never the reserved `phx-value-value`: on a
     # <button>, LiveView's client overwrites the `value` key with the element's own (empty) `.value`,
     # so a `value`-named payload reaches the server blank and every pick silently no-ops. Guard the
@@ -152,6 +160,9 @@ defmodule FaberWeb.DashboardLiveTest do
     assert html =~ ~s(data-mode="detail")
     assert html =~ ~s(class="detail")
     assert html =~ ~s(id="session-2" class="srow selected")
+    # The pane is a labelled region headed by an <h2>, so a screen reader can find and name it.
+    assert html =~ ~s(<h2 class="detail-id" id="detail-heading">)
+    assert html =~ ~s(aria-labelledby="detail-heading")
     # The pane explains the row in prose (the "explain the row" affordance).
     assert html =~ "Friction here"
 
