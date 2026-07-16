@@ -131,7 +131,14 @@ button {
   padding: 0.5rem 0.9rem;
   font: 600 0.86rem/1 var(--font-sans);
   cursor: pointer;
-  transition: filter 0.14s ease, border-color 0.14s ease, background 0.14s ease;
+  /* Deliberately does NOT transition `background`: buttons derive it from a theme var
+     (var(--accent), or var(--panel) on the combo trigger), and a background transition over a
+     custom property fails to repaint when `data-theme` flips at runtime — the old value sticks,
+     leaving stale, low-contrast controls (a dark trigger box on the light page → ~1:1) until a
+     reload. Hover states here use filter / border-color only, so dropping it costs nothing. Menu
+     options that DO fade their background on hover re-add it locally (they're hidden on toggle, so
+     they never show a stale value). */
+  transition: filter 0.14s ease, border-color 0.14s ease;
 }
 button:hover {
   filter: brightness(1.06);
@@ -304,6 +311,7 @@ button.ghost.copied {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  transition: background-color 0.14s ease;
 }
 .combo-option:hover {
   background: var(--line-soft);
@@ -1015,6 +1023,7 @@ tbody tr.srow:focus-visible {
   border-radius: 4px;
   padding: 0.45rem 0.6rem;
   font-weight: 500;
+  transition: background-color 0.14s ease;
 }
 .install-menu button:hover {
   background: var(--line-soft);
