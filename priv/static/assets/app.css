@@ -382,6 +382,35 @@ button.ghost.copied {
   white-space: nowrap;
   vertical-align: middle;
 }
+/* "This session is outside the adapter's stack, so Propose is off." Deliberately NOT --bad: a
+   wrong stack is an exclusion, not a failure — nothing broke, and a whole project's rows carry it
+   at once (every Go session under an Elixir adapter), so a red wall would read as 59 errors. Quiet
+   neutral gray, legible in both themes: --muted is redefined per theme, and a gray tint stays
+   neutral over --bg either way. */
+.row-stack,
+.badge.mismatch {
+  background: rgba(154, 162, 177, 0.16);
+  color: var(--muted);
+}
+.row-stack {
+  margin-left: 0.5ch;
+  padding: 0.02rem 0.32rem;
+  border-radius: 3px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+/* The refusal, in prose, where the Propose button would have been (detail pane + hero). Carries
+   the evidence — the extensions touched vs. what the adapter targets — so the answer to "why can't
+   I propose this?" is on screen, not in a tooltip. */
+.stack-note {
+  max-width: 52ch;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
 /* Empty states — teaching, not a shrug. Centered block: title, a plain-language body (with the
    scanned path / message floor), and the one action that moves you forward. Shared by the
    scan-crash, first-run, and no-filter-matches states. */
