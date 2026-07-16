@@ -27,6 +27,25 @@
       mounted() { this.el.scrollIntoView({ block: "nearest" }); },
     },
 
+    // When the detail pane opens (overview→detail) or the selected session changes, move focus to
+    // the pane's <h2> so keyboard / screen-reader users land on the just-opened content instead of
+    // having to tab past the remaining rows to reach it. Guarded by data-session so unrelated
+    // patches (the proposing state, an install result) don't yank focus mid-interaction. The heading
+    // carries tabindex=-1 to be programmatically focusable; preventScroll keeps the view steady.
+    DetailFocus: {
+      mounted() { this.last = this.el.dataset.session; this.focusHeading(); },
+      updated() {
+        if (this.el.dataset.session !== this.last) {
+          this.last = this.el.dataset.session;
+          this.focusHeading();
+        }
+      },
+      focusHeading() {
+        var h = this.el.querySelector("#detail-heading");
+        if (h) h.focus({ preventScroll: true });
+      },
+    },
+
     // Continuous overview⇄detail morph. `data-mode` on `.stage` flips the grid between the full
     // table (`1fr 0fr`) and the table-as-sidebar split (`30fr 70fr`). CSS can't interpolate `fr`
     // tracks — the engine stalls at the start value — so we FLIP it by hand: capture the resolved

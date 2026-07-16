@@ -370,6 +370,10 @@ button.ghost.copied {
   margin-left: 0.5ch;
   padding: 0.02rem 0.32rem;
   border-radius: 3px;
+  /* Fixed light-green literal, deliberately NOT color-mix(var(--ok)): --ok darkens in light theme
+     for AA text contrast, and deriving this tint from it would darken the background in step and
+     push the label back under 4.5:1. The status tints (here + .badge.pass/.installed) stay decoupled
+     from --ok on purpose. */
   background: rgba(95, 170, 127, 0.16);
   color: var(--ok);
   font-size: 0.68rem;
@@ -919,12 +923,15 @@ tbody tr.srow:focus-visible {
   border-radius: 2px;
   animation: indet 1.1s ease-in-out infinite;
 }
+/* translateX (compositor-only) instead of animating margin-left (a per-frame reflow). Values are
+   element-relative (the bar is 35% of the track): -100% parks it fully off the left; 286% ≈ one
+   track-width past the right — the same sweep the old -35%→100% margin produced. */
 @keyframes indet {
   0% {
-    margin-left: -35%;
+    transform: translateX(-100%);
   }
   100% {
-    margin-left: 100%;
+    transform: translateX(286%);
   }
 }
 

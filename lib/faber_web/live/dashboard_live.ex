@@ -973,10 +973,16 @@ defmodule FaberWeb.DashboardLive do
 
   defp detail_pane(assigns) do
     ~H"""
-    <section class="detail" aria-labelledby="detail-heading">
+    <section
+      class="detail"
+      id="detail-pane"
+      phx-hook="DetailFocus"
+      data-session={@selected_i}
+      aria-labelledby="detail-heading"
+    >
       <div class="detail-inner">
         <header class="detail-head">
-          <h2 class="detail-id" id="detail-heading">
+          <h2 class="detail-id" id="detail-heading" tabindex="-1">
             <span class="proj-name">{project_name(@session)}</span><span class="proj-id">/{project_short(@session)}</span>
           </h2>
           <div

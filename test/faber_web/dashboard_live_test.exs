@@ -160,9 +160,14 @@ defmodule FaberWeb.DashboardLiveTest do
     assert html =~ ~s(data-mode="detail")
     assert html =~ ~s(class="detail")
     assert html =~ ~s(id="session-2" class="srow selected")
-    # The pane is a labelled region headed by an <h2>, so a screen reader can find and name it.
-    assert html =~ ~s(<h2 class="detail-id" id="detail-heading">)
+
+    # The pane is a labelled region headed by a focusable <h2>, so a screen reader can find and name
+    # it, and the DetailFocus hook can move focus there on open (keyed by data-session so unrelated
+    # re-renders don't steal focus).
+    assert html =~ ~s(<h2 class="detail-id" id="detail-heading" tabindex="-1">)
     assert html =~ ~s(aria-labelledby="detail-heading")
+    assert html =~ ~s(phx-hook="DetailFocus")
+    assert html =~ ~s(data-session="2")
     # The pane explains the row in prose (the "explain the row" affordance).
     assert html =~ "Friction here"
 
