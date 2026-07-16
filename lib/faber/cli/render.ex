@@ -160,8 +160,11 @@ defmodule Faber.CLI.Render do
       iex> Faber.CLI.Render.badge("PASS", :ok)
       "PASS"
 
-  (The doctest runs piped, which is exactly the guarantee worth pinning: no escape bytes reach a
-  pipe. On a terminal the same call answers the green-wrapped form.)
+  That example is the piped answer, and it holds here only because `Faber.CLI.RenderTest` pins
+  `:elixir, :ansi_enabled` off for the module. Without the pin this doctest is a coin-flip on how
+  `mix test` was launched — the flag is set at VM boot from `isatty(stdout)`, so it is true from a
+  terminal and false under a redirect. On a terminal the same call answers the green-wrapped form;
+  the test file asserts both directions.
   """
   @spec badge(String.t(), severity()) :: String.t()
   def badge(text, severity) when is_binary(text) and is_map_key(@palette, severity) do

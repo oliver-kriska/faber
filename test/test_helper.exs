@@ -22,7 +22,23 @@
 # it's excluded everywhere and run deliberately:
 #   mix test --include calibration test/faber/detect_calibration_test.exs
 ExUnit.configure(
-  exclude: [:sidecar, :ccrider, :opencode, :plugin_eval, :calibration, :live, :live_api]
+  exclude: [:sidecar, :ccrider, :opencode, :plugin_eval, :calibration, :live, :live_api],
+  # Read `IO.ANSI.enabled?` HERE, before it is pinned below, so ExUnit's own failure output keeps
+  # its red/green when you run from a terminal. The pin is for the code under test, not the runner.
+  colors: [enabled: IO.ANSI.enabled?()]
 )
+
+# `IO.ANSI.enabled?` is set ONCE at VM boot from `prim_tty:isatty(stdout)` — it has nothing to do
+# with ExUnit capturing stdout. Unpinned, it makes the suite's behavior a function of how it was
+# LAUNCHED: false under a redirect (CI, `mix test > log`), true from a terminal. Any assertion that
+# measures rendered width or compares output exactly then passes for one and fails for the other —
+# which is exactly what happened: `Faber.CLI.Render.badge/2` wraps its word in 14 bytes of escape
+# codes, so a feedback row measured 99 chars from a shell and 85 through a pipe, and the suite was
+# green for every runner that redirects. Pinning it off makes `mix test` mean one thing.
+#
+# Off (not on) because it is the mode the assertions want: plain text, which is also what CI and
+# `faber ... | head` see. The colored branch is not thereby untested — `Faber.CLI.RenderTest` turns
+# the flag on explicitly and asserts the escape bytes, which is where that belongs.
+Application.put_env(:elixir, :ansi_enabled, false)
 
 ExUnit.start()

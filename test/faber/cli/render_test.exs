@@ -1,15 +1,24 @@
 defmodule Faber.CLI.RenderTest do
   @moduledoc """
   The guarantee under test is **non-TTY degradation**, which is the whole reason the CLI took Owl
-  for styling and nothing else. ExUnit captures stdout, so the suite always runs with
-  `IO.ANSI.enabled?` false — meaning these assertions run in exactly the mode CI and `faber ... |
-  head` run in, and a regression that leaks escape bytes into a pipe fails here.
+  for styling and nothing else.
 
-  The colored branch is reachable too, without a terminal: `IO.ANSI.enabled?` reads `:elixir,
-  :ansi_enabled` at call time, so flipping it proves the tag really does emit color rather than
-  being plain for some unrelated reason (a broken palette lookup would pass every assertion above).
-  That flip is process-global, hence `async: false` — ExUnit runs sync modules serially, so no
-  concurrent test can observe the enabled window and render an unexpectedly-colored line.
+  **Both modes are pinned explicitly, and that is the point.** An earlier version of this file
+  asserted `refute IO.ANSI.enabled?()` as a *precondition*, on the stated theory that "ExUnit
+  captures stdout, so the suite always runs with ANSI off". That theory is wrong. `capture_io` is
+  irrelevant here: Elixir sets `:elixir, :ansi_enabled` **once at VM boot** from
+  `prim_tty:isatty(stdout)`, so the value follows how `mix test` was *launched* — false when piped
+  or redirected to a log, true from a terminal. The suite therefore passed for anyone whose runner
+  redirects output and failed the moment it was run from a real terminal, on three tests that were
+  measuring the harness rather than the badge.
+
+  So `setup` forces the flag off rather than assuming it, and the colored branch forces it on. The
+  flag is read at call time, so both directions are reachable with no terminal involved. That makes
+  the doctest deterministic too — `badge("PASS", :ok) === "PASS"` only holds with ANSI off, and
+  without the pin it is a coin-flip on the launcher.
+
+  Process-global state, hence `async: false` — ExUnit runs sync modules serially, so no concurrent
+  test can observe the enabled window and render an unexpectedly-colored line.
   """
   use ExUnit.Case, async: false
 
@@ -17,8 +26,25 @@ defmodule Faber.CLI.RenderTest do
 
   doctest Faber.CLI.Render
 
+  setup do
+    # `fetch_env` rather than `get_env(…, false)`: restoring an unset key by writing `false` would
+    # leave the VM in a state boot never produces, and this key is read by ExUnit's own formatter.
+    prev = Application.fetch_env(:elixir, :ansi_enabled)
+    Application.put_env(:elixir, :ansi_enabled, false)
+
+    on_exit(fn ->
+      case prev do
+        {:ok, v} -> Application.put_env(:elixir, :ansi_enabled, v)
+        :error -> Application.delete_env(:elixir, :ansi_enabled)
+      end
+    end)
+
+    :ok
+  end
+
   describe "badge/2" do
     test "carries no escape bytes when output is not a terminal" do
+      # Established by `setup`, not inherited from the launcher — see the moduledoc.
       refute IO.ANSI.enabled?()
 
       for severity <- [:ok, :bad, :warn, :neutral] do
@@ -38,9 +64,9 @@ defmodule Faber.CLI.RenderTest do
     end
 
     test "the same call DOES color when ANSI is on — the plain rendering is degradation, not a no-op" do
-      enabled = Application.get_env(:elixir, :ansi_enabled, false)
+      # This is the terminal case: what you get running `faber feedback` by hand. `setup` pinned the
+      # flag off and restores whatever it found, so this only has to turn it on.
       Application.put_env(:elixir, :ansi_enabled, true)
-      on_exit(fn -> Application.put_env(:elixir, :ansi_enabled, enabled) end)
 
       # Distinct colors per severity, so a palette that collapsed to one entry would fail here.
       assert Render.badge("PASS", :ok) ==
@@ -53,7 +79,8 @@ defmodule Faber.CLI.RenderTest do
 
     test "an unknown severity is a crash, not a silently-unstyled word" do
       # The palette is the vocabulary. A typo'd severity that rendered plain would look correct
-      # piped — i.e. in every test — and be wrong only on the terminal nobody tests on.
+      # piped and be wrong only on a terminal — the exact split that made three tests in this file
+      # pass under a redirect and fail from a real shell, so it is not hypothetical.
       assert_raise FunctionClauseError, fn -> Render.badge("PASS", :nope) end
     end
   end
