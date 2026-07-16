@@ -1045,6 +1045,19 @@ defmodule Faber.CLI do
         IO.puts("installed → #{path}")
         0
 
+      # Not a scoring complaint and not an overwrite conflict, so it must not read like either —
+      # `--force` is the reflex for both of those and it will not help here, by design.
+      {:error, {:vetoed, vetoes}} ->
+        IO.puts(
+          :stderr,
+          "REFUSED — #{name} was not installed:\n" <>
+            Enum.map_join(vetoes, "\n", &"  #{&1.check_type}: #{&1.evidence}") <>
+            "\n\nThis is a safety refusal, not a score. `--force` overrides an existing install, " <>
+            "never this."
+        )
+
+        1
+
       {:error, {:exists, path}} ->
         IO.puts(:stderr, render_install_conflict(name, md, path))
         1

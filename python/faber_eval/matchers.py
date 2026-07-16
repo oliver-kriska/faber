@@ -19,35 +19,52 @@ import re
 # ── frontmatter ────────────────────────────────────────────────────────────
 
 
+def _split_raw(content: str) -> tuple[str, str]:
+    """Return ``(frontmatter_text, body)``, or ``("", content)`` when there is no frontmatter.
+
+    Split out from :func:`split_frontmatter` (whose contract is unchanged) because the safety scan
+    needs the RAW frontmatter text: the field parser below keeps only the ``key: value`` lines it
+    understands and silently drops everything else -- block scalars, list items, continuations.
+    Handing a safety check a map built by a lossy parser rebuilds the empty-haystack vacuous pass
+    one layer up: the payload simply isn't in the map to be found.
+    """
+    if not content.startswith("---"):
+        return "", content
+
+    lines = content.split("\n")
+    if lines[0].strip() != "---":
+        return "", content
+
+    end = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            end = i
+            break
+
+    if end is None:
+        return "", content
+
+    body = "\n".join(lines[end + 1 :]).lstrip("\n")
+    return "\n".join(lines[1:end]), body
+
+
 def split_frontmatter(content: str) -> tuple[dict, str]:
     """Split a ``---`` YAML frontmatter block from the body.
 
     A tiny hand-rolled parser: enough for ``key: value`` lines (optionally quoted). Returns
     ``(frontmatter_dict, body)``; if there is no frontmatter, ``({}, content)``.
     """
-    if not content.startswith("---"):
-        return {}, content
-
-    lines = content.split("\n")
-    if lines[0].strip() != "---":
-        return {}, content
+    fm_text, body = _split_raw(content)
 
     fm: dict[str, str] = {}
-    end = None
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            end = i
-            break
-        m = re.match(r"^([A-Za-z0-9_-]+):\s*(.*)$", lines[i])
+    for line in fm_text.split("\n"):
+        m = re.match(r"^([A-Za-z0-9_-]+):\s*(.*)$", line)
         if m:
             key, val = m.group(1), m.group(2).strip()
             if len(val) >= 2 and val[0] in "\"'" and val[-1] == val[0]:
                 val = val[1:-1]
             fm[key] = val
 
-    if end is None:
-        return {}, content
-    body = "\n".join(lines[end + 1 :]).lstrip("\n")
     return fm, body
 
 
@@ -242,7 +259,19 @@ _SAFE_SECTION_HINTS = (
 
 def no_dangerous_patterns(content, patterns=None, **_):
     patterns = patterns or _DANGEROUS_DEFAULT
-    _, body = split_frontmatter(content)
+
+    # The frontmatter is scanned too, and this is not a detail: it used to be dropped outright
+    # (``split_frontmatter`` returns only the body), so ``description: ... rm -rf / ...`` was
+    # invisible here. Reproduced before fixing -- a well-formed skill scored **composite 1.0,
+    # passed, vetoed: []**, byte-identical in score to the same skill with a benign description,
+    # and installed. The payload cost the attacker exactly nothing, in the one field an agent
+    # reliably loads into context to decide whether to run the skill at all.
+    fm, body = _split_raw(content)
+
+    # Two haystacks because the exemptions differ; both are searched. The frontmatter is taken raw
+    # and whole -- no safe-section exemption (it has no headings, so it can announce nothing) and no
+    # table filter (a leading ``|`` there is a YAML block scalar, not a table row).
+    #
     # ``_regions``, not ``_sections``: this is the gate deciding what gets written into the user's
     # ``~/.claude/skills``, so it must search the *whole* body. Searching ``_sections`` let a valid
     # SKILL.md carrying ``rm -rf /`` between its H1 and first ``##`` score a clean pass, and made
@@ -256,7 +285,7 @@ def no_dangerous_patterns(content, patterns=None, **_):
         if name is not None and any(h in name.lower() for h in _SAFE_SECTION_HINTS):
             continue
         safe_body_lines.extend(ln for ln in lines if not ln.strip().startswith("|"))
-    haystack = "\n".join(safe_body_lines)
+    haystack = fm + "\n" + "\n".join(safe_body_lines)
     for pat in patterns:
         m = re.search(pat, haystack)
         if m:

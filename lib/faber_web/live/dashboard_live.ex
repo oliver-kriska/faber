@@ -567,16 +567,24 @@ defmodule FaberWeb.DashboardLive do
         {:ok,
          "#{if force, do: "Reinstalled", else: "Installed"} #{name} → #{shorten(path)}#{pointer}"}
 
-      {:error, {:exists, path}} ->
-        {:error, "#{name} already installed at #{shorten(path)} — use Reinstall to overwrite"}
-
-      {:error, {:invalid_name, n}} ->
-        {:error, "Invalid skill name: #{n}"}
-
       {:error, reason} ->
-        {:error, "Install failed: #{inspect(reason)}"}
+        {:error, install_error(name, reason)}
     end
   end
+
+  defp install_error(name, {:exists, path}),
+    do: "#{name} already installed at #{shorten(path)} — use Reinstall to overwrite"
+
+  # This path gated on nothing before the veto moved into `Install.install/2` — the dashboard would
+  # happily write a skill the eval had refused. Now it cannot, and this only has to say so.
+  # Deliberately does not suggest Reinstall: `force` is not a safety override.
+  defp install_error(name, {:vetoed, vetoes}),
+    do:
+      "REFUSED — #{name} was not installed: " <>
+        Enum.map_join(vetoes, "; ", & &1.evidence) <> " (safety refusal, not a score)"
+
+  defp install_error(_name, {:invalid_name, n}), do: "Invalid skill name: #{n}"
+  defp install_error(_name, reason), do: "Install failed: #{inspect(reason)}"
 
   # Collapse the home prefix to ~ so install paths read cleanly in the flash/confirmation.
   defp shorten(path) do

@@ -4,11 +4,15 @@ defmodule Faber.Install do
   coding agent can load it.
 
   The default target is `config :faber, :skills_dir` (falling back to `~/.claude/skills`). Existing
-  skills are never silently overwritten — pass `force: true` to replace. Gating (did the proposal
-  pass the eval bar?) is the caller's responsibility; `Faber.Eval.gate/2` is the natural guard.
+  skills are never silently overwritten — pass `force: true` to replace.
+
+  **Quality gating** — did the proposal clear the eval bar? — is the caller's business
+  (`Faber.Eval.gate/2` is the natural guard). **Safety** is not: `install/2` enforces the
+  `Faber.Eval.vetoes/1` refusal on the bytes it is about to write, itself, so a dangerous artifact
+  cannot be installed no matter what any caller checked or skipped. See `install/2`.
   """
 
-  alias Faber.{Adapter, Proposal, Propose}
+  alias Faber.{Adapter, Eval, Proposal, Propose}
   alias Faber.Install.ManagedBlock
 
   # A skill name becomes a path segment, so it must be a single lowercase-kebab token — same shape
@@ -47,8 +51,24 @@ defmodule Faber.Install do
   Options: `:dir` (target skills root; defaults to the configured dir), `:adapter` (render a
   `%Proposal{}` via the adapter's template, matching what `Faber.Eval` gated), `:force` (overwrite
   an existing skill). Returns `{:ok, path}` or `{:error, reason}` — including
-  `{:error, {:exists, path}}` when already installed and `force` is not set, or
-  `{:error, {:invalid_name, name}}` when the name isn't a safe path segment.
+  `{:error, {:exists, path}}` when already installed and `force` is not set,
+  `{:error, {:invalid_name, name}}` when the name isn't a safe path segment, or
+  `{:error, {:vetoed, vetoes}}` when the content itself must never be written (see below).
+
+  ## The safety veto is enforced here, not by the caller
+
+  This function refuses to write an artifact that fails `Faber.Eval.vetoes/1` — dangerous shell and
+  friends — regardless of what any eval said, whether an eval ran at all, or whether `force` is set.
+  `:force` overrides an *overwrite conflict*; it is not a safety override, and the two are kept
+  orthogonal deliberately.
+
+  It lives here because this is the only function that writes into the user's `~/.claude/skills`,
+  and it checks the exact bytes it is about to write — no window between the check and the use. The
+  alternative, threading a verdict through every caller, was measured and failed: of four callers,
+  `Faber.Schedule` and the MCP tool gated on `passed`, `Faber.CLI` passed the `--install` flag
+  where the verdict belonged, and `FaberWeb.DashboardLive` gated on nothing. Each new caller is
+  another chance to forget, and forgetting is silent. A veto every caller must remember to honor is
+  a suggestion; one the writer enforces is a veto.
 
   Also writes a `#{@marker}` provenance sentinel beside the `SKILL.md` so `list_faber_installed/1`
   can distinguish Faber's skills from the user's own in a shared skills dir.
@@ -77,9 +97,12 @@ defmodule Faber.Install do
   end
 
   def install({name, skill_md}, opts) when is_binary(name) and is_binary(skill_md) do
-    # `validate_name/1` is the first clause, so no path is touched on disk until the (untrusted) name
-    # is proven safe; the `=` bindings below are pure (`Path.join`), run only after that.
+    # `validate_name/1` and `refuse_vetoed/1` are the first two steps, so no path is touched on disk
+    # until the (untrusted) name AND the (untrusted) content are both proven safe; the `=` bindings
+    # below are pure (`Path.join`), run only after that. Same shape for both: this function is handed
+    # two untrusted things, and neither gets to reach the filesystem unexamined.
     with :ok <- validate_name(name),
+         :ok <- refuse_vetoed(skill_md),
          skill_dir = Path.join(opts[:dir] || default_dir(), name),
          path = Path.join(skill_dir, "SKILL.md"),
          :ok <- ensure_writable(path, opts),
@@ -92,6 +115,19 @@ defmodule Faber.Install do
 
   defp validate_name(name) do
     if Regex.match?(@name_re, name), do: :ok, else: {:error, {:invalid_name, name}}
+  end
+
+  # The last line before the bytes hit the user's dir. Deliberately NOT overridable by `:force` and
+  # not skippable by an `opts` key: an escape hatch here would be found and used by exactly the paths
+  # that should never have one, and "the caller said it was fine" is what this check exists to
+  # disbelieve. If a legitimate skill needs to document `rm -rf /`, it says so under a heading that
+  # announces it (`## Anti-patterns`, `## Gotchas`) — the matcher exempts those by design, so the
+  # honest case has a supported route and the smuggled case does not.
+  defp refuse_vetoed(skill_md) do
+    case Eval.vetoes(skill_md) do
+      [] -> :ok
+      vetoes -> {:error, {:vetoed, vetoes}}
+    end
   end
 
   # `:ok` when nothing is installed there yet (or `:force` is set), else the already-installed error.

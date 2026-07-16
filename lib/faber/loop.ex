@@ -214,11 +214,32 @@ defmodule Faber.Loop do
     end
   end
 
-  defp decide(state, iteration, candidate, composite, meta, desc) do
-    if composite > state.best_composite + state.min_improvement do
-      keep(state, iteration, candidate, composite, meta, desc)
-    else
-      reject(state, iteration, composite, desc, "no improvement")
+  # The veto is re-derived from the candidate's own content rather than read off `meta`, for the same
+  # reason `Faber.Eval` stopped reading it off the scorer's report: `eval_fn` is caller-supplied and
+  # its arity-1 form returns a bare `{:ok, composite}` with no meta at all, so a `meta`-based check
+  # would fail open on exactly the eval a caller wrote themselves. `candidate.content` is
+  # `render_skill_md(proposal, adapter)` — the same bytes `maybe_install_best` would later install.
+  #
+  # Refusing here is not redundant with the guard in `Faber.Install.install/2`. That one stops the
+  # write; this one stops a vetoed candidate from becoming `best_proposal` at all — otherwise the
+  # loop climbs toward a dangerous artifact, banks it as its best, reports it as the winner, and only
+  # discovers at install time that its whole run produced something unusable.
+  defp decide(state, iteration, %{content: content} = candidate, composite, meta, desc) do
+    cond do
+      (v = Eval.vetoes(content)) != [] ->
+        reject(
+          state,
+          iteration,
+          composite,
+          desc,
+          "REFUSED: #{Enum.map_join(v, "; ", & &1.evidence)}"
+        )
+
+      composite > state.best_composite + state.min_improvement ->
+        keep(state, iteration, candidate, composite, meta, desc)
+
+      true ->
+        reject(state, iteration, composite, desc, "no improvement")
     end
   end
 

@@ -35,14 +35,26 @@ defmodule Faber.Eval.Matchers do
   @doc "Split a `---` frontmatter block from the body. `{fm_map, body}` (`{%{}, content}` if none)."
   @spec split_frontmatter(String.t()) :: {map(), String.t()}
   def split_frontmatter(content) do
+    {fm, body} = split_raw(content)
+    {fm |> String.split("\n") |> parse_fields(), body}
+  end
+
+  # The unparsed split: `{frontmatter_text, body}`, or `{"", content}` when there is no frontmatter.
+  # Split out from `split_frontmatter/1` (whose contract is unchanged) because the safety scan needs
+  # the RAW frontmatter text: `parse_fields/1` keeps only the `key: value` lines it understands and
+  # silently drops everything else — block scalars, list items, continuations. Handing a safety check
+  # a map built by a lossy parser rebuilds the empty-haystack vacuous pass one layer up: the payload
+  # simply isn't in the map to be found. Every other matcher wants the parsed fields and calls
+  # `split_frontmatter/1`.
+  defp split_raw(content) do
     lines = String.split(content, "\n")
 
     with ["---" | rest] <- lines,
          idx when is_integer(idx) <- Enum.find_index(rest, &(String.trim(&1) == "---")) do
       body = rest |> Enum.drop(idx + 1) |> Enum.join("\n") |> String.replace(~r/\A\n+/, "")
-      {parse_fields(Enum.take(rest, idx)), body}
+      {rest |> Enum.take(idx) |> Enum.join("\n"), body}
     else
-      _ -> {%{}, content}
+      _ -> {"", content}
     end
   end
 
@@ -298,13 +310,23 @@ defmodule Faber.Eval.Matchers do
         _ -> @dangerous_default
       end
 
-    {_, body} = split_frontmatter(content)
+    # The frontmatter is scanned too, and this is not a detail: it used to be dropped outright
+    # (`split_frontmatter/1` returns only the body), so `description: … rm -rf / …` was invisible
+    # here. Reproduced before fixing — a well-formed skill scored **composite 1.0, passed, vetoed:
+    # []**, byte-identical in score to the same skill with a benign description, and installed. The
+    # payload cost the attacker exactly nothing, in the one field an agent reliably loads into
+    # context to decide whether to run the skill at all.
+    {fm, body} = split_raw(content)
 
+    # Two haystacks because the exemptions differ; both are searched. The frontmatter is taken raw
+    # and whole — no safe-section exemption (it has no headings, so it can announce nothing) and no
+    # table filter (a leading `|` there is a YAML block scalar, not a table row).
+    #
     # `regions/1`, not `sections/1`: this is the gate deciding what gets written into the user's
     # `~/.claude/skills`, so it must search the *whole* body. Searching `sections/1` let a valid
     # SKILL.md carrying `rm -rf /` between its H1 and first `##` score a clean pass, and made any
     # heading-less body (a hook script) a vacuous pass against an empty haystack.
-    haystack =
+    body_haystack =
       body
       |> regions()
       |> Enum.reject(fn {name, _} -> safe_section?(name) end)
@@ -312,6 +334,8 @@ defmodule Faber.Eval.Matchers do
         Enum.reject(lines, &String.starts_with?(String.trim(&1), "|"))
       end)
       |> Enum.join("\n")
+
+    haystack = fm <> "\n" <> body_haystack
 
     # `patterns` may come from an untrusted adapter pack as YAML strings (not compiled `%Regex{}`),
     # so normalize each fail-closed: a bad regex is a failed safety check, never a raise mid-scan.

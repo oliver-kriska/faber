@@ -437,8 +437,20 @@ defmodule Faber.Eval do
   # `Matchers.run_check/3` is pure and returns `{bool, evidence}` for a known check; an unknown one
   # returns `{false, "unknown check_type: …"}`, which would veto everything — so `@veto_checks` may
   # only ever name checks this module implements (pinned by a test).
+  @doc """
+  The veto verdict for a rendered artifact: `[]` when it may be written, else one entry per refusal.
+
+  Public because the **write boundary** (`Faber.Install.install/2`) calls it directly on the bytes it
+  is about to write, rather than trusting its caller to have scored the artifact and to have read the
+  verdict. That is not belt-and-braces, it is the only version that holds: `passed`/`vetoed` are
+  advisory the moment a caller can forget to look at them, and four of them did — two gated on
+  `passed`, `Faber.CLI` passed the `--install` *flag* where the verdict belonged, and the dashboard
+  checked nothing at all. A gate every caller must remember is a suggestion.
+
+  Pure, cheap, and derived from content alone, so it is safe to call at any layer.
+  """
   @spec vetoes(String.t()) :: [veto()]
-  defp vetoes(content) do
+  def vetoes(content) when is_binary(content) do
     for check <- @veto_checks,
         {false, evidence} <- [Matchers.run_check(check, content, %{})] do
       %{check_type: check, evidence: to_string(evidence)}

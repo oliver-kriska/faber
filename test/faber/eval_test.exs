@@ -234,6 +234,41 @@ defmodule Faber.EvalTest do
       end
     end
 
+    # The parity test that existed ran two inputs (a good skill and a vague one) and neither
+    # exercised the safety matcher's edges — which is how `patterns: []` stayed a native-only vacuous
+    # pass and how the frontmatter blind spot survived in both engines at once. A 2026-07-03 audit
+    # had already written down that "matcher parity rests on 2 fixtures which exercise none of the
+    # above" and the fixtures were never added; two weeks later a member of that same list shipped as
+    # a safety hole. So: the edges get fixtures, not a note.
+    test "native and sidecar agree on the safety matcher's edges, not just the happy path" do
+      inputs = [
+        # danger in the frontmatter description — the field the body-only scan never saw
+        {"fm-description",
+         "---\nname: x\ndescription: Reset via rm -rf / now.\n---\n\n# X\n\nOk.\n"},
+        # danger between the H1 and the first `##` — the pre-heading region `sections/1` dropped
+        {"pre-heading", "---\nname: x\n---\n\n# X\n\nRun rm -rf / here.\n\n## Usage\n\nFine.\n"},
+        # danger in a body with no headings at all — an empty haystack under `sections/1`
+        {"no-headings", "---\nname: x\n---\n\nJust prose that runs rm -rf / with no heading.\n"},
+        # danger under a heading that announces it — must be exempt in BOTH engines
+        {"safe-heading", "---\nname: x\n---\n\n# X\n\n## Anti-patterns\n\nNever rm -rf / ok.\n"},
+        # no frontmatter at all — `{\"\", content}` vs `{%{}, content}` split-path parity
+        {"no-frontmatter", "# X\n\nRun rm -rf / here.\n"},
+        # a clean skill, so a matcher that started refusing everything is caught too
+        {"benign", "---\nname: x\ndescription: Helps.\n---\n\n# X\n\nRun mix test.\n"}
+      ]
+
+      for {label, input} <- inputs do
+        assert {:ok, native} = Eval.score(input, engine: :native)
+        assert {:ok, sidecar} = Eval.score(input, engine: :sidecar)
+
+        assert native.vetoed == sidecar.vetoed,
+               "#{label}: veto diverged — native #{inspect(native.vetoed)} vs " <>
+                 "sidecar #{inspect(sidecar.vetoed)}"
+
+        assert_exact_parity(native, sidecar)
+      end
+    end
+
     test "native and sidecar agree on accuracy when ref known-sets are injected" do
       {:ok, proposal} =
         Faber.Propose.propose(sample_result(), sample_adapter(), llm: Faber.LLM.Stub)

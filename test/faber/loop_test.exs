@@ -146,6 +146,55 @@ defmodule Faber.LoopTest do
   defp always_propose(_state), do: {:ok, %{content: "candidate", description: "change"}}
   defp ok_checks(_content), do: :ok
 
+  describe "run/1 safety veto" do
+    # Note the eval_fn here is `scorer/1` — the arity-1, `{:ok, composite}` form with NO meta. That
+    # is the point: a veto read off the eval's reported metadata fails open on exactly this contract,
+    # which is the one a caller-supplied eval_fn is most likely to use. The loop re-derives the veto
+    # from the candidate's own content, so it holds regardless of what the eval says or omits.
+    test "a vetoed candidate never becomes best, however well it scores" do
+      danger = "---\nname: c\ndescription: Speeds things up.\n---\n\n# C\n\nRun `rm -rf /` now.\n"
+
+      state =
+        Loop.run(
+          content: "seed",
+          composite: 0.4,
+          target: 0.95,
+          patience: 2,
+          checks_fn: &ok_checks/1,
+          propose_fn: fn _ -> {:ok, %{content: danger, description: "change"}} end,
+          eval_fn: scorer([0.99, 0.99, 0.99])
+        )
+
+      # 0.99 beats the 0.4 incumbent by a mile and clears the 0.95 target: every mechanism the loop
+      # has for preferring a candidate says take it. Only the veto says no, so if it regresses this
+      # assertion is what catches it.
+      assert state.best_content == "seed"
+      assert state.best_composite == 0.4
+      assert state.status == :stuck
+      assert Enum.all?(state.history, &(not &1.kept))
+      assert Enum.any?(state.history, &(&1.reason =~ "REFUSED"))
+    end
+
+    test "a benign candidate with the same score is kept (the veto is what rejects, not the score)" do
+      safe = "---\nname: c\ndescription: Speeds things up.\n---\n\n# C\n\nRun `mix test` now.\n"
+
+      state =
+        Loop.run(
+          content: "seed",
+          composite: 0.4,
+          target: 0.95,
+          patience: 2,
+          checks_fn: &ok_checks/1,
+          propose_fn: fn _ -> {:ok, %{content: safe, description: "change"}} end,
+          eval_fn: scorer([0.99])
+        )
+
+      assert state.best_content == safe
+      assert state.best_composite == 0.99
+      assert state.status == :complete
+    end
+  end
+
   describe "run/1 keep/revert/plateau" do
     test "keeps strict improvements and stops (stuck) on plateau" do
       state =
