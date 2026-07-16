@@ -130,6 +130,43 @@ defmodule Faber.CLITest do
     end
   end
 
+  describe "propose --top N absorbs consolidate" do
+    test "the batch flags parse on propose" do
+      assert CLI.parse(["propose", "--top", "3", "--cluster-threshold", "0.4"]) ==
+               {:propose, [top: 3, cluster_threshold: 0.4]}
+    end
+
+    test "--rank and --top together is a refusal, not a silent precedence rule" do
+      # Both name "which session(s) to propose for", and they disagree. Picking a winner would make
+      # the loser vanish without a word; the user gets told instead.
+      assert CLI.parse(["propose", "--rank", "3", "--top", "5"]) ==
+               {:conflicting_opts, :propose, ["--rank", "--top"]}
+    end
+
+    test "either one alone is fine" do
+      assert CLI.parse(["propose", "--rank", "3"]) == {:propose, [rank: 3]}
+      assert CLI.parse(["propose", "--top", "5"]) == {:propose, [top: 5]}
+    end
+
+    test "the conflict names both flags on stderr and exits non-zero" do
+      stderr =
+        capture_io(:stderr, fn ->
+          assert CLI.run(:conflicting_opts, subcommand: :propose, invalid: ["--rank", "--top"]) ==
+                   1
+        end)
+
+      assert stderr =~ "--rank"
+      assert stderr =~ "--top"
+      assert stderr =~ "faber propose"
+    end
+
+    test "consolidate still parses every flag it used to" do
+      # The alias is deprecated, not broken: a script that pins the old spelling keeps working.
+      assert CLI.parse(["consolidate", "--top", "4", "--cluster-threshold", "0.6"]) ==
+               {:consolidate, [top: 4, cluster_threshold: 0.6]}
+    end
+  end
+
   describe "run/2 renders the non-running outcomes" do
     test "a parse error prints usage to stderr and exits non-zero" do
       # stderr, not stdout: this is the error path, and stdout stays clean for piped output.
@@ -290,13 +327,23 @@ defmodule Faber.CLITest do
       assert out =~ "artifact"
     end
 
-    test "a kept singleton is filed too — it was a real LLM draft" do
-      # top: 1 → one proposal → one singleton cluster, never merged, never gated.
-      capture_io(fn -> assert CLI.run(:consolidate, @fixtures ++ [top: 1, force: true]) == 0 end)
+    # `--top 1` used to mean "cluster one proposal with nothing": filed `:kept`, never gated. It
+    # routes to the plain propose path now, so the same command files `:single` WITH an eval — the
+    # degenerate cluster-of-one is gone rather than reproduced.
+    test "top: 1 is plain propose, and is gated like it" do
+      capture_io(fn -> assert CLI.run(:propose, @fixtures ++ [top: 1, force: true]) == 0 end)
 
       assert [record] = Store.list()
-      assert record.outcome == :kept
+      assert record.outcome == :single
+      assert record.eval[:composite]
     end
+
+    # NO CLI-level test for a filed `:kept` singleton, deliberately. It used to ride on
+    # `consolidate --top 1` — one proposal clustered with nothing — and that degenerate path is
+    # gone. It cannot be reconstructed here either: the Stub answers every fixture session with the
+    # SAME draft, so Jaccard is 1.0 and `>= threshold` merges them at any threshold a float can
+    # hold. `{:kept, _}` stays covered where it can be built honestly (consolidate_test.exs, over
+    # dissimilar proposals), and the filing helper it shares with `:merged` is covered above.
 
     # A store that cannot write must not deny the user output they already paid for.
     test "a disabled store never fails the command" do
@@ -1214,6 +1261,43 @@ defmodule Faber.CLITest do
 
       assert out =~ "sessions to draft (2)"
       assert out =~ "one draft each"
+    end
+
+    test "propose --top N reaches the same batch pipeline consolidate did" do
+      out =
+        capture_io(fn ->
+          assert CLI.run(:propose, @fixtures ++ [top: 2, dry_run: true, force: true]) == 0
+        end)
+
+      refute_received :llm_called
+      assert out =~ "sessions to draft (2)"
+    end
+
+    test "the deprecated alias forwards to it, and says so on stderr" do
+      # stderr, so a script piping `faber consolidate` into something keeps getting only the
+      # artifact. The pointer is for the human watching, not for the pipe.
+      err =
+        capture_io(:stderr, fn ->
+          capture_io(fn ->
+            assert CLI.run(:consolidate, @fixtures ++ [top: 2, dry_run: true, force: true]) == 0
+          end)
+        end)
+
+      assert err =~ "deprecated"
+      assert err =~ "faber propose --top"
+    end
+
+    test "the alias defaults --top rather than degrading to a single proposal" do
+      # Bare `consolidate` drafted several sessions and clustered them; forwarding it to a plain
+      # one-session propose would quietly change what the command does.
+      out =
+        capture_io(fn ->
+          capture_io(:stderr, fn ->
+            assert CLI.run(:consolidate, @fixtures ++ [dry_run: true, force: true]) == 0
+          end)
+        end)
+
+      assert out =~ "sessions to draft"
     end
 
     test "parse accepts --dry-run on the commands that spend" do

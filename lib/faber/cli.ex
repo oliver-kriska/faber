@@ -9,13 +9,15 @@ defmodule Faber.CLI do
   command: one-shot commands print and `System.halt/1`; `serve` prints the URL, opens the browser,
   and leaves the BEAM running.
 
-  Subcommands: `scan`, `propose [--rank N] [--install] [--trigger]`, `refine`, `consolidate
-  [--top N] [--cluster-threshold F]`, `feedback`, `serve [--port P] [--no-open]`, `sync`,
-  `help`, `--version`.
+  Subcommands: `scan`, `propose [--rank N | --top N] [--cluster-threshold F] [--install]
+  [--trigger] [--dry-run]`, `refine`, `proposals`, `show`, `install`, `feedback`,
+  `serve [--port P] [--no-open]`, `sync`, `help`, `--version`. `consolidate` is a deprecated alias
+  for `propose --top N`.
   """
 
   alias Faber.{Adapter, Consolidate, Eval, Install, Loop, Proposal, Propose, Scan}
   alias Faber.CLI.JSON
+  alias Faber.CLI.Render
   alias Faber.Ingest.Format
   alias Faber.Proposal.Store
   alias Faber.Scan.Scope
@@ -26,6 +28,11 @@ defmodule Faber.CLI do
   # paid artifacts on the user's own disk (a few KB each), so an over-large store is a far smaller
   # problem than pruning something someone wanted back.
   @default_keep 50
+
+  # What a bare `consolidate` used to draft. Only the deprecated alias needs a default: `propose`
+  # has no implicit `--top`, because guessing a batch size on a command whose unit of work costs an
+  # LLM call each is not a default anyone should get by accident.
+  @default_top 5
 
   @typedoc "A subcommand name, or `nil` for top-level (`faber --help`)."
   @type subcommand :: atom() | nil
@@ -42,6 +49,7 @@ defmodule Faber.CLI do
   @type command ::
           {:help, subcommand()}
           | {:parse_error, subcommand(), [String.t()]}
+          | {:conflicting_opts, subcommand(), [String.t()]}
           | {:missing_id, subcommand()}
           | {:extra_args, subcommand(), [String.t()]}
           | {atom(), keyword()}
@@ -99,8 +107,11 @@ defmodule Faber.CLI do
   end
 
   def parse(["propose" | rest]) do
-    parse_sub(:propose, rest,
+    :propose
+    |> parse_sub(rest,
       rank: :integer,
+      top: :integer,
+      cluster_threshold: :float,
       install: :boolean,
       force: :boolean,
       trigger: :boolean,
@@ -113,6 +124,7 @@ defmodule Faber.CLI do
       all: :boolean,
       min_messages: :integer
     )
+    |> reject_conflict([:rank, :top])
   end
 
   def parse(["refine" | rest]) do
@@ -232,6 +244,23 @@ defmodule Faber.CLI do
     end
   end
 
+  # Two flags that each answer "which sessions?" differently can't both be honored, and picking one
+  # silently is how `--rank 3 --top 5` quietly drafts five skills for sessions you didn't name. Same
+  # principle as honoring OptionParser's invalid list: a command that can't know what it was asked to
+  # do must not run. Stays pure — the outcome is data, rendered by run/2.
+  defp reject_conflict({sub, opts} = cmd, keys) when is_list(opts) do
+    case Enum.filter(keys, &Keyword.has_key?(opts, &1)) do
+      [_, _ | _] = conflicting -> {:conflicting_opts, sub, Enum.map(conflicting, &switch/1)}
+      _ -> cmd
+    end
+  end
+
+  defp reject_conflict(other, _keys), do: other
+
+  # :cluster_threshold → "--cluster-threshold", mirroring OptionParser's own argv spelling so an
+  # error names the flag the user actually typed.
+  defp switch(key), do: "--" <> (key |> to_string() |> String.replace("_", "-"))
+
   # `--help`/`-h` anywhere wins over any other flag, valid or not: someone asking how a command
   # works should get the answer, not a complaint about the flag they were unsure of.
   #
@@ -274,6 +303,9 @@ defmodule Faber.CLI do
   # get the same halt-guard and exit-status handling as everything else.
   def dispatch({:parse_error, subcommand, invalid}),
     do: dispatch({:parse_error, [subcommand: subcommand, invalid: invalid]})
+
+  def dispatch({:conflicting_opts, subcommand, flags}),
+    do: dispatch({:conflicting_opts, [subcommand: subcommand, flags: flags]})
 
   def dispatch({:help, subcommand}) when is_atom(subcommand),
     do: dispatch({:help, [subcommand: subcommand]})
@@ -400,6 +432,21 @@ defmodule Faber.CLI do
     1
   end
 
+  defp do_run(:conflicting_opts, opts) do
+    flags = opts[:flags] || []
+    sub = opts[:subcommand]
+
+    IO.puts(
+      :stderr,
+      "faber: #{sub} — #{Enum.join(flags, " and ")} cannot be combined; they each answer " <>
+        "\"which sessions?\" differently. Use --rank N for one session, --top N for the " <>
+        "highest-friction N.\n"
+    )
+
+    IO.puts(:stderr, usage(sub))
+    1
+  end
+
   defp do_run(:missing_id, opts) do
     sub = opts[:subcommand]
 
@@ -473,45 +520,26 @@ defmodule Faber.CLI do
     0
   end
 
+  # One verb for "draft me a skill", with the count deciding the shape of the work: `--top N` (N > 1)
+  # is the only thing that can produce near-duplicates, so it is the only thing that needs the
+  # cluster+merge pipeline. `--top 1` is a plain propose, which is also strictly better than what
+  # `consolidate --top 1` used to do — a single session was clustered with nothing, `:kept`, and
+  # never eval'd.
   defp do_run(:propose, opts) do
-    rank = opts[:rank] || 1
-
-    # Score all sessions so `--rank N` selects from the TRUE friction ranking (a `:limit` here
-    # would sample a subset and could miss the worst sessions). `--limit` still passes through.
-    scan_opts = scan_opts(opts)
-
-    # `--trigger` opts into the behavioral trigger-accuracy dimension (one keyless LLM call per
-    # fixture). Off by default. In the loop (`Faber.Loop.refine/3` with `trigger: true`) the same
-    # dimension is safe to optimize only because candidates are scored against the SEED's fixtures,
-    # pinned — a candidate can't game the objective by rewriting its own exam (see
-    # .claude/research/2026-06-26-behavioral-eval-trigger-accuracy.md and the Loop moduledoc).
-    trigger? = opts[:trigger] == true
-
-    with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
-         {:ok, result} <- select_session(Scan.run(scan_opts), rank, scan_opts),
-         :ok <- stack_gate(adapter, result, opts[:force]),
-         :ok <- dry_run_gate(opts, [result], adapter, propose_cost(trigger?)),
-         {:ok, proposal} <- propose_with_status(result, adapter),
-         {:ok, eval} <- Eval.score(proposal, adapter: adapter, trigger: trigger?) do
-      # Filed before it is printed, not after: the print is what the user sees, the file is what
-      # they keep.
-      record = store_artifact(result, proposal, eval, adapter, :single)
-      IO.puts(render_proposal(proposal, eval, adapter) <> render_artifact(record))
-      maybe_install(proposal, adapter, opts[:install])
-      0
-    else
-      {:dry_run, report} ->
-        IO.puts(report)
-        0
-
-      {:error, {:stack_mismatch, adapter, result}} ->
-        IO.puts(:stderr, stack_mismatch_message(adapter, result))
-        1
-
-      {:error, reason} ->
-        IO.puts(:stderr, "faber propose failed: #{humanize_error(reason)}")
-        1
+    case opts[:top] do
+      n when is_integer(n) and n > 1 -> propose_batch(opts, n)
+      _ -> propose_one(opts)
     end
+  end
+
+  # DEPRECATED alias, kept because it is in people's shell history and their scripts. It forwards
+  # rather than reimplementing, so the two can never disagree about what consolidating means.
+  defp do_run(:consolidate, opts) do
+    status(
+      "faber: `consolidate` is deprecated — use `faber propose --top N`. Forwarding unchanged."
+    )
+
+    do_run(:propose, Keyword.put_new(opts, :top, @default_top))
   end
 
   defp do_run(:refine, opts) do
@@ -555,37 +583,9 @@ defmodule Faber.CLI do
     end
   end
 
-  defp do_run(:consolidate, opts) do
-    top = opts[:top] || 5
-    scan_opts = scan_opts(opts)
-
-    # `:threshold` here is Consolidate's CLUSTER threshold (token-Jaccard); the eval gate keeps
-    # its own configured bar. `--trigger` forwards to the gate like `propose --trigger`.
-    consolidate_opts =
-      []
-      |> put_if(:threshold, opts[:cluster_threshold])
-      |> put_if(:trigger, opts[:trigger])
-
-    with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
-         {:ok, sessions} <- consolidate_sessions(Scan.run(scan_opts), scan_opts, top) do
-      {candidates, skipped} = Enum.split_with(sessions, &stack_match?(adapter, &1, opts[:force]))
-      report_skipped(skipped)
-
-      case dry_run_gate(opts, candidates, adapter, consolidate_cost(candidates)) do
-        {:dry_run, report} ->
-          IO.puts(report)
-          0
-
-        :ok ->
-          consolidate_proposals(candidates, adapter, consolidate_opts, top)
-      end
-    else
-      {:error, reason} ->
-        IO.puts(:stderr, "faber consolidate failed: #{humanize_error(reason)}")
-        1
-    end
-  end
-
+  # `--top N` for N > 1: draft one skill per top-N friction session, cluster the near-duplicates, and
+  # LLM-merge each cluster behind the eval gate. Drafting many sessions at once is what MAKES the
+  # near-duplicates, which is why the pipeline lives behind the count rather than behind a verb.
   defp do_run(:feedback, opts) do
     reports = opts |> scan_opts([:dir]) |> Faber.Feedback.report()
 
@@ -631,7 +631,9 @@ defmodule Faber.CLI do
   defp format_sync(agent, {:ok, :written}), do: "#{agent}: pointer updated"
   defp format_sync(agent, {:ok, :unchanged}), do: "#{agent}: already up to date"
   defp format_sync(agent, :in_sync), do: "#{agent}: in sync"
-  defp format_sync(agent, :drift), do: "#{agent}: DRIFT — run `faber sync --target #{agent}`"
+
+  defp format_sync(agent, :drift),
+    do: "#{agent}: #{Render.badge("DRIFT", :warn)} — run `faber sync --target #{agent}`"
 
   defp format_sync(agent, :absent),
     do: "#{agent}: no Faber block yet — run `faber sync --target #{agent}`"
@@ -704,6 +706,79 @@ defmodule Faber.CLI do
       else: {:error, {:stack_mismatch, adapter, result}}
   end
 
+  # ── propose ─────────────────────────────────────────────────────────────────
+
+  defp propose_one(opts) do
+    rank = opts[:rank] || 1
+
+    # Score all sessions so `--rank N` selects from the TRUE friction ranking (a `:limit` here
+    # would sample a subset and could miss the worst sessions). `--limit` still passes through.
+    scan_opts = scan_opts(opts)
+
+    # `--trigger` opts into the behavioral trigger-accuracy dimension (one keyless LLM call per
+    # fixture). Off by default. In the loop (`Faber.Loop.refine/3` with `trigger: true`) the same
+    # dimension is safe to optimize only because candidates are scored against the SEED's fixtures,
+    # pinned — a candidate can't game the objective by rewriting its own exam (see
+    # .claude/research/2026-06-26-behavioral-eval-trigger-accuracy.md and the Loop moduledoc).
+    trigger? = opts[:trigger] == true
+
+    with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
+         {:ok, result} <- select_session(Scan.run(scan_opts), rank, scan_opts),
+         :ok <- stack_gate(adapter, result, opts[:force]),
+         :ok <- dry_run_gate(opts, [result], adapter, propose_cost(trigger?)),
+         {:ok, proposal} <- propose_with_status(result, adapter),
+         {:ok, eval} <- Eval.score(proposal, adapter: adapter, trigger: trigger?) do
+      # Filed before it is printed, not after: the print is what the user sees, the file is what
+      # they keep.
+      record = store_artifact(result, proposal, eval, adapter, :single)
+      IO.puts(render_proposal(proposal, eval, adapter) <> render_artifact(record))
+      maybe_install(proposal, adapter, opts[:install])
+      0
+    else
+      {:dry_run, report} ->
+        IO.puts(report)
+        0
+
+      {:error, {:stack_mismatch, adapter, result}} ->
+        IO.puts(:stderr, stack_mismatch_message(adapter, result))
+        1
+
+      {:error, reason} ->
+        IO.puts(:stderr, "faber propose failed: #{humanize_error(reason)}")
+        1
+    end
+  end
+
+  defp propose_batch(opts, top) do
+    scan_opts = scan_opts(opts)
+
+    # `:threshold` here is Consolidate's CLUSTER threshold (token-Jaccard); the eval gate keeps
+    # its own configured bar. `--trigger` forwards to the gate like `propose --trigger`.
+    consolidate_opts =
+      []
+      |> put_if(:threshold, opts[:cluster_threshold])
+      |> put_if(:trigger, opts[:trigger])
+
+    with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
+         {:ok, sessions} <- consolidate_sessions(Scan.run(scan_opts), scan_opts, top) do
+      {candidates, skipped} = Enum.split_with(sessions, &stack_match?(adapter, &1, opts[:force]))
+      report_skipped(skipped)
+
+      case dry_run_gate(opts, candidates, adapter, consolidate_cost(candidates)) do
+        {:dry_run, report} ->
+          IO.puts(report)
+          0
+
+        :ok ->
+          consolidate_proposals(candidates, adapter, consolidate_opts, top)
+      end
+    else
+      {:error, reason} ->
+        IO.puts(:stderr, "faber propose failed: #{humanize_error(reason)}")
+        1
+    end
+  end
+
   # ── dry run ────────────────────────────────────────────────────────────────
 
   # `--dry-run` is a GATE, deliberately sitting at the exact seam between the last free step (scan,
@@ -722,7 +797,7 @@ defmodule Faber.CLI do
       sessions
       |> Enum.with_index(1)
       |> Enum.map_join("\n", fn {r, i} ->
-        "    #{i}. #{session(r)}  (#{r.fingerprint}, raw #{fmt(r.raw)})"
+        "    #{i}. #{session(r)}  (#{r.fingerprint}, raw #{Render.raw_score(r.raw)})"
       end)
 
     """
@@ -944,14 +1019,14 @@ defmodule Faber.CLI do
   # `Module.split/1`, which raises for a non-Elixir module.
   defp impl_label, do: Faber.LLM.impl() |> inspect() |> String.split(".") |> List.last()
 
-  defp signal_label(%Scan.Result{dominant_signal: nil}), do: "—"
+  defp signal_label(%Scan.Result{dominant_signal: nil}), do: Render.none()
   defp signal_label(%Scan.Result{dominant_signal: s}), do: to_string(s)
 
   # Mirrors the dev mix task's pre-flight line (lib/mix/tasks/faber.propose.ex), which the release
   # CLI never had — the one surface where a user is most likely to be waiting on a cold LLM call.
   defp propose_with_status(result, adapter) do
     status(
-      "Proposing for #{result.fingerprint} session (raw #{fmt(result.raw)}, " <>
+      "Proposing for #{result.fingerprint} session (raw #{Render.raw_score(result.raw)}, " <>
         "dominant #{signal_label(result)}) via #{impl_label()}…"
     )
 
@@ -962,7 +1037,7 @@ defmodule Faber.CLI do
     max = refine_opts[:max_iterations]
 
     status(
-      "Refining #{result.fingerprint} session (raw #{fmt(result.raw)}, " <>
+      "Refining #{result.fingerprint} session (raw #{Render.raw_score(result.raw)}, " <>
         "dominant #{signal_label(result)}) via #{impl_label()} — up to " <>
         "#{max} #{refine_opts[:strategy]} iterations…"
     )
@@ -983,7 +1058,7 @@ defmodule Faber.CLI do
         reason -> " (#{reason})"
       end
 
-    "  iteration #{entry.iteration}/#{max}: composite #{fmt4(entry.new_composite)} #{verdict}#{note}"
+    "  iteration #{entry.iteration}/#{max}: composite #{Render.score(entry.new_composite)} #{verdict}#{note}"
   end
 
   defp consolidate_progress({:merging, %{index: i, total: n, members: members}}),
@@ -1096,7 +1171,7 @@ defmodule Faber.CLI do
   defp scan_row(r, i, session_w) do
     values = [
       to_string(i),
-      fmt(r.raw),
+      Render.raw_score(r.raw),
       to_string(r.fingerprint),
       signal_label(r),
       to_string(r.message_count),
@@ -1104,7 +1179,7 @@ defmodule Faber.CLI do
       to_string(r.tool_count),
       to_string(r.error_count),
       ctx_label(r.max_ctx_pct),
-      fmt_opp(r.opportunity),
+      Render.friction(r.opportunity),
       if(r.tier2, do: "✓", else: "")
     ]
 
@@ -1152,13 +1227,8 @@ defmodule Faber.CLI do
 
   # Mirrors the dashboard's ctx/1 — a session with no context reading is "—", not "0%", which would
   # read as "used no context" rather than "we don't know".
-  defp ctx_label(nil), do: "—"
+  defp ctx_label(nil), do: Render.none()
   defp ctx_label(pct) when is_number(pct), do: "#{round(pct)}%"
-
-  defp fmt_opp(score) when is_number(score),
-    do: :erlang.float_to_binary(score * 1.0, decimals: 2)
-
-  defp fmt_opp(_), do: "—"
 
   # `passed: false` used to imply `composite < threshold`, so one message covered every refusal. The
   # safety veto broke that equivalence: a vetoed artifact can sit at 0.83 against a 0.75 threshold
@@ -1166,17 +1236,17 @@ defmodule Faber.CLI do
   # worst place — it hides a SECURITY refusal behind a scoring complaint, and the number it prints
   # invites the reader to go tune the score until it clears.
   defp verdict(%{vetoed: [_ | _] = vetoed}) do
-    "REFUSED — " <> Enum.map_join(vetoed, "; ", & &1.evidence)
+    Render.badge("REFUSED", :bad) <> " — " <> Enum.map_join(vetoed, "; ", & &1.evidence)
   end
 
-  defp verdict(%{passed: true}), do: "PASS"
-  defp verdict(eval), do: "below threshold #{eval.threshold}"
+  defp verdict(%{passed: true}), do: Render.badge("PASS", :ok)
+  defp verdict(eval), do: Render.badge("below threshold #{eval.threshold}", :bad)
 
   defp render_proposal(proposal, eval, adapter) do
     verdict = verdict(eval)
 
     """
-    #{proposal.name} — composite #{fmt(eval.composite)} (#{verdict})
+    #{proposal.name} — composite #{Render.score(eval.composite)} (#{verdict})
 
     #{Propose.render_skill_md(proposal, adapter)}
     """
@@ -1241,7 +1311,7 @@ defmodule Faber.CLI do
   # someone's hand-edits destroys work that exists nowhere else.
   defp render_drift(path) do
     if Install.drift?(path) do
-      "\nDRIFT — this skill has been hand-edited since Faber installed it. --force discards\n" <>
+      "\n#{Render.badge("DRIFT", :warn)} — this skill has been hand-edited since Faber installed it. --force discards\n" <>
         "those edits permanently; they are not in the proposal store.\n"
     else
       ""
@@ -1493,7 +1563,7 @@ defmodule Faber.CLI do
     values = [
       record.id,
       truncate(to_string(record.name), 30),
-      fmt4(record.eval[:composite]),
+      Render.score(record.eval[:composite]),
       to_string(record.outcome),
       truncate(to_string(record.eval[:engine] || "—"), 22),
       to_string(length(record.source_sessions))
@@ -1521,7 +1591,7 @@ defmodule Faber.CLI do
 
   defp render_show(record) do
     """
-    #{record.name} — #{record.outcome}, composite #{fmt4(record.eval[:composite])} \
+    #{record.name} — #{record.outcome}, composite #{Render.score(record.eval[:composite])} \
     (#{record.eval[:engine] || "engine unrecorded"})
     id #{record.id}
     adapter #{record.adapter || "—"} · created #{record.created_at}
@@ -1541,7 +1611,7 @@ defmodule Faber.CLI do
       dims
       |> Enum.sort_by(fn {name, _} -> name end)
       |> Enum.map_join("\n", fn {name, d} ->
-        "  #{String.pad_trailing(to_string(name), 16)} #{fmt4(dimension_score(d))}"
+        "  #{String.pad_trailing(to_string(name), 16)} #{Render.score(dimension_score(d))}"
       end)
 
     "\ndimensions:\n#{lines}"
@@ -1631,16 +1701,19 @@ defmodule Faber.CLI do
 
   # One line per Consolidate outcome, mirroring `t:Faber.Consolidate.outcome/0`.
   defp render_outcome({:kept, p}),
-    do: "  kept            —       #{p.name} (singleton cluster)"
+    do: "  #{Render.badge("kept", :neutral)}            —       #{p.name} (singleton cluster)"
 
   defp render_outcome({:merged, merged, eval, originals}),
-    do: "  MERGED          #{fmt4(eval.composite)}  #{merged.name} ← #{names(originals)}"
+    do:
+      "  #{Render.badge("MERGED", :ok)}          #{Render.score(eval.composite)}  #{merged.name} ← #{names(originals)}"
 
   defp render_outcome({:kept_originals, originals, eval}),
-    do: "  kept-originals  #{fmt4(eval.composite)}  merge below gate — #{names(originals)}"
+    do:
+      "  #{Render.badge("kept-originals", :warn)}  #{Render.score(eval.composite)}  merge below gate — #{names(originals)}"
 
   defp render_outcome({:error, originals, reason}),
-    do: "  error           —       #{names(originals)}: #{humanize_error(reason)}"
+    do:
+      "  #{Render.badge("error", :bad)}           —       #{names(originals)}: #{humanize_error(reason)}"
 
   defp names(proposals), do: Enum.map_join(proposals, " + ", & &1.name)
 
@@ -1661,11 +1734,11 @@ defmodule Faber.CLI do
           end
 
         "  #{String.pad_leading(to_string(e.iteration), 3)}  #{marker}  " <>
-          "#{fmt4(e.new_composite)}  #{e.description}#{note}"
+          "#{Render.score(e.new_composite)}  #{e.description}#{note}"
       end)
 
     """
-    #{state.skill || "skill"} — refined #{fmt4(start)} → #{fmt4(state.best_composite)} \
+    #{state.skill || "skill"} — refined #{Render.score(start)} → #{Render.score(state.best_composite)} \
     (#{state.status}, #{kept}/#{length(state.history)} kept)
 
     #{history}
@@ -1684,7 +1757,7 @@ defmodule Faber.CLI do
     do: "\nholdout: validation scoring failed — #{humanize_error(reason)}\n"
 
   defp render_holdout(%{composite: comp, behavioral: behavioral, fixtures: n}) do
-    "\nholdout: composite #{fmt4(comp)}, behavioral #{fmt4(behavioral)} " <>
+    "\nholdout: composite #{Render.score(comp)}, behavioral #{Render.score(behavioral)} " <>
       "(#{n} validation fixtures the loop never optimized against)\n"
   end
 
@@ -1723,14 +1796,17 @@ defmodule Faber.CLI do
           "  " <> String.pad_trailing(truncate(r.skill, 32), 32),
           String.pad_leading(to_string(r.sessions), 8),
           String.pad_leading(to_string(r.sessions_used), 5),
-          String.pad_leading(fmt_rate(r.usage_rate), 6),
-          String.pad_leading(fmt_friction(r.friction_with), 12),
-          String.pad_leading(fmt_friction(r.friction_without), 5),
-          "   #{r.verdict}"
+          String.pad_leading(Render.rate(r.usage_rate), 6),
+          String.pad_leading(Render.friction(r.friction_with), 12),
+          String.pad_leading(Render.friction(r.friction_without), 5),
+          "   #{feedback_badge(r.verdict)}"
         ]
         |> Enum.join(" ")
       end)
 
+    # The four `t:Faber.Feedback.report/0` verdicts. `:active` is the only good news; `:unused` is
+    # the one that asks you to do something. `:no_sessions`/`:low_usage` are "not enough evidence
+    # yet" — neutral, not a complaint about the skill.
     hints =
       case Enum.filter(reports, &(&1.verdict == :unused)) do
         [] ->
@@ -1746,14 +1822,9 @@ defmodule Faber.CLI do
     "#{header}\n#{rows}#{hints}"
   end
 
-  defp fmt_rate(nil), do: "—"
-  defp fmt_rate(rate), do: "#{round(rate * 100)}%"
-
-  defp fmt_friction(nil), do: "—"
-  defp fmt_friction(n), do: :erlang.float_to_binary(n * 1.0, decimals: 2)
-
-  defp fmt4(n) when is_number(n), do: :erlang.float_to_binary(n * 1.0, decimals: 4)
-  defp fmt4(_), do: "n/a"
+  defp feedback_badge(:active), do: Render.badge("active", :ok)
+  defp feedback_badge(:unused), do: Render.badge("unused", :warn)
+  defp feedback_badge(other), do: Render.badge(to_string(other), :neutral)
 
   defp session(%{path: path, session_id: sid} = result) do
     project = project_label(result, path)
@@ -1790,9 +1861,6 @@ defmodule Faber.CLI do
 
   defp put_if(opts, _key, nil), do: opts
   defp put_if(opts, key, value), do: Keyword.put(opts, key, value)
-
-  defp fmt(n) when is_float(n), do: :erlang.float_to_binary(n, decimals: 1)
-  defp fmt(n), do: to_string(n)
 
   defp version do
     case Application.spec(:faber, :vsn) do
@@ -1867,10 +1935,17 @@ defmodule Faber.CLI do
                                                      --base: transcript root override;
                                                      --json: raw values + the full signal vector;
                                                      --min-messages: skip shorter sessions)
-      faber propose [--rank N] [--install] [--force] [--trigger] [--dry-run] [--source S]
-                    [--format F] [--db PATH] [--base DIR] [--all] [--min-messages N]
-                                                    Draft + eval a skill for one session
-                                                    (--dry-run: print the session, adapter, eval
+      faber propose [--rank N | --top N] [--cluster-threshold F] [--install] [--force] [--trigger]
+                    [--dry-run] [--source S] [--format F] [--db PATH] [--base DIR] [--all]
+                    [--min-messages N]              Draft + eval a skill from your friction
+                                                    (--top N: draft the top-N sessions, cluster
+                                                     near-duplicates and LLM-merge each cluster —
+                                                     every merge must pass the eval gate or the
+                                                     originals are kept (--cluster-threshold F:
+                                                     token-Jaccard to share a cluster, default 0.3);
+                                                     --rank N: draft one session instead — the two
+                                                     cannot be combined;
+                                                     --dry-run: print the sessions, adapter, eval
                                                      engine and LLM calls it WOULD spend, then
                                                      exit 0 having spent none;
                                                      --force: skip the stack-match gate;
@@ -1889,15 +1964,9 @@ defmodule Faber.CLI do
                                                      scored on the seed's pinned fixtures;
                                                      --holdout: report a held-out validation
                                                      score; --install: install the final best)
-      faber consolidate [--top N] [--cluster-threshold F] [--trigger] [--dry-run] [--force]
-                        [--source S] [--format F] [--db PATH] [--base DIR] [--all]
-                        [--min-messages N]          Draft skills for the top-N friction sessions
-                                                    (default 5), cluster near-duplicates (token
-                                                    Jaccard, threshold 0.3), and LLM-merge each
-                                                    cluster — a merge must pass the eval gate or
-                                                    the originals are kept
-                                                    (--dry-run: list the sessions it would draft
-                                                     and the calls it would spend, then exit 0)
+      faber consolidate [...]                       DEPRECATED — this is `faber propose --top N`
+                                                    now (default 5). It still runs, forwarding
+                                                    every flag unchanged.
       faber proposals [--prune] [--keep N] [--dir PATH] [--json]
                                                     List every skill faber has drafted and kept
                                                     (#{Faber.proposals_dir()}) — id, composite,

@@ -22,7 +22,7 @@ This is the *how-to* document. For the product thesis and architecture rationale
 8. [Step 4 — Refine: the self-improving loop](#8-step-4--refine-the-self-improving-loop)
 9. [Step 5 — Install & sync across agents](#9-step-5--install--sync-across-agents)
 10. [Step 6 — Feedback: did the skill actually help?](#10-step-6--feedback-did-the-skill-actually-help)
-11. [Consolidating overlapping proposals](#11-consolidating-overlapping-proposals)
+11. [Proposing across many sessions (`--top N`)](#11-proposing-across-many-sessions---top-n)
 12. [Dashboard & MCP server](#12-dashboard--mcp-server)
 13. [Cross-agent ingest (Codex, Cline, Gemini, OpenCode…)](#13-cross-agent-ingest)
 14. [Adapters: the stack-awareness](#14-adapters-the-stack-awareness)
@@ -134,7 +134,7 @@ below exists in both forms:
 | `faber scan` | `mix faber.scan` |
 | `faber propose` | `mix faber.propose` |
 | `faber refine` | `mix faber.refine` |
-| `faber consolidate` | — (library: `Faber.Consolidate.run/3`) |
+| `faber propose --top N` | — (library: `Faber.Consolidate.run/3`) |
 | `faber feedback` | — (library: `Faber.Feedback.report/1`) |
 | `faber sync` | — (library: `Faber.Install.sync_pointer/2`) |
 | `faber serve` | `iex -S mix phx.server` (dashboard on port 4010) |
@@ -167,7 +167,7 @@ Each step is expanded below. Nothing in steps 1, 4, 5 calls an LLM; step 2/3 mak
 generation call through your local `claude` CLI.
 
 **Flags and `--help`.** `faber <command> --help` (or `-h`) prints usage and exits 0 — it never runs
-the command, which matters most for `propose` / `refine` / `consolidate`, where running one costs an
+the command, which matters most for `propose` / `refine`, where running one costs an
 LLM call. An unrecognized or wrongly-typed switch is refused outright: Faber names the offending
 flag on stderr, prints usage, and exits non-zero rather than running the command without it. So a
 typo'd `--dry-runn` fails loudly instead of quietly doing the real thing.
@@ -231,7 +231,7 @@ project: faber (/Users/you/Projects/faber) — use --all for every project
 ### Scope: `faber scan` means "this project"
 
 Run from inside a project, `scan` ranks **that project's** sessions — not every session on your
-machine. `propose`, `refine`, `consolidate` and `feedback` scope the same way, so `propose` drafts a
+machine. `propose`, `refine` and `feedback` scope the same way, so `propose` drafts a
 skill for *your* worst session rather than the worst one you have ever had anywhere.
 
 The scope is resolved from the working directory, **walking up to the git root** — so `faber scan`
@@ -330,6 +330,7 @@ faber propose                    # rank-1 session of THIS project, faber-elixir 
 faber propose --dry-run          # what it would draft and spend — costs nothing
 faber propose --rank 3           # the 3rd-ranked session
 faber propose --all              # rank across every project, not just the one you're in
+faber propose --top 5            # the top 5 sessions at once, clustered and merged (see §11)
 faber propose --trigger          # also run the behavioral routing eval (see §7)
 faber propose --install          # install if you like what you see
 faber propose --force            # skip the stack-match gate (see below)
@@ -370,10 +371,10 @@ DRY RUN — nothing was drafted, nothing was filed, no LLM calls were spent.
 Re-run without --dry-run to spend it.
 ```
 
-Exit status is 0 and nothing reaches `~/.faber/proposals/`. `consolidate --dry-run` does the same
-for a whole `--top N` batch. Where a count genuinely isn't knowable in advance it says so rather
+Exit status is 0 and nothing reaches `~/.faber/proposals/`. `--dry-run` does the same
+for a whole `--top N` batch (§11). Where a count genuinely isn't knowable in advance it says so rather
 than inventing one: `--trigger` spends one call per fixture *in the skill that hasn't been drafted
-yet*, and consolidate's merge calls depend on clusters that don't exist until the drafts do. The
+yet*, and `--top N`'s merge calls depend on clusters that don't exist until the drafts do. The
 `eval:` line names the engine that will be **attempted** — an `exec-in-place` adapter falls back to
 the native eval if its referenced repo is absent, which is only knowable by running it (§7).
 
@@ -526,7 +527,7 @@ prefix lists the candidates rather than guessing.
 | Column | Meaning |
 |---|---|
 | `composite` | the eval score this artifact was gated on |
-| `outcome` | `single` (one session), `merged` (a consolidate merge), `kept` (singleton cluster), `kept_original` (its cluster's merge failed) |
+| `outcome` | `single` (one session), `merged` (a `--top N` merge), `kept` (singleton cluster), `kept_original` (its cluster's merge failed) |
 | `engine` | which scorer produced the composite — `adapter:exec-in-place` is the stack's real bar, `native:fallback` only certifies generic markdown structure |
 | `src` | how many sessions fed it (a `merged` artifact spans several) |
 
@@ -624,23 +625,33 @@ aggregates (usage flags + friction scores), never transcript text.
 
 ---
 
-## 11. Consolidating overlapping proposals
+## 11. Proposing across many sessions (`--top N`)
 
 Scanning many sessions produces near-duplicates ("investigate-retry-loops",
-"investigate-failing-commands", …). Installing all of them pollutes routing. Consolidation
-drafts a skill per top-ranked session, clusters near-duplicates, and LLM-merges each cluster —
-every merge must pass the eval gate or the originals are kept:
+"investigate-failing-commands", …). Installing all of them pollutes routing. `--top N` drafts a
+skill per top-ranked session, clusters near-duplicates, and LLM-merges each cluster — every merge
+must pass the eval gate or the originals are kept:
 
 ```sh
-faber consolidate                          # top 5 sessions → propose → cluster → merge → gate
-faber consolidate --top 10 --dry-run       # which 10 it would draft, and the calls that costs
-faber consolidate --top 10 --cluster-threshold 0.5
-faber consolidate --trigger                # score merges with the behavioral trigger dimension
+faber propose --top 5                   # top 5 sessions → propose → cluster → merge → gate
+faber propose --top 10 --dry-run        # which 10 it would draft, and the calls that costs
+faber propose --top 10 --cluster-threshold 0.5
+faber propose --top 5 --trigger         # score merges with the behavioral trigger dimension
 ```
 
-This is the most expensive command here — `--top 10` is ten drafts plus a merge call per cluster —
+`--rank N` (§6) and `--top N` are the two ways to say *which sessions* — one session by rank, or
+the top N. They contradict each other, so passing both is an error rather than a silent
+precedence rule.
+
+This is the most expensive thing here — `--top 10` is ten drafts plus a merge call per cluster —
 so `--dry-run` (§6) is worth a look first. Like the rest, it ranks **this project's** sessions
 unless you pass `--all`.
+
+> **`faber consolidate` is the deprecated spelling of this.** It still runs, forwarding every flag
+> unchanged (bare `consolidate` means `--top 5`), and prints a pointer here. One difference worth
+> knowing if you scripted it: `consolidate --top 1` used to cluster a lone proposal with nothing
+> and file it ungated. `propose --top 1` is now just `faber propose` — one draft, through the eval
+> gate like any other.
 
 | Flag | Meaning | Default |
 |---|---|---|
@@ -652,7 +663,7 @@ unless you pass `--all`.
 | `--force` | include sessions that fail the adapter's stack-match gate | off |
 
 (`--source`, `--format`, `--db`, `--base`, `--min-messages`, `--limit` pass through to the scan,
-same as `faber propose`.) Output is one line per cluster outcome — `MERGED` (with the merge's
+same as a single-session propose.) Output is one line per cluster outcome — `MERGED` (with the merge's
 eval composite), `kept` (singleton), `kept-originals` (merge scored below the gate), `error`
 (merge LLM call failed) — plus a summary count.
 
@@ -948,7 +959,7 @@ name the transcript root directly (§13).
 
 **`faber propose` fails with `stack mismatch`.**
 Working as intended: the session's files don't match the adapter's globs. Either switch the
-adapter (§14) or `--force` if you really want an off-stack draft. `consolidate` *skips* mismatched
+adapter (§14) or `--force` if you really want an off-stack draft. `--top N` *skips* mismatched
 sessions and names them rather than failing, since it works on a batch.
 
 **"the `claude` CLI isn't on PATH" or propose hangs then times out.**

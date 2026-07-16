@@ -143,6 +143,8 @@ defmodule Faber.MixProject do
     [
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.12"},
+      # Terminal UX for the CLI (progress bars, verdict badges). Pure Elixir, no NIF.
+      {:owl, "~> 0.13"},
       {:req_llm, "~> 1.0"},
       {:phoenix, "~> 1.7"},
       {:phoenix_live_view, "~> 1.0"},
