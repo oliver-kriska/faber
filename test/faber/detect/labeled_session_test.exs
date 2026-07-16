@@ -147,7 +147,13 @@ defmodule Faber.Detect.LabeledSessionTest do
       # privacy decision (see the `path`-stripping in Faber.Install's provenance), not a patch.
       results = events |> Enum.flat_map(& &1.tool_results) |> Enum.filter(& &1.is_error)
 
-      assert Enum.map(results, &Map.keys/1) == [
+      # Sorted, because `Map.keys/1` order is explicitly undefined and for a small map is the atom
+      # *intern* order, not alphabetical: `Map.keys(%{tool_use_id: 1, is_error: 2})` really does
+      # answer `[:tool_use_id, :is_error]`. Which atom is interned first depends on module load
+      # order, so the unsorted assertion passed alone and under `mix test`, then failed inside
+      # `mix verify` — where dialyzer loads first and shifts the atom table. The claim being made
+      # here is "these two keys and nothing else"; the order was never part of it.
+      assert Enum.map(results, &(&1 |> Map.keys() |> Enum.sort())) == [
                [:is_error, :tool_use_id],
                [:is_error, :tool_use_id]
              ]
