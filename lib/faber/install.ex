@@ -24,6 +24,23 @@ defmodule Faber.Install do
   # discovery (which reads `SKILL.md`) and can carry richer provenance later.
   @marker ".faber.json"
 
+  # The marker's read policy. `unstamped: 1` is load-bearing and NOT a formality: markers written
+  # before this declaration already exist in real `~/.claude` trees (Oliver's included), they
+  # predate the key, and `faber_installed?/1` is what makes a skill Faber's to sync, list and
+  # update. A reader that demanded `format` would classify every existing install as "not ours" —
+  # orphaning them from the pointer and the MCP listing in one release. That is precisely the bug
+  # `Faber.Store.Format` exists to prevent, so it is not re-introduced while fixing its class.
+  #
+  # `data_class: :provenance` — this is a claim about the user's shared dir, not paid work, but it
+  # is not derived either: nothing can recompute which skills Faber installed once the markers are
+  # gone. Reads stay lenient (any map) for the same reason they always were: a marker that fails to
+  # parse must not make Faber disown a skill it installed.
+  use Faber.Store.Format,
+    format: 1,
+    readable_formats: [1],
+    data_class: :provenance,
+    unstamped: 1
+
   @doc """
   Install `proposal` (or a `{name, skill_md}` pair) under `<dir>/<name>/SKILL.md`.
 
@@ -92,6 +109,7 @@ defmodule Faber.Install do
     data =
       Map.merge(
         %{
+          "format" => format(),
           "installed_by" => "faber",
           "name" => name,
           "installed_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
@@ -197,6 +215,13 @@ defmodule Faber.Install do
     |> Enum.filter(&faber_installed?/1)
   end
 
+  # Existence, deliberately — NOT `provenance/1 != %{}`. These two disagree for a marker stamped
+  # with a format this build cannot read (a newer Faber wrote it), and the disagreement is the
+  # correct answer: the file is Faber's by name, so the skill IS Faber-installed even when its
+  # details are unreadable. Gating ownership on a successful parse would make an older build disown
+  # every skill a newer one installed, dropping them from the pointer and the MCP listing — the
+  # orphaning failure again, just pointed at the future instead of the past. Unreadable provenance
+  # degrades to "ours, details unknown", never to "not ours".
   defp faber_installed?(%{path: skill_path}) do
     skill_path |> Path.dirname() |> Path.join(@marker) |> File.exists?()
   end
@@ -209,13 +234,18 @@ defmodule Faber.Install do
   private to this module, so callers go through here (e.g. `installed_at/1` reads its timestamp off
   this, and the dashboard reads `"source_session"` to show a session as already-installed) rather
   than restating the convention.
+
+  A marker with **no** `format` predates the key and reads as format 1 (see `unstamped:` above) —
+  every install written before versioning stays Faber's. A marker stamped with a format this build
+  cannot read returns `%{}`, the same as an absent one.
   """
   @spec provenance(Path.t()) :: map()
   def provenance(skill_path) do
     marker = skill_path |> Path.dirname() |> Path.join(@marker)
 
     with {:ok, body} <- File.read(marker),
-         {:ok, map} when is_map(map) <- Jason.decode(body) do
+         {:ok, map} when is_map(map) <- Jason.decode(body),
+         true <- readable?(map["format"]) do
       map
     else
       _ -> %{}

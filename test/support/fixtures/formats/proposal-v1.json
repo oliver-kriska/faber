@@ -1,0 +1,20 @@
+{
+  "id": "cf4683468caa-ed0b9c99dcfa",
+  "name": "investigate-retry-loops",
+  "eval": {
+    "composite": 0.83,
+    "dimensions": {
+      "safety": {
+        "score": 1.0
+      }
+    },
+    "passed": true
+  },
+  "format": 1,
+  "adapter": "faber-elixir",
+  "md": "---\nname: investigate-retry-loops\ndescription: Investigate repeated failing commands. Use when the same command fails three times.\n---\n\n# Investigate Retry Loops\n\n## Usage\n\nRead the error before retrying.\n",
+  "created_at": "2026-07-16T06:14:20.867904Z",
+  "session_key": "sess-v1-golden",
+  "session_path": null,
+  "session_stamp": null
+}

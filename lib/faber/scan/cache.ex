@@ -52,7 +52,19 @@ defmodule Faber.Scan.Cache do
 
   # Bumped when the entry tuple or snapshot envelope changes shape. An older/newer snapshot is
   # discarded wholesale rather than migrated — it's a cache; rebuilding it costs one scan.
-  @snapshot_format 1
+  #
+  # `readable_formats: [format()]` is the DECISION, not an accident of pattern-matching: this store
+  # holds `:derived` data, so dropping is *correct* here in a way it would be catastrophic in
+  # `Faber.Proposal.Store` (which holds `:paid` data and must read every format it ever wrote).
+  # Declaring it means the next person to bump this number sees the posture instead of inferring it.
+  #
+  # `unstamped: :unreadable` — every snapshot this store has ever written carries `format: 1` in its
+  # envelope, so a term without one is not ours.
+  use Faber.Store.Format,
+    format: 1,
+    readable_formats: [1],
+    data_class: :derived,
+    unstamped: :unreadable
 
   # Entries for sessions no scan has touched in this long are dropped when the snapshot loads.
   # Without this the table would grow forever: Claude Code deletes transcripts after ~30 days, and
@@ -289,7 +301,8 @@ defmodule Faber.Scan.Cache do
     Enum.each(scorer_modules(), &Code.ensure_loaded/1)
 
     with {:ok, bin} <- File.read(path),
-         {:ok, %{format: @snapshot_format, entries: entries}} when is_list(entries) <- decode(bin) do
+         {:ok, %{format: fmt, entries: entries}} when is_list(entries) <- decode(bin),
+         true <- readable?(fmt) do
       cutoff = now() - @max_age_s
 
       # A comprehension, not `Enum.filter/2`: `:safe` vouches for how a term was *constructed* (no
@@ -304,8 +317,13 @@ defmodule Faber.Scan.Cache do
       :ets.insert(@table, fresh)
       :ok
     else
-      {:ok, _other_format} ->
-        # A snapshot from a different build. Not an error — just nothing to reuse.
+      false ->
+        # A snapshot from a different build: a format this one doesn't read. Not an error — just
+        # nothing to reuse. See the `use Faber.Store.Format` above: dropping is this store's
+        # declared policy, because the data is derived and rebuilding costs one scan.
+        :ok
+
+      {:ok, _unrecognized_envelope} ->
         :ok
 
       {:error, :enoent} ->
@@ -338,7 +356,7 @@ defmodule Faber.Scan.Cache do
 
   defp write_snapshot(path) do
     entries = :ets.tab2list(@table)
-    bin = :erlang.term_to_binary(%{format: @snapshot_format, entries: entries}, compressed: 6)
+    bin = :erlang.term_to_binary(%{format: format(), entries: entries}, compressed: 6)
 
     # Private, not just atomic. A Result carries the user's session paths, cwds and touched
     # file_paths — a map of what they work on — so the snapshot gets 0700/0600 like the eval tree

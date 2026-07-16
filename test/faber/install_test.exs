@@ -94,10 +94,11 @@ defmodule Faber.InstallTest do
 
       # adapter/source_session/fingerprint were all nil → dropped; only the always-present keys remain.
       # This test is about drop_nils: an ABSENT provenance value must not become a null key.
-      # skill_sha256 is always written (it records what Faber put on disk, for drift?/1), so it
-      # belongs here — the point is that adapter/source_session/fingerprint do not.
+      # skill_sha256 is always written (it records what Faber put on disk, for drift?/1) and so is
+      # format (the marker's declared version), so both belong here — the point is that
+      # adapter/source_session/fingerprint do not.
       assert Enum.sort(Map.keys(data)) ==
-               ["installed_at", "installed_by", "name", "skill_sha256"]
+               ["format", "installed_at", "installed_by", "name", "skill_sha256"]
 
       refute Map.has_key?(data, "adapter")
       refute Map.has_key?(data, "source_session")
@@ -157,6 +158,38 @@ defmodule Faber.InstallTest do
       {:ok, path} = Install.install({"corrupt", "---\nname: corrupt\n---\n"}, dir: dir)
       path |> Path.dirname() |> Path.join(".faber.json") |> File.write!("{not json")
       assert Install.provenance(path) == %{}
+    end
+
+    @tag :tmp_dir
+    test "reads a marker written before the format key existed", %{tmp_dir: dir} do
+      # THE POINT: markers like this are already in real `~/.claude` trees — they were written
+      # before Faber declared a marker format, so they predate the key. A reader that demanded
+      # `format` would return %{} for every one of them, orphaning every skill Faber ever
+      # installed from the pointer, the dashboard's already-installed badge, and `installed_at/1`.
+      # `unstamped: 1` is what makes this pass. Do not "tighten" it.
+      {:ok, path} = Install.install({"legacy", "---\nname: legacy\n---\n"}, dir: dir)
+
+      v0_marker =
+        ~s({"installed_by":"faber","name":"legacy","installed_at":"2026-01-01T00:00:00Z"})
+
+      path |> Path.dirname() |> Path.join(".faber.json") |> File.write!(v0_marker)
+
+      assert Install.provenance(path)["installed_by"] == "faber"
+      assert Install.installed_at(path) == ~U[2026-01-01 00:00:00Z]
+    end
+
+    @tag :tmp_dir
+    test "empty map for a marker stamped with a format this build cannot read", %{tmp_dir: dir} do
+      {:ok, path} = Install.install({"from-future", "---\nname: from-future\n---\n"}, dir: dir)
+      marker = path |> Path.dirname() |> Path.join(".faber.json")
+      File.write!(marker, ~s({"format":99,"installed_by":"faber","name":"from-future"}))
+
+      assert Install.provenance(path) == %{}
+
+      # ...but the skill is still Faber's: the marker is Faber's file by name. Unreadable
+      # provenance degrades to "ours, details unknown", never to "not ours" — otherwise an older
+      # build would disown every skill a newer one installed.
+      assert [%{name: "from-future"}] = Install.list_faber_installed(dir)
     end
   end
 

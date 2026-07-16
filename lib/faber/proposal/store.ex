@@ -42,14 +42,23 @@ defmodule Faber.Proposal.Store do
 
   require Logger
 
-  @format 2
-
-  # Every format this reader understands, NOT just the one it writes. `read/1` drops anything it
-  # cannot match (`_ -> nil`), so shipping `@format 2` without listing 1 here would make every
-  # artifact written before the bump silently vanish from `list/0` — in the one module whose entire
-  # purpose is that paid work survives. A format leaves this list only when its records are actually
-  # gone, and then loudly, never by a bump.
-  @readable_formats [1, 2]
+  # The read policy, declared and compile-time checked rather than left to pattern-matching.
+  #
+  # `readable_formats` is every format this reader understands, NOT just the one it writes: `read/1`
+  # drops anything it cannot match (`_ -> nil`), so shipping `format: 2` without listing 1 would
+  # make every artifact written before the bump silently vanish from `list/0` — in the one module
+  # whose entire purpose is that paid work survives. That is not hypothetical; it shipped, and
+  # `data_class: :paid` is what now makes the compiler refuse it. A format leaves this list only
+  # when its records are actually gone, and then loudly, never by a bump.
+  #
+  # `unstamped: :unreadable` because format 1 wrote `"format": 1` from the very first record — this
+  # store has never written an unstamped one, so a file without a version did not come from here.
+  # (Its bug was the *reader*: `%{"format" => @format}` matched exactly and ate v1 when v2 shipped.)
+  use Faber.Store.Format,
+    format: 2,
+    readable_formats: [1, 2],
+    data_class: :paid,
+    unstamped: :unreadable
 
   # The exact shape of `id/2`: two truncated-sha256 hex hashes. Used to validate ids that reach
   # `delete/1` from outside this module.
@@ -145,7 +154,7 @@ defmodule Faber.Proposal.Store do
          # writer/reader asymmetry @eval_keys exists to prevent, and one dialyzer caught the moment
          # a caller first pattern-matched on `put/2` (the dashboard, the only writer until now,
          # ignores its return).
-         {:ok, json} <- encode(Map.put(record, :format, @format)),
+         {:ok, json} <- encode(Map.put(record, :format, format())),
          :ok <- Faber.mkdir_private(dir()),
          :ok <- Faber.write_private(path_for(record.id), json) do
       {:ok, record}
@@ -335,7 +344,7 @@ defmodule Faber.Proposal.Store do
   defp read(path) do
     with {:ok, body} <- File.read(path),
          {:ok, raw} <- Jason.decode(body),
-         true <- raw["format"] in @readable_formats do
+         true <- readable?(raw["format"]) do
       decode(raw)
     else
       # A single unreadable file must not blind the reader to the rest of a session's proposals.
