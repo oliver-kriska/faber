@@ -639,7 +639,10 @@ defmodule FaberWeb.DashboardLive do
     <main class="container">
       <FaberWeb.Layouts.flash_group flash={@flash} />
       <header class="masthead">
-        <div class="masthead-title">
+        <%!-- aria-live so the "scanning sessions…" → "N sessions scanned" swap is announced to a
+              screen reader (the skeleton below is decorative and silent). Not atomic: only the
+              changed summary line is read, not the unchanging title. --%>
+        <div class="masthead-title" aria-live="polite">
           <h1><span class="accent">Faber</span> — session friction</h1>
           <p :if={!@scanned} class="summary">scanning sessions…</p>
           <p :if={@scanned} class="summary">
@@ -718,6 +721,24 @@ defmodule FaberWeb.DashboardLive do
             do: "#{@shown} shown · #{@match_count} match",
             else: "showing top #{@shown}"}
         </span>
+      </div>
+
+      <%!-- First-scan skeleton: a shimmer echo of the ranked table while the initial scan runs (and
+            at first paint, before connect). Purely decorative — `aria-hidden`, with the masthead's
+            "scanning sessions…" carrying status to assistive tech. Only the first scan (`not
+            @scanned`); a rescan keeps the existing table on screen, so no skeleton there. --%>
+      <div :if={not @scanned} class="scan-skeleton" aria-hidden="true">
+        <span class="skel skel-caption"></span>
+        <div :for={n <- 1..8} class="skel-row" style={"--i: #{n}"}>
+          <span class="skel skel-rank"></span>
+          <span class="skel skel-friction"></span>
+          <span class="skel skel-project"></span>
+          <span class="skel skel-metric"></span>
+          <span class="skel skel-metric"></span>
+          <span class="skel skel-metric"></span>
+          <span class="skel skel-metric"></span>
+          <span class="skel skel-metric"></span>
+        </div>
       </div>
 
       <.hero

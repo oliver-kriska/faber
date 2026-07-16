@@ -538,6 +538,78 @@ button.ghost.copied {
   container-type: inline-size;
 }
 
+/* ── First-scan skeleton ──────────────────────────────────────────────────────
+   A shimmer echo of the ranked table shown while the initial scan runs. Decorative
+   (aria-hidden); rendered as the visible default (not gated on a JS transition) so it
+   appears at first paint. The base bars are a token color; a pseudo-element sweeps a
+   faint sheen across, staggered per row. */
+.scan-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+.skel {
+  position: relative;
+  overflow: hidden;
+  height: 0.72rem;
+  border-radius: 4px;
+  background: var(--line-soft);
+}
+.skel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, var(--fg) 9%, transparent),
+    transparent
+  );
+  animation: skel-shimmer 1.3s ease-in-out infinite;
+  animation-delay: calc(var(--i, 0) * 90ms);
+}
+@keyframes skel-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+.skel-caption {
+  width: 18rem;
+  max-width: 60%;
+  height: 0.6rem;
+  margin: 0 var(--space-4) var(--space-2);
+}
+.skel-row {
+  display: grid;
+  grid-template-columns: 1.5rem 3rem 1fr repeat(5, 2.4rem);
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line-soft);
+}
+/* Vary the project bar so the rows don't read as one identical stamp. */
+.skel-row:nth-child(2n) .skel-project {
+  max-width: 72%;
+}
+.skel-row:nth-child(3n) .skel-project {
+  max-width: 54%;
+}
+@media (max-width: 720px) {
+  .skel-row {
+    grid-template-columns: 1.5rem 3rem 1fr;
+  }
+  .skel-metric {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skel::after {
+    animation: none;
+  }
+}
+
 /* ── The ranked table ─────────────────────────────────────────────────────── */
 table.ranked {
   width: 100%;

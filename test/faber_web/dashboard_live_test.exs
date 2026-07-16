@@ -24,15 +24,23 @@ defmodule FaberWeb.DashboardLiveTest do
     assert html =~ "Faber"
     assert html =~ "scanning sessions"
     refute html =~ "<table"
+
+    # First paint (before connect) shows the loading skeleton, not an empty body — a shimmer echo
+    # of the ranked table so there's no flash of nothing while the scan runs.
+    assert html =~ ~s(class="scan-skeleton")
   end
 
   test "the connected render runs the scan and lands on the overview table", %{conn: conn} do
     {:ok, view, html} = live(conn, "/")
 
-    # The connected mount shows the loading state first; the scan runs asynchronously.
+    # The connected mount shows the loading state first (skeleton + live-region status), scan async.
     assert html =~ "scanning sessions"
+    assert html =~ ~s(class="scan-skeleton")
+    assert html =~ ~s(aria-live="polite")
 
     html = render_async(view, @async_timeout)
+    # The scan resolved: the skeleton retires and the real table takes over.
+    refute html =~ ~s(class="scan-skeleton")
     # Overview mode: the full ranked table, no detail pane open yet.
     assert html =~ ~s(class="stage")
     assert html =~ ~s(data-mode="overview")
