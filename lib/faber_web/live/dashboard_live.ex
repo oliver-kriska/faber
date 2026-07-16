@@ -599,7 +599,7 @@ defmodule FaberWeb.DashboardLive do
           <p :if={@scanned} class="summary">
             <strong>{@total}</strong> sessions scanned · <strong>{@tier2}</strong>
             tier-2 eligible · ranked by
-            <span data-tip={friction_tip()}>total friction <span class="q" aria-hidden="true">?</span></span>
+            <span tabindex="0" aria-label={"Total friction — #{friction_tip()}"} data-tip={friction_tip()}>total friction <span class="q" aria-hidden="true">?</span></span>
           </p>
         </div>
         <div class="masthead-actions">
@@ -700,29 +700,33 @@ defmodule FaberWeb.DashboardLive do
               Ranked by friction. Arrow keys or <kbd>j</kbd> / <kbd>k</kbd> move, <kbd>Enter</kbd> opens.
             </caption>
             <thead>
+              <%!-- Metric headers carry their definition in a hover/focus tooltip. `tabindex=0` makes
+                    the tipped ones keyboard-focusable so the reveal isn't pointer-only (WCAG 1.4.13);
+                    `scope="col"` keeps the abbreviated names associated with their cells for SR table
+                    navigation (the detail pane spells the same metrics out in prose). --%>
               <tr>
-                <th class="col-rank">#</th>
-                <th class="col-friction num" data-tip={friction_tip()}>Friction</th>
-                <th class="col-project">Project</th>
-                <th class="col-type">Type</th>
-                <th class="col-signal">Signal</th>
-                <th class="col-missed">Missed</th>
-                <th class="col-num num" data-tip="Transcript events — every user + assistant line, including the agent's own tool traffic.">
+                <th scope="col" class="col-rank">#</th>
+                <th scope="col" tabindex="0" class="col-friction num" data-tip={friction_tip()}>Friction</th>
+                <th scope="col" class="col-project">Project</th>
+                <th scope="col" class="col-type">Type</th>
+                <th scope="col" class="col-signal">Signal</th>
+                <th scope="col" class="col-missed">Missed</th>
+                <th scope="col" tabindex="0" class="col-num num" data-tip="Transcript events — every user + assistant line, including the agent's own tool traffic.">
                   Events
                 </th>
-                <th class="col-num num" data-tip="Messages a human actually typed. Far smaller than events — the agent generates most of a transcript itself.">
+                <th scope="col" tabindex="0" class="col-num num" data-tip="Messages a human actually typed. Far smaller than events — the agent generates most of a transcript itself.">
                   Turns
                 </th>
-                <th class="col-num num" data-tip="Tool calls the agent made — edits, searches, shell runs, MCP calls.">
+                <th scope="col" tabindex="0" class="col-num num" data-tip="Tool calls the agent made — edits, searches, shell runs, MCP calls.">
                   Tools
                 </th>
-                <th class="col-num num" data-tip="Failures in the session — non-zero command exits and errored tool results.">
+                <th scope="col" tabindex="0" class="col-num num" data-tip="Failures in the session — non-zero command exits and errored tool results.">
                   Errs
                 </th>
-                <th class="col-num num" data-tip="Peak context-window usage. Shown hot (red) when a session pushed near the limit — a compaction risk.">
+                <th scope="col" tabindex="0" class="col-num num" data-tip="Peak context-window usage. Shown hot (red) when a session pushed near the limit — a compaction risk.">
                   Ctx
                 </th>
-                <th class="col-tier2" data-tip="Tier-2 eligible: clears the bar to be worth proposing a skill for.">
+                <th scope="col" tabindex="0" class="col-tier2" data-tip="Tier-2 eligible: clears the bar to be worth proposing a skill for.">
                   T2
                 </th>
               </tr>
@@ -835,7 +839,12 @@ defmodule FaberWeb.DashboardLive do
         <p class="hero-context">Your highest-friction session — where a skill would have helped most.</p>
         <h2 class="hero-title">
           <span class="proj-name">{project_name(@session)}</span><span class="proj-id">/{project_short(@session)}</span>
-          <span class="hero-score" data-tip={friction_tip()}>
+          <span
+            class="hero-score"
+            tabindex="0"
+            aria-label={"Friction #{fmt(@session.raw)} — #{friction_tip()}"}
+            data-tip={friction_tip()}
+          >
             {fmt(@session.raw)} <span class="hero-score-label">friction</span>
           </span>
         </h2>
@@ -959,7 +968,12 @@ defmodule FaberWeb.DashboardLive do
           <div class="detail-id">
             <span class="proj-name">{project_name(@session)}</span><span class="proj-id">/{project_short(@session)}</span>
           </div>
-          <div class="detail-score" data-tip={friction_tip()}>
+          <div
+            class="detail-score"
+            tabindex="0"
+            aria-label={"Friction #{fmt(@session.raw)} — #{friction_tip()}"}
+            data-tip={friction_tip()}
+          >
             <span class="detail-friction">{fmt(@session.raw)}</span>
             <span class="detail-friction-label">friction <span class="q" aria-hidden="true">?</span></span>
           </div>
@@ -982,10 +996,10 @@ defmodule FaberWeb.DashboardLive do
         <p class="detail-explain">{explain(@session)}</p>
 
         <div class="detail-metrics">
-          <span class="stat" data-tip="Transcript events — every user + assistant line, including the agent's own tool traffic.">
+          <span class="stat" tabindex="0" data-tip="Transcript events — every user + assistant line, including the agent's own tool traffic.">
             <b>{fmt_int(@session.message_count)}</b> events
           </span>
-          <span class="stat" data-tip="Messages a human actually typed. Far smaller than events — the agent generates most of a transcript itself.">
+          <span class="stat" tabindex="0" data-tip="Messages a human actually typed. Far smaller than events — the agent generates most of a transcript itself.">
             <b>{fmt_int(@session.human_turns)}</b> turns
           </span>
           <span class="stat"><b>{fmt_int(@session.tool_count)}</b> tools</span>

@@ -47,6 +47,10 @@ defmodule FaberWeb.DashboardLiveTest do
     assert html =~ "Peak context-window usage"
     assert html =~ ~s(aria-expanded="false")
 
+    # The header cells scope to their column for SR table nav, and the tipped ones are keyboard
+    # focusable so their hover definition is reachable without a pointer (WCAG 1.4.13).
+    assert html =~ ~s(<th scope="col" tabindex="0" class="col-friction)
+
     assert render_click(view, "rescan") =~ "Faber"
   end
 
@@ -63,6 +67,10 @@ defmodule FaberWeb.DashboardLiveTest do
     assert html =~ "highest-friction session"
     assert html =~ ~s(phx-click="propose" phx-value-i="1")
     assert html =~ "spends tokens"
+
+    # The hero's friction score is keyboard-focusable and carries the definition as an accessible
+    # name, so a screen-reader user gets the "what is friction" explanation the tooltip shows.
+    assert html =~ ~s(aria-label="Friction )
 
     # Every ranked row is a focusable, button-role control (Enter activates it server-side via
     # phx-keydown); the caption advertises the keyboard model up front.
