@@ -153,6 +153,13 @@ defmodule Faber.Eval.ExecInPlace do
 
   # `<tmp>/<skill-name>/SKILL.md`: the scorer reads the skill's name from the parent directory.
   #
+  # This literal is deliberately NOT derived from `Faber.Proposal.filename/1`, unlike every other
+  # write seam. It is the *upstream scorer's* contract, not Faber's naming choice: `lab.eval.scorer`
+  # reads a SKILL.md and parses skill frontmatter out of it. Writing a `kind: :hook` proposal here
+  # as `hook.sh` wouldn't make the scorer understand hooks — it would just fail differently. This
+  # path is skill-only by construction; hooks are scored by `Faber.Eval.Native`'s hook eval set
+  # (which is why that set exists), and `Faber.Eval` routes on kind before reaching here.
+  #
   # The body is derived from the user's private session transcript, so lock the tree down before it
   # lands: 0700 on the root, O_EXCL + 0600 on the file — the same treatment
   # `Faber.Sidecar.System.write_temp/1` gives an equally sensitive payload. Defaults (0755/0644 under

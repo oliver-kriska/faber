@@ -189,7 +189,7 @@ defmodule Mix.Tasks.Faber.Propose do
     do: Mix.shell().info("Trigger accuracy: #{Render.score(acc)} (#{c}/#{t})")
 
   defp write(dir, proposal, md) do
-    path = Path.join([dir, proposal.name, "SKILL.md"])
+    path = Path.join([dir, proposal.name, Faber.Proposal.filename(proposal)])
     File.mkdir_p!(Path.dirname(path))
     File.write!(path, md)
     Mix.shell().info("Wrote #{path}")

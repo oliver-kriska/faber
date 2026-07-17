@@ -134,7 +134,9 @@ defmodule Faber.Loop do
       min_improvement: Keyword.get(opts, :min_improvement, 0.0),
       propose_fn: Keyword.fetch!(opts, :propose_fn),
       eval_fn: eval_fn,
-      checks_fn: Keyword.get(opts, :checks_fn, &default_checks/1),
+      # Kind-aware by default: the seed proposal decides which structural floor applies, so a hook
+      # candidate is never checked for skill frontmatter (an explicit `:checks_fn` still wins).
+      checks_fn: Keyword.get(opts, :checks_fn, default_checks_fn(Keyword.get(opts, :proposal))),
       on_progress: Keyword.get(opts, :on_progress, &noop_progress/1)
     }
   end
@@ -350,9 +352,24 @@ defmodule Faber.Loop do
 
   # ── default structural checks (mirrors checks.sh essentials) ───────────────
 
-  @doc "Minimal structural guard: frontmatter name+description, no conflict markers, ≤535 lines."
+  @doc """
+  Minimal structural guard for a **skill**: frontmatter name+description, no conflict markers,
+  ≤535 lines. Equivalent to `default_checks(content, :skill)`.
+  """
   @spec default_checks(String.t()) :: :ok | {:error, term()}
-  def default_checks(content) do
+  def default_checks(content), do: default_checks(content, :skill)
+
+  @doc """
+  Minimal structural guard for `kind`.
+
+  These are the loop's cheap pre-eval gate, not the eval: they reject a candidate that is
+  structurally broken before it costs a scoring run. They are kind-specific because the checks
+  are literally about file shape — a hook is a shell script with no frontmatter, so running the
+  skill checks over one would reject every hook ever generated for `:missing_name`, and the loop
+  would report a hook problem that was really a check problem.
+  """
+  @spec default_checks(String.t(), Proposal.kind()) :: :ok | {:error, term()}
+  def default_checks(content, :skill) do
     cond do
       not Regex.match?(~r/^name:\s*\S/m, content) -> {:error, :missing_name}
       not Regex.match?(~r/^description:\s*\S/m, content) -> {:error, :missing_description}
@@ -361,6 +378,21 @@ defmodule Faber.Loop do
       true -> :ok
     end
   end
+
+  # The hook floor. Deliberately thin: a hook's real gate is the kind-aware eval set
+  # (`Faber.Eval.Native`) — valid shell, valid pointer shape, and the safety veto — and duplicating
+  # those here would put the same judgment in two places that could disagree. What is left is what
+  # the loop alone can cheaply say: a script must exist and must not be a merge casualty.
+  def default_checks(content, :hook) do
+    cond do
+      String.trim(content) == "" -> {:error, :empty_script}
+      Regex.match?(~r/^(<<<<<<<|=======|>>>>>>>)/m, content) -> {:error, :conflict_markers}
+      true -> :ok
+    end
+  end
+
+  defp default_checks_fn(%Proposal{kind: kind}), do: &default_checks(&1, kind)
+  defp default_checks_fn(_proposal), do: &default_checks(&1, :skill)
 
   # ── real-pipeline wiring ───────────────────────────────────────────────────
 

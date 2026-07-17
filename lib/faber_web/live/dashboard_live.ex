@@ -365,7 +365,7 @@ defmodule FaberWeb.DashboardLive do
          :ok <- Propose.stack_gate(adapter, result),
          {:ok, proposal} <- Propose.propose(result, adapter),
          {:ok, eval} <- Eval.score(proposal, adapter: adapter) do
-      md = Propose.render_skill_md(proposal, adapter)
+      md = Propose.render(proposal, adapter)
       scores = %{composite: eval.composite, passed: eval.passed, threshold: eval.threshold}
 
       # Persist before handing it to the LiveView. This artifact cost LLM tokens, and until it is
@@ -378,7 +378,7 @@ defmodule FaberWeb.DashboardLive do
       # which one it is holding. (The store round-trips every eval key as of format 2.)
       Store.put(result, %{name: proposal.name, md: md, eval: eval, adapter: adapter.name})
 
-      Map.merge(scores, %{name: proposal.name, md: md})
+      Map.merge(scores, %{name: proposal.name, md: md, kind: proposal.kind})
     else
       # Ordered before the catch-all: a mismatch is a considered refusal with an explanation the
       # user can act on, not an "unexpected error".
@@ -640,13 +640,17 @@ defmodule FaberWeb.DashboardLive do
     install_provenance(session_id) ++ if(force, do: [force: true], else: [])
   end
 
-  # Whether a skill by this name already sits on disk (from any session). Drives the Install⇄Reinstall
-  # label + the force flag: reinstalling clobbers, so it's only offered when there's something there.
-  defp skill_installed?(name) when is_binary(name) do
-    [Faber.Install.default_dir(), name, "SKILL.md"] |> Path.join() |> File.exists?()
+  # Whether an artifact by this name already sits on disk (from any session). Drives the
+  # Install⇄Reinstall label + the force flag: reinstalling clobbers, so it's only offered when
+  # there's something there. The filename follows the proposal's kind — a hook and a skill of the
+  # same name are different files, so asking about the wrong one would offer "Install" over an
+  # existing artifact.
+  defp artifact_installed?(%{name: name} = proposal) when is_binary(name) do
+    filename = Faber.Proposal.filename(Map.get(proposal, :kind, :skill))
+    [Faber.Install.default_dir(), name, filename] |> Path.join() |> File.exists?()
   end
 
-  defp skill_installed?(_name), do: false
+  defp artifact_installed?(_proposal), do: false
 
   defp install_confirm(true, name, label) do
     "Reinstall “#{name}” for #{label}? This OVERWRITES the existing skill in your " <>
@@ -1238,7 +1242,7 @@ defmodule FaberWeb.DashboardLive do
           allow_install={@allow_install}
           agents={@agents}
           installed={@installed}
-          already={skill_installed?(@proposal[:name])}
+          already={artifact_installed?(@proposal)}
         />
       </div>
     </section>

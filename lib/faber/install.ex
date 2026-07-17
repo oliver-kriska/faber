@@ -12,7 +12,7 @@ defmodule Faber.Install do
   cannot be installed no matter what any caller checked or skipped. See `install/2`.
   """
 
-  alias Faber.{Adapter, Eval, Proposal, Propose}
+  alias Faber.{Eval, Proposal, Propose}
   alias Faber.Install.ManagedBlock
 
   # A skill name becomes a path segment, so it must be a single lowercase-kebab token — same shape
@@ -78,11 +78,7 @@ defmodule Faber.Install do
   def install(proposal_or_pair, opts \\ [])
 
   def install(%Proposal{} = p, opts) do
-    md =
-      case opts[:adapter] do
-        %Adapter{} = adapter -> Propose.render_skill_md(p, adapter)
-        _ -> Propose.render_skill_md(p)
-      end
+    md = Propose.render(p, opts[:adapter])
 
     # Carry where the skill came from into the provenance marker (no transcript `path` — that's an
     # internal location the privacy boundary keeps out of projections).
@@ -93,7 +89,14 @@ defmodule Faber.Install do
         "fingerprint" => p.source[:fingerprint]
       })
 
-    install({p.name, md}, Keyword.put(opts, :provenance, provenance))
+    install(
+      {p.name, md},
+      opts
+      |> Keyword.put(:provenance, provenance)
+      # The artifact filename follows the kind (`Faber.Proposal.filename/1`) rather than being the
+      # literal "SKILL.md" spelled out here. `put_new` so an explicit caller override still wins.
+      |> Keyword.put_new(:filename, Proposal.filename(p))
+    )
   end
 
   def install({name, skill_md}, opts) when is_binary(name) and is_binary(skill_md) do
@@ -104,7 +107,7 @@ defmodule Faber.Install do
     with :ok <- validate_name(name),
          :ok <- refuse_vetoed(skill_md),
          skill_dir = Path.join(opts[:dir] || default_dir(), name),
-         path = Path.join(skill_dir, "SKILL.md"),
+         path = Path.join(skill_dir, opts[:filename] || "SKILL.md"),
          :ok <- ensure_writable(path, opts),
          :ok <- File.mkdir_p(skill_dir),
          :ok <- File.write(path, skill_md),

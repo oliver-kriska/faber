@@ -39,8 +39,15 @@ defmodule Faber.Consolidate do
   @doc """
   Cluster `proposals` by token overlap. Returns a list of clusters (each a list of proposals),
   deterministic for a given input order (greedy single-linkage: a proposal joins the first
-  existing cluster containing any member with Jaccard similarity ≥ `:threshold`, default
-  `#{@default_threshold}`).
+  existing cluster containing any member of the **same kind** with Jaccard similarity ≥
+  `:threshold`, default `#{@default_threshold}`).
+
+  Kinds never cluster together. `tokens/1` reads name + description + trigger phrasings, which a
+  hook and a skill addressing the same friction necessarily share ("verify", "exit", "pipe") — so
+  on vocabulary alone they would merge, and `merge/3` would ask one LLM call to fuse a shell script
+  with a markdown skill into a single artifact that is neither. The vocabularies overlap precisely
+  *because* the two artifacts are about the same problem, which is why similarity cannot be the
+  only test.
   """
   @spec cluster([Proposal.t()], keyword()) :: [[Proposal.t()]]
   def cluster(proposals, opts \\ []) do
@@ -53,7 +60,9 @@ defmodule Faber.Consolidate do
       # version copied the whole prefix per proposal on top of the O(n) scan). Members prepend;
       # materialization below reverses, preserving the documented input-order determinism.
       hit? = fn members ->
-        Enum.any?(members, fn {_mp, mtoks} -> jaccard(toks, mtoks) >= threshold end)
+        Enum.any?(members, fn {mp, mtoks} ->
+          mp.kind == p.kind and jaccard(toks, mtoks) >= threshold
+        end)
       end
 
       case Enum.find_index(clusters, hit?) do

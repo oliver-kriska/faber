@@ -211,17 +211,49 @@ defmodule Faber.Propose do
   end
 
   @doc """
-  Render a proposal into a `SKILL.md` string using `adapter`'s `templates/` scaffold when it
-  ships a `skill` template, so the output matches the stack's idiom (section order, frontmatter,
-  idiomatic examples). Falls back to the built-in renderer when the adapter has no skill template.
+  Render a proposal into its artifact, using `adapter`'s `templates/` scaffold for the proposal's
+  **kind** when the pack ships one, so the output matches the stack's idiom (section order,
+  frontmatter, idiomatic examples).
+
+  The template is selected by `to_string(proposal.kind)` — the same key
+  `Faber.Adapter.read_templates/1` builds the map with, and the same enum
+  `Faber.Adapter.validate/1` now guarantees. This used to be a hardcoded `Map.get(templates,
+  "skill")`, the only key fetched repo-wide, which is why an adapter's `hook` template could load
+  and never be reachable.
+
+  Falling back to the built-in renderer is a **skill-only** affordance: there is a built-in
+  `SKILL.md` scaffold to fall back *to*. Any other kind with no template raises — a missing hook
+  template must not silently render a skill (or an empty string that sails through the eval).
   """
-  @spec render_skill_md(Proposal.t(), Adapter.t()) :: String.t()
-  def render_skill_md(%Proposal{} = p, %Adapter{templates: templates}) do
-    case Map.get(templates, "skill") do
+  @spec render(Proposal.t(), Adapter.t() | nil) :: String.t()
+  def render(proposal, adapter \\ nil)
+
+  def render(%Proposal{kind: kind} = p, %Adapter{templates: templates}) do
+    case Map.get(templates, to_string(kind)) do
       tmpl when is_binary(tmpl) -> Template.render(tmpl, template_context(p))
-      _ -> render_skill_md(p)
+      _ -> render_builtin(p)
     end
   end
+
+  def render(%Proposal{} = p, nil), do: render_builtin(p)
+
+  defp render_builtin(%Proposal{kind: :skill} = p), do: render_skill_md(p)
+
+  defp render_builtin(%Proposal{kind: kind, name: name}) do
+    raise ArgumentError,
+          "no #{kind} template: the selected adapter ships no `produces: #{kind}` scaffold and " <>
+            "the engine has no built-in one, so #{inspect(name)} cannot be rendered. Add a " <>
+            "`#{kind}` entry to the pack's templates/manifest.yaml."
+  end
+
+  @doc """
+  Render a `kind: :skill` proposal into a `SKILL.md` string using `adapter`'s scaffold.
+
+  A thin delegator to `render/2`, kept because 13 callsites spell this name. New code that isn't
+  skill-specific should call `render/2`.
+  """
+  @spec render_skill_md(Proposal.t(), Adapter.t()) :: String.t()
+  def render_skill_md(%Proposal{} = p, %Adapter{} = adapter), do: render(p, adapter)
 
   # String-keyed context for the Mustache-subset skill scaffold. Tokens the proposal can't fill
   # (steps, patterns, argument_hint, allowed_tools) resolve to empty — the renderer drops them.
