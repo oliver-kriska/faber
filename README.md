@@ -137,9 +137,10 @@ claude mcp add --transport http faber http://localhost:4710/mcp
 ```
 
 Read-only tools (no opt-in): `faber_search_friction` (ranked friction findings — **aggregates only,
-never raw transcript text**), `faber_list_skills`, `faber_get_skill`. One opt-in, side-effecting
-tool: `faber_propose_skill` — proposes + gates (and optionally installs) a skill for a ranked
-finding; it calls an LLM (spends tokens), so it stays **disabled** unless you set
+never raw transcript text**), `faber_list_skills`, `faber_get_skill`. Two opt-in, side-effecting
+tools: `faber_propose_skill` — proposes + gates (and optionally installs) a skill for a ranked
+finding — and `faber_propose_hook`, which does the same for a **hook** intercepting a mined
+frictionless hazard. Both call an LLM (spending tokens), so both stay **disabled** unless you set
 `config :faber, :mcp_allow_propose, true`. The server starts only under `faber serve` /
 `mix phx.server` (never for one-shot CLI commands).
 

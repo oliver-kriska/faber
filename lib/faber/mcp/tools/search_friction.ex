@@ -4,6 +4,11 @@ defmodule Faber.MCP.Tools.SearchFriction do
   context pressure) and return the worst offenders. Use this to discover where a coding agent keeps
   struggling — each finding is a candidate for a reusable skill. Returns **aggregates only** (scores,
   signals, touched file paths, project dir) — never the raw transcript text.
+
+  Each finding also carries `hazards`: frictionless hazards the session ran (`faber_propose_hook`
+  turns one into a hook). They are **not** part of the friction score and a session carrying one may
+  rank last — this is the only place they surface, since the ranking is blind to them by
+  construction.
   """
 
   use Anubis.Server.Component, type: :tool
@@ -47,6 +52,7 @@ defmodule Faber.MCP.Tools.SearchFriction do
   @spec summarize(Scan.Result.t()) :: map()
   def summarize(%Scan.Result{} = r) do
     %{
+      hazards: Enum.map(r.hazards, &hazard/1),
       session_id: r.session_id,
       friction: round2(r.friction),
       raw: round2(r.raw),
@@ -63,6 +69,22 @@ defmodule Faber.MCP.Tools.SearchFriction do
       missed: r.missed,
       skills_used: r.skills_used,
       fingerprint: r.fingerprint
+    }
+  end
+
+  # A hazard, minus its `evidence` — which QUOTES the Bash command the session ran, and so is
+  # transcript content, not an aggregate. The class, how often it happened, and the hook pointer it
+  # implies are everything an agent needs to decide whether to call `faber_propose_hook`; the
+  # command itself is only needed once the user has explicitly asked for a hook to be written, and
+  # that tool returns it there. Keeping it out here is the same instinct that dropped `tool_use`
+  # from `Scan.Result` — a read-only tool an agent may call freely is the wrong place to widen the
+  # boundary.
+  defp hazard(h) do
+    %{
+      kind: h.kind,
+      count: h.count,
+      suggested_event: h.suggested_event,
+      matcher: h.matcher
     }
   end
 

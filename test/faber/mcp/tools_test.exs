@@ -54,12 +54,28 @@ defmodule Faber.MCP.ToolsTest do
       # within the privacy-safe projection — catches a leak the atom-keyed summarize/1 test can't.
       wire_allowed =
         ~w(session_id friction raw rate dominant_signal opportunity tool_count error_count
-           message_count human_turns max_ctx_pct cwd file_paths missed skills_used fingerprint)
+           message_count human_turns max_ctx_pct cwd file_paths missed skills_used fingerprint
+           hazards)
 
-      for finding <- Jason.decode!(hd(resp.content)["text"])["findings"] do
+      findings = Jason.decode!(hd(resp.content)["text"])["findings"]
+
+      for finding <- findings do
         assert Enum.all?(Map.keys(finding), &(&1 in wire_allowed)),
                "leaked key(s): #{inspect(Map.keys(finding) -- wire_allowed)}"
       end
+
+      # `hazards` is a nested object, so the flat key check above cannot see inside it. Its
+      # `evidence` quotes the Bash command the session ran — transcript content, and the one field
+      # of the hazard summary that must not cross this tool's boundary.
+      hazards = Enum.flat_map(findings, & &1["hazards"])
+      assert hazards != [], "no hazard in the fixture corpus — this assertion has no subject"
+
+      for hazard <- hazards do
+        assert Enum.all?(Map.keys(hazard), &(&1 in ~w(kind count suggested_event matcher))),
+               "leaked hazard key(s): #{inspect(Map.keys(hazard))}"
+      end
+
+      refute blob =~ "mix verify | tail"
     end
 
     test "summarize/1 exposes exactly the aggregate allowlist (no leaked fields)" do
@@ -84,12 +100,38 @@ defmodule Faber.MCP.ToolsTest do
           :file_paths,
           :missed,
           :skills_used,
-          :fingerprint
+          :fingerprint,
+          # Frictionless hazards — the only surface that shows them, since the ranking is blind to
+          # them. Each is projected onto its own allowlist too (see below).
+          :hazards
         ])
 
       assert MapSet.equal?(keys, allowed)
       # The struct carries `path` (an internal transcript location) — it must NOT be projected.
       refute :path in Map.keys(SearchFriction.summarize(result))
+    end
+
+    test "summarize/1 projects each hazard too — the evidence QUOTES a command, so it stays in" do
+      # `evidence` quotes the Bash command the session ran, which is transcript content, not an
+      # aggregate. An agent deciding whether to ask for a hook needs the class, the count and the
+      # pointer; it does not need the command, and this tool is callable freely with no opt-in.
+      # `faber_propose_hook` returns the evidence, because writing a hook means sending it to an
+      # LLM — that is a deliberate, user-initiated crossing, not a browsing one.
+      result =
+        [base: "test/fixtures", min_messages: 0]
+        |> Faber.Scan.run()
+        |> Enum.find(&(&1.hazards != []))
+
+      assert result, "no fixture session carries a hazard — this test has lost its subject"
+      assert [hazard] = SearchFriction.summarize(result).hazards
+
+      assert MapSet.equal?(
+               hazard |> Map.keys() |> MapSet.new(),
+               MapSet.new([:kind, :count, :suggested_event, :matcher])
+             )
+
+      refute Map.has_key?(hazard, :evidence)
+      refute inspect(hazard) =~ "mix verify"
     end
 
     test "clamps limit into [1, 50]" do

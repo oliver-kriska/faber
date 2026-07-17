@@ -784,10 +784,17 @@ claude mcp add --transport http faber http://localhost:4710/mcp
 
 | Tool | What | Opt-in? |
 |---|---|---|
-| `faber_search_friction` | ranked friction findings — **aggregates only**, never transcript text | no |
+| `faber_search_friction` | ranked friction findings — **aggregates only**, never transcript text. Each also carries the session's `hazards` (§6) | no |
 | `faber_list_skills` | installed skills (name + description) | no |
 | `faber_get_skill` | one skill's full `SKILL.md` | no |
-| `faber_propose_skill` | propose + gate (+ optionally install) — calls an LLM | **yes**: `config :faber, :mcp_allow_propose, true` |
+| `faber_propose_skill` | propose + gate (+ optionally install) a **skill** for a ranked finding — calls an LLM | **yes**: `config :faber, :mcp_allow_propose, true` |
+| `faber_propose_hook` | propose + gate (+ optionally install) a **hook** for a hazard class (§6) — calls an LLM | **yes**: same flag |
+
+`faber_propose_hook` is a separate tool rather than a `kind` param, because the two share no input:
+one selects by rank in a friction ranking, the other by hazard class — and a hazard has no friction
+to rank. `faber_search_friction` reports a hazard's class, count and hook pointer but **not** its
+`evidence`, which quotes the command the session ran; only `faber_propose_hook` returns that, since
+writing a hook means sending that command to an LLM anyway.
 
 The MCP server only starts under `faber serve` / `mix phx.server` — never for one-shot
 commands.
