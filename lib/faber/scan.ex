@@ -352,12 +352,30 @@ defmodule Faber.Scan do
   # A `:limit` caps how many sessions are scored (a speed knob). Sample an EVEN SPREAD across the
   # discovered paths, not the alphabetical prefix: `Path.wildcard/1` returns sorted paths, so a
   # prefix skews toward whatever sorts first (often tiny stub sessions) and hides the
-  # highest-friction sessions entirely. `take_every` gives a deterministic cross-section.
+  # highest-friction sessions entirely.
+  #
+  # The spread is computed by INDEX (`i * count / limit`), not by a step, because a step cannot
+  # express this. `Enum.take_every(div(count, limit))` looks like a cross-section and silently stops
+  # being one for every `limit > count / 2`: integer division floors the step to 1, `take_every(1)`
+  # keeps everything, and `take(limit)` then hands back exactly the alphabetical prefix this
+  # function exists to avoid. It was measured on the corpus size the GUIDE itself suggests — 250
+  # sessions, `--limit 200` — where it dropped the 50 last-sorted sessions and reported nothing.
+  # A sampler whose contract holds only on half its domain is not a sampler.
   defp maybe_take(paths, nil), do: paths
 
   defp maybe_take(paths, limit) when is_integer(limit) and limit > 0 do
-    step = max(div(length(paths), limit), 1)
-    paths |> Enum.take_every(step) |> Enum.take(limit)
+    count = length(paths)
+
+    if limit >= count do
+      paths
+    else
+      keep = MapSet.new(0..(limit - 1), &div(&1 * count, limit))
+
+      paths
+      |> Enum.with_index()
+      |> Enum.filter(fn {_path, i} -> MapSet.member?(keep, i) end)
+      |> Enum.map(&elem(&1, 0))
+    end
   end
 
   defp maybe_take(paths, _limit), do: paths

@@ -120,6 +120,53 @@ defmodule Faber.ScanTest do
       # A prefix-take would yield aa,bb,cc — assert a later-sorted session made the cut instead.
       assert Enum.any?(basenames, &(&1 in ["dd.jsonl", "ee.jsonl", "ff.jsonl"]))
     end
+
+    @tag :tmp_dir
+    test "the spread holds for a limit larger than half the corpus", %{tmp_dir: dir} do
+      # The half of the domain the step-based sampler quietly abandoned. With `take_every(step)`,
+      # `step = div(count, limit)` floors to 1 for every `limit > count / 2` — so `take_every(1)`
+      # keeps everything and `take(limit)` returns the alphabetical prefix the spread exists to
+      # avoid. Ten sessions and `--limit 6` sits in that half; the real-world shape is the GUIDE's
+      # own `faber scan --limit 200` over a ~250-session corpus, silently dropping the last 50.
+      names = ~w(aa bb cc dd ee ff gg hh ii jj)
+
+      for name <- names do
+        File.write!(
+          Path.join(dir, "#{name}.jsonl"),
+          ~s({"type":"user","sessionId":"#{name}","message":{"role":"user","content":"hi #{name}"}}\n)
+        )
+      end
+
+      basenames =
+        [base: dir, min_messages: 0, limit: 6, cache: false]
+        |> Scan.run()
+        |> Enum.map(&Path.basename(&1.path))
+
+      assert length(basenames) == 6
+
+      refute basenames |> Enum.sort() == Enum.map(~w(aa bb cc dd ee ff), &"#{&1}.jsonl"),
+             "--limit 6 of 10 returned the alphabetical prefix, not a spread"
+
+      # The point of a spread: it must reach the far end of the corpus, not stop two-thirds in.
+      assert Enum.any?(basenames, &(&1 in ["ii.jsonl", "jj.jsonl"])),
+             "the sample never reached the last-sorted sessions"
+    end
+
+    @tag :tmp_dir
+    test "a limit at or above the corpus size keeps every session", %{tmp_dir: dir} do
+      for name <- ~w(aa bb cc) do
+        File.write!(
+          Path.join(dir, "#{name}.jsonl"),
+          ~s({"type":"user","sessionId":"#{name}","message":{"role":"user","content":"hi"}}\n)
+        )
+      end
+
+      for limit <- [3, 4, 99] do
+        assert [base: dir, min_messages: 0, limit: limit, cache: false] |> Scan.run() |> length() ==
+                 3,
+               "limit #{limit} over 3 sessions must keep all 3"
+      end
+    end
   end
 
   describe "score_session/1" do
