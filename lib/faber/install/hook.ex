@@ -179,9 +179,30 @@ defmodule Faber.Install.Hook do
   # couldn't read it would destroy exactly what we are trying not to touch.
   defp decode_settings(body, path) do
     case Jason.decode(body, objects: :ordered_objects) do
-      {:ok, %Jason.OrderedObject{} = obj} -> {:ok, obj}
+      {:ok, %Jason.OrderedObject{} = obj} -> check_hooks(obj, path)
       {:ok, other} -> {:error, {:settings_not_an_object, path, other}}
       {:error, reason} -> {:error, {:settings_invalid_json, path, reason}}
+    end
+  end
+
+  # The `hooks` VALUE gets the same guard as the top level, and at the same boundary — this is the
+  # one place that turns the user's bytes into something the merge trusts.
+  #
+  # `"hooks": null` is the case that bites: `List.keyfind/3` MATCHES `{"hooks", nil}`, so `oget/3`
+  # finds the key and returns `nil` — its `default` never fires, because the key is present. `nil`
+  # then reaches `oput/3`, which has no clause for it, and a plausible hand-edit crashes the
+  # LiveView process or the mix task with a FunctionClauseError instead of returning `{:error, …}`.
+  # Availability only: nothing is corrupted, since the crash precedes `save_settings/2`.
+  #
+  # Refusing rather than "helpfully" treating it as `{}` is the same posture as the top-level guard:
+  # a `hooks` key we cannot merge into means the file does not say what we think it says, and
+  # writing our own idea of it over the top is how a writer destroys the thing it is protecting.
+  defp check_hooks(%Jason.OrderedObject{values: values} = obj, path) do
+    case List.keyfind(values, "hooks", 0) do
+      # Absent is normal — the first hook on a fresh machine.
+      nil -> {:ok, obj}
+      {_, %Jason.OrderedObject{}} -> {:ok, obj}
+      {_, other} -> {:error, {:settings_hooks_not_an_object, path, other}}
     end
   end
 
@@ -203,25 +224,66 @@ defmodule Faber.Install.Hook do
   # when there is one, and let a genuinely new file take the umask default.
   #
   # RESIDUAL, deliberately not "fixed" here: read→merge→write is still not serialized, so a writer
-  # that lands inside our window has its change reverted (a lost update, not a corrupt file). The
-  # window is sub-millisecond and every writer is now human-triggered behind a confirm — the CLI and
-  # the dashboard; `faber_propose_hook` stopped writing at all (PC-T1). Closing it properly needs a
-  # cross-process lock, and a stale lockfile from a crashed run that blocks every future install is a
-  # worse and much more likely failure than the race it prevents. Named rather than papered over.
+  # that lands inside our window has its change reverted — a lost update, **not** a corrupt file.
+  # That claim is only true because the tmp path is unique per write (see `tmp_path/1`); with a fixed
+  # name it was false, and this comment was the thing asserting it. The window is the read→write gap
+  # and every writer is human-triggered behind a confirm — the CLI and the dashboard;
+  # `faber_propose_hook` does not write at all. Closing it properly needs a cross-process lock, and a
+  # stale lockfile from a crashed run that blocks every future install is a worse and much more
+  # likely failure than the race it prevents. Named rather than papered over.
   defp save_settings(path, obj) do
-    tmp = path <> ".faber.tmp"
+    # `rename` REPLACES the name it is given — so renaming onto a symlink replaces the LINK with a
+    # regular file, silently orphaning whatever it pointed at. Symlinking `~/.claude/settings.json`
+    # into a dotfiles repo is ordinary, and this failed it silently in the worst direction:
+    # `File.write/2` (what this used to be) FOLLOWS a link, so the old code wrote through to the
+    # dotfiles copy and the "safer" atomic rename is what broke it. Reproduced: the link became a
+    # regular file, the dotfiles target kept the pre-install content, and nothing errored.
+    target = resolve_link(path)
+    tmp = tmp_path(target)
     body = Jason.encode!(obj, pretty: true) <> "\n"
 
-    with :ok <- File.mkdir_p(Path.dirname(path)),
+    with :ok <- File.mkdir_p(Path.dirname(target)),
          :ok <- File.write(tmp, body),
-         :ok <- copy_mode(path, tmp),
-         :ok <- File.rename(tmp, path) do
+         :ok <- copy_mode(target, tmp),
+         :ok <- File.rename(tmp, target) do
       :ok
     else
       {:error, _} = err ->
         File.rm(tmp)
         err
     end
+  end
+
+  # Follow a symlink to the file that must actually be replaced. Bounded rather than recursive
+  # without a limit: a link cycle is a hang otherwise, and `~/.claude/settings.json` is a path the
+  # user owns and can point wherever they like. Out of links (or over the bound) → use what we have;
+  # a broken or circular link is not this function's error to raise, and the `File.write` below
+  # reports it honestly.
+  @link_hops 8
+
+  defp resolve_link(path, hops \\ @link_hops)
+  defp resolve_link(path, 0), do: path
+
+  defp resolve_link(path, hops) do
+    case File.read_link(path) do
+      # A relative link resolves against the LINK's directory, not the cwd.
+      {:ok, dest} -> dest |> Path.expand(Path.dirname(path)) |> resolve_link(hops - 1)
+      {:error, _} -> path
+    end
+  end
+
+  # A unique tmp per write. `path <> ".faber.tmp"` was a FIXED name, so two writers in different OS
+  # processes (the CLI and the dashboard) shared one path: B's `O_TRUNC` write landed mid-flight and
+  # A renamed the truncated bytes into place — reporting `{:ok, …}`. That is a corrupt file through a
+  # window as wide as a `write`, i.e. wider than the one the atomic rename closed, and it made the
+  # RESIDUAL note above untrue. It also closes a guessable-path pre-plant: an attacker who symlinks
+  # the predictable tmp name at a file they want clobbered no longer knows where to aim.
+  #
+  # Not `File.rename`-safe across filesystems, hence a SIBLING: `rename(2)` is atomic only within one
+  # filesystem, and the tmp sits beside the resolved target precisely so it is on the same one.
+  defp tmp_path(target) do
+    suffix = 6 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
+    target <> ".faber-" <> suffix <> ".tmp"
   end
 
   # Carry the target's mode onto the replacement. `rename` swaps the inode, so without this an
@@ -231,6 +293,12 @@ defmodule Faber.Install.Hook do
       {:ok, %File.Stat{mode: mode}} -> File.chmod(tmp, mode)
       # No file yet — first hook on a fresh machine. The umask default is the right answer.
       {:error, :enoent} -> :ok
+      # DEFENCE, not a live path: `read_settings/1` has already read this file, so every stat-level
+      # failure (:eacces, :eloop, :eisdir) is reported there and returns before `save_settings/2` is
+      # called. Reachable only by a race between the read and this line. Kept because it costs one
+      # clause and the alternative — a `{:ok, _} =` match — would turn that race into a crash.
+      # Deliberately NOT given a test that fakes reachability: a test that has to bypass the public
+      # API to fail proves the mock works, not the code.
       {:error, _} = err -> err
     end
   end

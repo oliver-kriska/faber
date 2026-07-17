@@ -198,6 +198,37 @@ defmodule Faber.InstallHookTest do
       # And nothing was written on disk either — the merge is decided before the script lands.
       refute File.exists?(Path.join([ctx.tmp_dir, "faber-hooks", "no-masked-gate-exit"]))
     end
+
+    # W-5. `"hooks": null` is a plausible hand-edit (a user clearing their hooks), and it took the
+    # whole process down: `List.keyfind/3` MATCHES `{"hooks", nil}`, so `oget/3` returns `nil`
+    # instead of its default — the key IS present — and `oput(nil, …)` has no clause.
+    @tag :tmp_dir
+    test "a null or non-object `hooks` errors rather than crashing the caller", ctx do
+      path = Path.join(ctx.tmp_dir, "settings.json")
+
+      for value <- [~s(null), ~s("nope"), ~s([]), ~s(42), ~s(true)] do
+        File.write!(path, ~s({"model": "opus", "hooks": #{value}}\n))
+
+        # An {:error, _}, not a raise: this crashed the LiveView process and the mix task, which is
+        # an availability bug in a path whose whole job is to fail safely.
+        assert {:error, {:settings_hooks_not_an_object, ^path, _}} =
+                 Hook.install(proposal(), opts(ctx)),
+               "a #{value} hooks value did not error cleanly"
+
+        # Nothing is corrupted — the refusal precedes every write.
+        assert File.read!(path) == ~s({"model": "opus", "hooks": #{value}}\n)
+        refute File.exists?(Path.join([ctx.tmp_dir, "faber-hooks", "no-masked-gate-exit"]))
+      end
+    end
+
+    @tag :tmp_dir
+    test "an empty `hooks` object is normal, not an error", ctx do
+      path = Path.join(ctx.tmp_dir, "settings.json")
+      File.write!(path, ~s({"model": "opus", "hooks": {}}\n))
+
+      assert {:ok, _} = Hook.install(proposal(), opts(ctx))
+      assert decoded(ctx)["hooks"]["PreToolUse"]
+    end
   end
 
   describe "settings.json is written atomically (S3 / PE-T5)" do
@@ -243,8 +274,135 @@ defmodule Faber.InstallHookTest do
     test "no tmp file is left behind", ctx do
       assert {:ok, _} = Hook.install(proposal(), opts(ctx))
 
-      refute File.exists?(Path.join(ctx.tmp_dir, "settings.json.faber.tmp")),
+      # Globbed, not a hardcoded name: the tmp suffix is random (W-3), so asserting on
+      # `settings.json.faber.tmp` would be checking for a file that can no longer exist — a test
+      # that passes because it looks in the wrong place is worse than no test.
+      assert Path.wildcard(Path.join(ctx.tmp_dir, "settings.json*.tmp")) == [],
              "the atomic write left its scratch file in the user's ~/.claude"
+    end
+
+    # W-3. `path <> ".faber.tmp"` was a FIXED name, so two writers in different OS processes (the
+    # CLI and the dashboard) shared one scratch path: B's `O_TRUNC` write lands mid-flight and A
+    # renames the truncated bytes into place, reporting `{:ok, …}`. A CORRUPT file, through a window
+    # as wide as a `write` — wider than the one the atomic rename closed.
+    @tag :tmp_dir
+    test "concurrent writers never rename each other's half-written bytes", ctx do
+      settings = Path.join(ctx.tmp_dir, "settings.json")
+
+      # Big enough that a `write` is not instantaneous — a truncation window needs something to be
+      # caught inside of.
+      padding = for i <- 1..400, into: %{}, do: {"key_#{i}", String.duplicate("x", 200)}
+      File.write!(settings, Jason.encode!(Map.put(padding, "model", "opus")))
+
+      results =
+        1..12
+        |> Task.async_stream(
+          fn i -> Hook.install(proposal(name: "w3-writer-#{i}"), opts(ctx)) end,
+          max_concurrency: 12,
+          ordered: false
+        )
+        |> Enum.map(fn {:ok, r} -> r end)
+
+      # A lost update is acceptable and documented (the RESIDUAL note): a writer inside the window
+      # has its change reverted. A CORRUPT file is not — whatever survives must be the user's
+      # settings, parseable, with their keys.
+      assert Enum.all?(results, &match?({:ok, _}, &1))
+
+      body = File.read!(settings)
+
+      assert {:ok, decoded} = Jason.decode(body),
+             "settings.json is not valid JSON: #{inspect(body)}"
+
+      assert decoded["model"] == "opus", "the user's own key did not survive concurrent installs"
+      assert map_size(decoded) >= 401
+
+      assert Path.wildcard(Path.join(ctx.tmp_dir, "settings.json*.tmp")) == [],
+             "a scratch file outlived the writers that made it"
+    end
+
+    # W-4. `rename` replaces the NAME it is given, so renaming onto a symlink replaces the link.
+    @tag :tmp_dir
+    test "a symlinked settings.json is followed, not replaced", ctx do
+      dotfiles = Path.join(ctx.tmp_dir, "dotfiles")
+      File.mkdir_p!(dotfiles)
+
+      real = Path.join(dotfiles, "settings.json")
+      File.write!(real, ~s({"model": "opus", "REAL": "config"}\n))
+
+      link = Path.join(ctx.tmp_dir, "settings.json")
+      File.ln_s!(real, link)
+
+      assert {:ok, _} = Hook.install(proposal(), opts(ctx))
+
+      # The link is still a link. Before this, it became a regular file and the dotfiles repo kept
+      # the pre-install content forever — nothing errored, and `copy_mode/2`'s `File.stat` follows
+      # the link, so even the mode looked right.
+      assert File.lstat!(link).type == :symlink,
+             "the symlink was replaced by a regular file — the dotfiles target is orphaned"
+
+      # And the write went THROUGH it: the user's real file has both their config and our pointer.
+      target = Jason.decode!(File.read!(real))
+      assert target["REAL"] == "config"
+      assert target["hooks"]["PreToolUse"]
+
+      assert Path.wildcard(Path.join([dotfiles, "settings.json*.tmp"])) == []
+    end
+
+    @tag :tmp_dir
+    test "a relative symlink resolves against the link's own directory", ctx do
+      dotfiles = Path.join(ctx.tmp_dir, "dotfiles")
+      File.mkdir_p!(dotfiles)
+      File.write!(Path.join(dotfiles, "settings.json"), ~s({"REAL": "config"}\n))
+
+      link = Path.join(ctx.tmp_dir, "settings.json")
+
+      # Relative to the LINK's dir, not the cwd — resolving against the cwd would write somewhere
+      # else entirely, or fail, depending on where mix happened to be run from.
+      File.ln_s!("dotfiles/settings.json", link)
+
+      assert {:ok, _} = Hook.install(proposal(), opts(ctx))
+
+      assert File.lstat!(link).type == :symlink
+      target = Jason.decode!(File.read!(Path.join(dotfiles, "settings.json")))
+      assert target["REAL"] == "config"
+      assert target["hooks"]["PreToolUse"]
+    end
+
+    @tag :tmp_dir
+    test "a symlink cycle is refused by the READ, before any of this", ctx do
+      path = Path.join(ctx.tmp_dir, "settings.json")
+      other = Path.join(ctx.tmp_dir, "other.json")
+      File.ln_s!(other, path)
+      File.ln_s!(path, other)
+
+      # Named for what it actually proves. `read_settings/1` runs first and the OS reports `:eloop`,
+      # so `resolve_link/2` never sees a cycle through this path — its hop bound is defence for a
+      # helper that walks user-owned paths, NOT the thing under test here. Asserting "the bound
+      # works" from this test would be asserting it from a run that never reaches the bound.
+      assert {:error, {:settings_unreadable, ^path, :eloop}} = Hook.install(proposal(), opts(ctx))
+    end
+
+    # S-3. The error paths this function grew and never covered. Correct today — but "correct" that
+    # nothing exercises is a claim, and a future `with` reorder breaks it silently.
+    @tag :tmp_dir
+    test "a failed write leaves no tmp behind and does not touch the user's file", ctx do
+      dir = Path.join(ctx.tmp_dir, "ro")
+      File.mkdir_p!(dir)
+      settings = Path.join(dir, "settings.json")
+      File.write!(settings, ~s({"model": "opus"}\n))
+
+      # Readable, not writable: `read_settings/1` succeeds and `File.write(tmp, …)` fails — the only
+      # reachable failure inside `save_settings/2`, and the one whose `else` must clean up.
+      File.chmod!(dir, 0o500)
+      on_exit(fn -> File.chmod(dir, 0o700) end)
+
+      assert {:error, :eacces} = Hook.install(proposal(), opts(ctx, settings_path: settings))
+
+      assert Path.wildcard(Path.join(dir, "*.tmp")) == [],
+             "a failed write left its scratch file in the user's ~/.claude"
+
+      assert File.read!(settings) == ~s({"model": "opus"}\n),
+             "a failed write modified the user's settings.json"
     end
   end
 
