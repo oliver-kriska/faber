@@ -98,7 +98,13 @@ defmodule Faber.Install do
       |> Keyword.put_new(:filename, Proposal.filename(p))
       # How the veto must READ these bytes. A hook is executable, so it gets no safe-section
       # exemption — see `Faber.Eval.vetoes/2`.
-      |> Keyword.put_new(:kind, p.kind)
+      #
+      # `put`, not `put_new`: the proposal's own kind is the fact, and an opts key must not be able
+      # to talk the veto out of it. A hook read as markdown gets the `##` exemption, the
+      # safe-sections carve-out and the `|` filter — the exemptions this module closed structurally,
+      # handed back by a caller that passed the wrong keyword. This module's own contract is the
+      # argument: a veto every caller must remember to honor is a suggestion.
+      |> Keyword.put(:kind, p.kind)
     )
   end
 

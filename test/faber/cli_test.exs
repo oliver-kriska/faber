@@ -669,6 +669,199 @@ defmodule Faber.CLITest do
     end
   end
 
+  # `faber install <id>` is the second path that turns a stored record into a file on disk. The
+  # dashboard's was taught to read `kind`; this one never was, so it called `install_skill/3`
+  # unconditionally and wrote a bash script to `~/.claude/skills/<name>/SKILL.md` — with no pointer,
+  # no eval gate, no confirm, and exit 0. A stored hook must install as a hook here or not at all.
+  describe "install <id> — a stored hook is a hook" do
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: tmp_dir} do
+      prev = %{
+        store: Application.get_env(:faber, :proposal_store),
+        proposals: Application.get_env(:faber, :proposals_dir),
+        hooks: Application.get_env(:faber, :hooks_dir),
+        settings: Application.get_env(:faber, :settings_path),
+        skills: Application.get_env(:faber, :skills_dir)
+      }
+
+      Application.put_env(:faber, :proposal_store, true)
+      Application.put_env(:faber, :proposals_dir, Path.join(tmp_dir, "proposals"))
+      Application.put_env(:faber, :hooks_dir, Path.join(tmp_dir, "faber-hooks"))
+      Application.put_env(:faber, :settings_path, Path.join(tmp_dir, "settings.json"))
+
+      # Pinned per-case, not left on the suite-wide default: these tests assert that a hook is NOT
+      # written as a skill, and a shared skills dir means one leaked write outlives the run and
+      # changes what a later case sees ("already installed" instead of the refusal under test).
+      Application.put_env(:faber, :skills_dir, Path.join(tmp_dir, "skills"))
+
+      on_exit(fn ->
+        Enum.each(prev, fn {k, v} -> restore_env(store_key(k), v) end)
+      end)
+
+      {:ok, adapter} = Faber.Adapter.load(Faber.adapter_dir())
+      {:ok, adapter: adapter, skills_dir: Path.join(tmp_dir, "skills")}
+    end
+
+    defp store_key(:store), do: :proposal_store
+    defp store_key(:proposals), do: :proposals_dir
+    defp store_key(:hooks), do: :hooks_dir
+    defp store_key(:settings), do: :settings_path
+    defp store_key(:skills), do: :skills_dir
+
+    defp restore_env(key, nil), do: Application.delete_env(:faber, key)
+    defp restore_env(key, value), do: Application.put_env(:faber, key, value)
+
+    @hook_script """
+    input=$(cat)
+    command=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
+    case "$command" in *"| tail"*) echo "masked exit" >&2; exit 2 ;; esac
+    exit 0
+    """
+
+    defp hook_proposal(overrides \\ []) do
+      struct!(
+        %Faber.Proposal{
+          kind: :hook,
+          name: "no-masked-gate-exit",
+          description: "Blocks piping a gate command into a filter, which masks its exit code.",
+          rationale: "The hazard produces no friction, so no skill would ever trigger on it.",
+          event: "PreToolUse",
+          matcher: "Bash",
+          script: @hook_script,
+          adapter: "faber-elixir",
+          source: %{hazard: :pipe_masks_exit, hazard_evidence: "`mix verify | tail -5; echo $?`"}
+        },
+        overrides
+      )
+    end
+
+    # Stores the record the way `store_artifact/6` does — the rendered bytes plus the format-3
+    # `kind`/`event`/`matcher` — so this drives the real restore shape, not a hand-built map.
+    defp store_hook(adapter, attrs \\ %{}) do
+      p = hook_proposal()
+
+      {:ok, record} =
+        Store.put(
+          "sess-hook",
+          Map.merge(
+            %{
+              name: p.name,
+              md: Faber.Propose.render(p, adapter),
+              kind: :hook,
+              event: p.event,
+              matcher: p.matcher,
+              eval: %{passed: true, composite: 1.0, threshold: 0.7},
+              adapter: adapter.name
+            },
+            attrs
+          )
+        )
+
+      record
+    end
+
+    defp script_path,
+      do: Path.join([Application.get_env(:faber, :hooks_dir), "no-masked-gate-exit", "hook.sh"])
+
+    test "never writes a bash script into the skills dir", %{
+      adapter: adapter,
+      skills_dir: skills_dir
+    } do
+      record = store_hook(adapter)
+      assert record.kind == :hook
+
+      capture_io(:stderr, fn ->
+        capture_io(fn ->
+          # Not merely non-zero: the exit code must be the refusal's, not a constant. `install_skill`
+          # returned 0 here while writing the wrong artifact — the false-green class this whole
+          # feature exists to detect, in the feature itself.
+          assert CLI.run(:install, id: record.id, dir: skills_dir) == 1
+        end)
+      end)
+
+      # The reproduction: a `#!/usr/bin/env bash` file under `skills/<name>/SKILL.md`.
+      refute File.exists?(Path.join([skills_dir, record.name, "SKILL.md"])),
+             "a stored hook was written into the skills dir as a SKILL.md"
+    end
+
+    test "installs the script and the pointer when confirmed", %{adapter: adapter} do
+      record = store_hook(adapter)
+
+      out = capture_io(fn -> assert CLI.run(:install, id: record.id, yes: true) == 0 end)
+
+      assert out =~ "installed →"
+      assert File.read!(script_path()) == record.md
+
+      settings =
+        Application.get_env(:faber, :settings_path) |> File.read!() |> Jason.decode!()
+
+      assert [%{"matcher" => "Bash", "hooks" => [%{"command" => command}]}] =
+               settings["hooks"]["PreToolUse"]
+
+      assert command == script_path()
+    end
+
+    # A hook auto-runs on every matching tool call. Nothing installs one unattended.
+    test "refuses without a tty and without --yes", %{adapter: adapter} do
+      record = store_hook(adapter)
+
+      err =
+        capture_io(:stderr, fn ->
+          capture_io(fn -> assert CLI.run(:install, id: record.id) == 1 end)
+        end)
+
+      assert err =~ "needs a person to confirm"
+      assert err =~ "--yes"
+      refute File.exists?(script_path())
+    end
+
+    # W2 parity with `propose --hazard --install`: a hook's dimensions are necessary conditions.
+    test "refuses a hook that did not pass the eval", %{adapter: adapter} do
+      record = store_hook(adapter, %{eval: %{passed: false, composite: 0.4, threshold: 0.7}})
+
+      err =
+        capture_io(:stderr, fn ->
+          capture_io(fn -> assert CLI.run(:install, id: record.id, yes: true) == 1 end)
+        end)
+
+      assert err =~ "did not pass the hook eval"
+      refute File.exists?(script_path())
+    end
+
+    # An unknown score is not a pass. A format-1/2 record has no eval at all, and the oldest draft
+    # on disk is the last one to get the benefit of the doubt.
+    test "refuses a pre-eval record rather than trusting it", %{adapter: adapter} do
+      record = store_hook(adapter, %{eval: %{}})
+
+      err =
+        capture_io(:stderr, fn ->
+          capture_io(fn -> assert CLI.run(:install, id: record.id, yes: true) == 1 end)
+        end)
+
+      assert err =~ "did not pass the hook eval"
+      refute File.exists?(script_path())
+    end
+
+    # A pre-format-3 hook has bytes but no stored pointer. Say that plainly — same words the
+    # dashboard uses, rather than a second message for the same fact.
+    test "a record with no stored pointer says so", %{adapter: adapter} do
+      record = store_hook(adapter, %{event: nil, matcher: nil})
+
+      err =
+        capture_io(:stderr, fn ->
+          capture_io(fn -> assert CLI.run(:install, id: record.id, yes: true) == 1 end)
+        end)
+
+      assert err =~ "drafted before Faber stored hook pointers"
+      refute File.exists?(script_path())
+    end
+
+    test "--yes parses" do
+      assert CLI.parse(["install", "abc", "--yes"]) == {:install, [id: "abc", yes: true]}
+    end
+  end
+
   describe "humanize_error/1" do
     test "names the fix, not the tuple, for a missing claude CLI" do
       msg = CLI.humanize_error({:claude_cli_unavailable, "claude"})

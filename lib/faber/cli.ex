@@ -186,7 +186,7 @@ defmodule Faber.CLI do
   def parse(["show" | rest]), do: parse_with_id(:show, rest, json: :boolean)
 
   def parse(["install" | rest]) do
-    parse_with_id(:install, rest, force: :boolean, dir: :string)
+    parse_with_id(:install, rest, force: :boolean, dir: :string, yes: :boolean)
   end
 
   def parse(["feedback" | rest]) do
@@ -505,7 +505,7 @@ defmodule Faber.CLI do
   defp do_run(:install, opts) do
     case resolve_id(opts[:id]) do
       {:ok, record} ->
-        install_skill(record.name, record.md, opts)
+        install_record(record, opts)
 
       {:error, reason} ->
         IO.puts(:stderr, "faber install failed: #{humanize_error(reason)}")
@@ -837,7 +837,7 @@ defmodule Faber.CLI do
   defp maybe_install_hook(proposal, adapter, opts, passed) do
     cond do
       opts[:install] != true -> 0
-      not passed -> refuse_hook_install(proposal.name, :failed_gate)
+      not passed -> refuse_hook_install("propose", proposal.name, :failed_gate)
       true -> confirm_then_install(proposal, adapter, opts)
     end
   end
@@ -845,7 +845,7 @@ defmodule Faber.CLI do
   defp confirm_then_install(proposal, adapter, opts) do
     case confirm_hook_install(proposal.name, opts[:yes]) do
       :ok -> do_install_hook(proposal, adapter, opts[:force])
-      {:error, reason} -> refuse_hook_install(proposal.name, reason)
+      {:error, reason} -> refuse_hook_install("propose", proposal.name, reason)
     end
   end
 
@@ -904,10 +904,10 @@ defmodule Faber.CLI do
   # `--force` does NOT override this, exactly as it does not override the write-boundary veto:
   # `--force` means "replace what is already installed". Letting it also mean "install something
   # broken" is how one flag quietly becomes the escape hatch for every gate in the path.
-  defp refuse_hook_install(name, :failed_gate) do
+  defp refuse_hook_install(cmd, name, :failed_gate) do
     IO.puts(
       :stderr,
-      "faber propose: #{name} was NOT installed — it did not pass the hook eval.\n" <>
+      "faber #{cmd}: #{name} was NOT installed — it did not pass the hook eval.\n" <>
         "A hook's dimensions are necessary conditions, not scores: one that can't run, can't see " <>
         "its input, or points at nothing is not a low-quality hook, it's a broken one — and it " <>
         "would be broken while running on every matching tool call.\n" <>
@@ -918,15 +918,15 @@ defmodule Faber.CLI do
     1
   end
 
-  defp refuse_hook_install(name, :declined) do
+  defp refuse_hook_install(_cmd, name, :declined) do
     IO.puts("#{name} was not installed.")
     0
   end
 
-  defp refuse_hook_install(name, :no_tty) do
+  defp refuse_hook_install(cmd, name, :no_tty) do
     IO.puts(
       :stderr,
-      "faber propose: #{name} was NOT installed — installing a hook needs a person to confirm it, " <>
+      "faber #{cmd}: #{name} was NOT installed — installing a hook needs a person to confirm it, " <>
         "and stdin is not a terminal.\n" <>
         "A hook auto-runs on every matching tool call, so nothing installs one unattended.\n" <>
         "Pass --yes to confirm up front (this is you taking that read on trust)."
@@ -934,6 +934,84 @@ defmodule Faber.CLI do
 
     1
   end
+
+  # ── install <id> ───────────────────────────────────────────────────────────
+  #
+  # The record's `kind` decides the artifact, and the artifact decides the posture. Reading `md` and
+  # writing a SKILL.md regardless is how a stored hook — a bash script — reached
+  # `~/.claude/skills/<name>/SKILL.md` with no pointer, no eval gate, no confirm, and exit 0.
+  #
+  # `install <id>` is the SECOND surface that turns a stored record into a file; the dashboard is the
+  # first. Both route on `kind` and share every gate, because a hook restored from the store is the
+  # same hazard whichever surface restores it.
+  defp install_record(%{kind: :hook} = record, opts), do: install_stored_hook(record, opts)
+  defp install_record(record, opts), do: install_skill(record.name, record.md, opts)
+
+  # The same gates as `propose --hazard --install`, in the same order, for the same reasons: the eval
+  # is a necessary condition, and a person reading the script is the actual boundary. The only
+  # difference is where the bytes come from — the store, not a fresh render.
+  defp install_stored_hook(record, opts) do
+    with :ok <- stored_hook_eval_gate(record),
+         :ok <- confirm_stored_hook(record, opts) do
+      install_hook_bytes(record, opts[:force])
+    else
+      {:error, reason} -> refuse_hook_install("install", record.name, reason)
+    end
+  end
+
+  # `eval.passed` must be `true`, not merely truthy and not merely present. A format-1/2 record
+  # predates the eval being stored with the draft, so it arrives with `eval: %{}` → `nil` → REFUSE.
+  # An unknown score is not a pass: the oldest draft on disk has had the least scrutiny, and is the
+  # last one that should get the benefit of the doubt. Mirrors the dashboard's `hook_eval_gate/1`.
+  defp stored_hook_eval_gate(%{eval: %{passed: true}}), do: :ok
+  defp stored_hook_eval_gate(_record), do: {:error, :failed_gate}
+
+  # Show the script, THEN ask. Unlike `propose --hazard`, nothing has printed it yet — and a confirm
+  # for bytes the person never saw is a rubber stamp, not a boundary.
+  defp confirm_stored_hook(record, opts) do
+    IO.puts("\n#{record.md}")
+    confirm_hook_install(record.name, opts[:yes])
+  end
+
+  # The stored bytes, written as given — never a re-render. The pack on disk may have been edited
+  # since this draft was scored and stored, and "no hook is written without a human seeing the
+  # script" is only true if the seen bytes are the written bytes.
+  defp install_hook_bytes(record, force) do
+    subject = {record.name, record.md, record.event, record.matcher}
+
+    case Install.Hook.install(subject, if(force, do: [force: true], else: [])) do
+      {:ok, %{script: script, settings: settings}} ->
+        IO.puts("installed → #{script}\npointed at it → #{settings}")
+        0
+
+      {:error, reason} ->
+        IO.puts(:stderr, hook_install_failure(record.name, reason))
+        1
+    end
+  end
+
+  # Same facts, same words, as the dashboard's `hook_install_error/2`.
+  defp hook_install_failure(name, {:vetoed, vetoes}) do
+    "REFUSED — #{name} was not installed:\n" <>
+      Enum.map_join(vetoes, "\n", &"  #{&1.check_type}: #{&1.evidence}") <>
+      "\n\nThis is a safety refusal, not a score. `--force` overrides an existing install, never this."
+  end
+
+  defp hook_install_failure(_name, {:hand_edited, command}) do
+    "faber: this hook's pointer in settings.json has been hand-edited since Faber wrote it:\n" <>
+      "  #{command}\n" <>
+      "Re-run with --force to replace it, or keep your edit and skip the install."
+  end
+
+  # A hook drafted before format 3 has bytes but no stored pointer, so it cannot be installed from
+  # the store at all. Say that plainly rather than failing opaquely — re-proposing rebuilds it.
+  defp hook_install_failure(name, :no_pointer) do
+    "faber install: #{name} was drafted before Faber stored hook pointers, so its event/matcher " <>
+      "aren't on disk — re-propose it to install."
+  end
+
+  defp hook_install_failure(name, reason),
+    do: "faber install: #{name} was not installed — #{humanize_error(reason)}"
 
   defp do_install_hook(proposal, adapter, force) do
     opts = [adapter: adapter] ++ if(force, do: [force: true], else: [])
@@ -2219,9 +2297,14 @@ defmodule Faber.CLI do
       faber show <id> [--json]                      Print one proposal's SKILL.md plus its
                                                     per-dimension eval breakdown and provenance
                                                     (<id> may be any unambiguous prefix)
-      faber install <id> [--force] [--dir PATH]     Install a proposal as a skill. If one is already
-                                                    installed under that name, prints a diff and
-                                                    refuses — --force replaces it
+      faber install <id> [--force] [--dir PATH] [--yes]
+                                                    Install a proposal as whatever it IS. A skill:
+                                                    if one is already installed under that name,
+                                                    prints a diff and refuses — --force replaces it.
+                                                    A hook: must have passed its eval, and prints
+                                                    the script and asks before writing it (--yes
+                                                    pre-confirms; without a tty it refuses rather
+                                                    than installing unattended)
       faber feedback [--dir PATH] [--source S] [--format F] [--db PATH] [--base DIR] [--all]
                      [--json] [--min-messages N]    The outer loop: for every Faber-installed
                                                     skill, report whether sessions since install

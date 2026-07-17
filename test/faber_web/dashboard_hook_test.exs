@@ -16,6 +16,8 @@ defmodule FaberWeb.DashboardHookTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
+  alias Faber.Proposal.Store
+
   @endpoint FaberWeb.Endpoint
 
   # See FaberWeb.DashboardLiveTest — the async scan walks real fixture transcripts.
@@ -29,7 +31,8 @@ defmodule FaberWeb.DashboardHookTest do
       hooks: Application.get_env(:faber, :hooks_dir),
       settings: Application.get_env(:faber, :settings_path),
       proposals: Application.get_env(:faber, :proposals_dir),
-      store: Application.get_env(:faber, :proposal_store)
+      store: Application.get_env(:faber, :proposal_store),
+      skills: Application.get_env(:faber, :skills_dir)
     }
 
     Application.put_env(:faber, :dashboard_scan_opts, base: "test/fixtures", min_messages: 0)
@@ -38,6 +41,11 @@ defmodule FaberWeb.DashboardHookTest do
     Application.put_env(:faber, :hooks_dir, Path.join(tmp_dir, "faber-hooks"))
     Application.put_env(:faber, :settings_path, Path.join(tmp_dir, "settings.json"))
     Application.put_env(:faber, :proposals_dir, Path.join(tmp_dir, "proposals"))
+
+    # The third write target, pinned for the same reason as the other two. `config/test.exs` points
+    # this at a suite-wide dir, so a test asserting "a hook was NOT written here" would read a
+    # neighbour's leftover and fail on someone else's write — or, worse, pass on its own.
+    Application.put_env(:faber, :skills_dir, Path.join(tmp_dir, "skills"))
 
     # `config/test.exs` disables the proposal store globally, so nothing in the suite ever exercised
     # the restore path — which is exactly how B4 shipped: `restore_proposal/1` dropping `kind` was
@@ -58,6 +66,7 @@ defmodule FaberWeb.DashboardHookTest do
   defp key(:settings), do: :settings_path
   defp key(:proposals), do: :proposals_dir
   defp key(:store), do: :proposal_store
+  defp key(:skills), do: :skills_dir
 
   defp restore(k, nil), do: Application.delete_env(:faber, k)
   defp restore(k, v), do: Application.put_env(:faber, k, v)
@@ -315,7 +324,7 @@ defmodule FaberWeb.DashboardHookTest do
 
     assert result, "the hazard fixture vanished — this test has lost its subject"
 
-    Faber.Proposal.Store.put(result, %{
+    Store.put(result, %{
       name: "no-masked-gate-exit",
       md: "#!/usr/bin/env bash\nexit 0\n",
       kind: :hook,
@@ -358,7 +367,7 @@ defmodule FaberWeb.DashboardHookTest do
       |> Faber.Scan.run()
       |> Enum.find(&(&1.hazards != []))
 
-    Faber.Proposal.Store.put(result, %{
+    Store.put(result, %{
       name: "no-masked-gate-exit",
       md: "#!/usr/bin/env bash\nexit 0\n",
       kind: :hook,
@@ -376,6 +385,48 @@ defmodule FaberWeb.DashboardHookTest do
 
     refute File.exists?(Application.get_env(:faber, :settings_path)),
            "a hook with an unknown eval result was installed"
+  end
+
+  @tag :tmp_dir
+  test "the SKILL install handler refuses a hook — the hidden button is not a gate", %{conn: conn} do
+    # The THIRD surface that turns a stored record into a file, found by auditing for a third after
+    # the CLI's was fixed. The `install_hook` handler matches `%{kind: :hook}`; its sibling `install`
+    # never grew the mirror-image check, so the only thing keeping a hook out of it is the template
+    # guard that omits the button — and `handle_event` is client-driven. A raw event (or a stale DOM)
+    # reaches it with a hook on screen: `%{name: name, md: md}` matches a hook just as well as a
+    # skill, and `md` is a bash script.
+    #
+    # It also bypasses `hook_eval_gate/1` and lands in `Install.install({name, md})`, whose `opts
+    # [:kind] || :skill` reads the script as MARKDOWN — the `##` exemption, the safe-sections
+    # carve-out, the `|` filter. Every gate at once, through a button that isn't rendered.
+    result =
+      [base: "test/fixtures", min_messages: 0]
+      |> Faber.Scan.run()
+      |> Enum.find(&(&1.hazards != []))
+
+    assert result, "the hazard fixture vanished — this test has lost its subject"
+
+    Store.put(result, %{
+      name: "no-masked-gate-exit",
+      md: "#!/usr/bin/env bash\nexit 0\n",
+      kind: :hook,
+      event: "PreToolUse",
+      matcher: "Bash",
+      adapter: "faber-elixir",
+      eval: %{composite: 1.0, passed: true, threshold: 0.9, dimensions: %{}}
+    })
+
+    {view, _detail, i} = open_hazard_session(conn)
+
+    # The button is not rendered — which is exactly why this drives the event directly.
+    html = render_click(view, "install", %{"agent" => "claude", "i" => to_string(i)})
+
+    refute File.exists?(
+             Path.join([Faber.Install.default_dir(), "no-masked-gate-exit", "SKILL.md"])
+           ),
+           "a raw install event wrote a hook's bash script into the skills dir as a SKILL.md"
+
+    assert html =~ "not a skill", "the refusal must say what was actually refused"
   end
 
   @tag :tmp_dir

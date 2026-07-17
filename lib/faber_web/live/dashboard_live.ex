@@ -297,6 +297,13 @@ defmodule FaberWeb.DashboardLive do
   # Write the shown proposal's SKILL.md into the chosen agent's world (skills dir + managed pointer).
   # Gated like Propose (a raw client can't drive it with the flag off) and only ever installs the
   # proposal currently on screen for the selected session — never a stale or mismatched one.
+  #
+  # `kind: :skill` is matched, not assumed. `%{name: _, md: _}` matches a HOOK just as well — its
+  # `md` is a bash script — and the only thing keeping one out of here was the template omitting the
+  # button, which `handle_event` never sees. A hook arriving here would skip `hook_eval_gate/1`,
+  # write to the skills dir under `SKILL.md`, and reach the veto as markdown (`Install.install/2`
+  # defaults `opts[:kind]` to `:skill`), collecting the `##` exemption on the way. Its sibling
+  # `install_hook` matches `%{kind: :hook}`; this is the mirror image it was missing.
   def handle_event("install", %{"agent" => agent, "i" => i} = params, socket) do
     proposal = socket.assigns.proposal
 
@@ -308,6 +315,7 @@ defmodule FaberWeb.DashboardLive do
     with true <- allow_install?(),
          {idx, ""} <- Integer.parse(i),
          true <- idx == socket.assigns.proposal_i,
+         :skill <- Map.get(proposal, :kind, :skill),
          %{name: name, md: md} <- proposal,
          false <- Map.has_key?(proposal, :error),
          true <- Map.has_key?(Faber.Install.agent_context_files(), agent) do
@@ -333,6 +341,17 @@ defmodule FaberWeb.DashboardLive do
            socket,
            :error,
            "Install is disabled — set `config :faber, :web_allow_install, true`."
+         )}
+
+      # Only reachable from a raw event or a stale DOM, which is exactly why it answers rather than
+      # going quiet: a refusal nobody can see is indistinguishable from a write.
+      :hook ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "#{socket.assigns.proposal.name} is a hook, not a skill — it installs with Install " <>
+             "hook, which gates on the eval and shows you the script first."
          )}
 
       _ ->
