@@ -43,7 +43,8 @@ defmodule Faber.Scan do
             max_ctx_pct: float() | nil,
             file_paths: [String.t()],
             cwd: String.t() | nil,
-            tier2: boolean()
+            tier2: boolean(),
+            hazards: [Detect.Hazard.summary()]
           }
     defstruct [
       :path,
@@ -82,7 +83,12 @@ defmodule Faber.Scan do
       # File paths the session touched (edited/read/patched) — the stack signal `Faber.Adapter`
       # matches its `file_globs` against to decide whether an adapter applies to this session.
       file_paths: [],
-      tier2: false
+      tier2: false,
+      # Frictionless hazards, one entry per class (`Faber.Detect.Hazard.summarize/1`). NOT part of
+      # the ranking and deliberately not a column beside it: a hazard says what the session *risked*,
+      # not how hard it was, so a session carrying one may legitimately rank last. Each entry names
+      # the hook that would intercept it — this is the input to `faber propose --hazard <kind>`.
+      hazards: []
     ]
   end
 
@@ -258,8 +264,14 @@ defmodule Faber.Scan do
     adapter = opts[:adapter]
     {events, parse_errors} = source.parse(handle, opts)
 
-    %{friction: f, fingerprint: fp, opportunity: op, context: ctx, tool_uses: tool_uses} =
-      Detect.analyze(events, adapter)
+    %{
+      friction: f,
+      fingerprint: fp,
+      opportunity: op,
+      context: ctx,
+      hazards: hazards,
+      tool_uses: tool_uses
+    } = Detect.analyze(events, adapter)
 
     %Result{
       path: source.label(handle),
@@ -286,7 +298,8 @@ defmodule Faber.Scan do
       parse_errors: length(parse_errors),
       max_ctx_pct: ctx.max_ctx_pct,
       file_paths: referenced_paths(tool_uses),
-      tier2: tier2?(f, op, ctx)
+      tier2: tier2?(f, op, ctx),
+      hazards: Detect.Hazard.summarize(hazards)
     }
   end
 

@@ -138,6 +138,24 @@ defmodule Faber.ScanTest do
       assert %Result{} = result
       assert result.message_count == 0
       assert result.parse_errors == 0
+      assert result.hazards == []
+    end
+
+    test "surfaces frictionless hazards, deduped by class, without touching the ranking" do
+      # The labeled fixture carries the lived `mix verify | tail -5; echo $?` false green. It is
+      # selectable for a hook proposal from here (`faber propose --hazard pipe_masks_exit`) while
+      # contributing nothing to `friction`/`raw` — the two halves of the Phase B contract.
+      labeled = Path.expand("../fixtures_labeled/dogfood_session.jsonl", __DIR__)
+
+      result = Scan.score_session(labeled, cache: false)
+
+      assert [%{kind: :pipe_masks_exit, count: 1} = hazard] = result.hazards
+      assert hazard.suggested_event == "PreToolUse"
+      assert hazard.evidence =~ "mix verify | tail -5; echo $?"
+
+      # Unchanged by the hazard's presence — the numbers labeled_session_test pins.
+      assert result.raw == 6.785714285714286
+      assert result.dominant_signal == :user_corrections
     end
   end
 end

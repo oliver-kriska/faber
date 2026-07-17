@@ -10,6 +10,12 @@ defmodule Faber.Detect do
     * `Faber.Detect.Fingerprint` — session-type classification + tool profile
     * `Faber.Detect.Opportunity` — missed-automation scoring
     * `Faber.Detect.Context` — context-window pressure (peak prompt fill %)
+    * `Faber.Detect.Hazard` — frictionless hazards (tool *inputs*, not outcomes)
+
+  `Hazard` is the odd one out and deliberately so: the other four measure how hard a session
+  *was*, and it measures what a session *risked* — the class of thing that goes wrong silently
+  and therefore produces no friction at all. It is reported alongside the score, never inside it
+  (see the module doc).
 
   Detection is agent-level (it reads normalized transcript shapes), not stack-specific; an
   adapter's `detect/` signatures layer **on top** of this baseline. The adapter-overridable
@@ -24,6 +30,7 @@ defmodule Faber.Detect do
   alias Faber.Detect.Context
   alias Faber.Detect.Fingerprint
   alias Faber.Detect.Friction
+  alias Faber.Detect.Hazard
   alias Faber.Detect.Opportunity
 
   # ── adapter-overridable detection vocab (contract §4.1) ─────────────────────
@@ -58,22 +65,29 @@ defmodule Faber.Detect do
   @type fingerprint :: Fingerprint.fingerprint()
   @type opportunity :: Opportunity.opportunity()
   @type context :: Context.context()
+  @type hazard :: Hazard.hazard()
 
   @type analysis :: %{
           friction: friction(),
           fingerprint: fingerprint(),
           opportunity: opportunity(),
           context: context(),
+          hazards: [hazard()],
           tool_uses: [map()]
         }
 
   @doc """
-  Run all four detection domains over a session's events in one pass.
+  Run all detection domains over a session's events in one pass.
 
   The session's `tool_uses` and Bash commands are extracted ONCE and shared across the
   domains (each per-domain entry point would otherwise rebuild them from the events). The
   extracted `tool_uses` are returned so callers (`Faber.Scan.score_session/2`) can derive
   further per-tool data without another traversal.
+
+  `hazards` is a **sibling** of `friction`, not a component of it: it does not enter `signals`
+  and contributes nothing to `raw`. A session with zero friction and one hazard still reports
+  that hazard — which is the whole point, since the hazard class this detects is the one that
+  produces no friction (see `Faber.Detect.Hazard`).
   """
   @spec analyze(Enumerable.t(), Adapter.t() | nil) :: analysis()
   def analyze(events, adapter \\ nil) do
@@ -86,6 +100,7 @@ defmodule Faber.Detect do
       fingerprint: Fingerprint.fingerprint(events, adapter, tool_uses, bash_cmds),
       opportunity: Opportunity.opportunity(events, adapter, tool_uses, bash_cmds),
       context: Context.context(events),
+      hazards: Hazard.hazards(events, tool_uses),
       tool_uses: tool_uses
     }
   end
@@ -136,6 +151,13 @@ defmodule Faber.Detect do
   `nil` when there's no usage data or the window is unknown. See `Faber.Detect.Context`.
   """
   defdelegate context(events), to: Context
+
+  @doc """
+  Frictionless hazards: dangerous tool *inputs* a session ran without struggling over — the class
+  of thing that fails silently and so scores zero friction. Independent of the friction score by
+  construction. See `Faber.Detect.Hazard` for what it does and does not see.
+  """
+  defdelegate hazards(events), to: Hazard
 
   # ── shared intermediates + vocab accessors (used by the domain modules) ─────
 

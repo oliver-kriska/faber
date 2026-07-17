@@ -33,7 +33,7 @@ scorer against this file's `raw`.
 
 | # | What actually happened | Detected? | Signal | Why |
 |---|---|---|---|---|
-| 1 | `mix verify \| tail -5; echo $?` → **false green**. Reported pass; verify really exited 8. | **No** | — | The pipeline returns `tail`'s status, so Bash exits 0 → `is_error: false`. No retry (the agent believed it), no correction (Oliver didn't catch it). |
+| 1 | `mix verify \| tail -5; echo $?` → **false green**. Reported pass; verify really exited 8. | **No** (friction) / **Yes** (hazard) | `Hazard :pipe_masks_exit` | The pipeline returns `tail`'s status, so Bash exits 0 → `is_error: false`. No retry (the agent believed it), no correction (Oliver didn't catch it). **No friction signal will ever see this** — that is why `Faber.Detect.Hazard` reads tool *inputs* instead of outcomes. |
 | 2 | `@attribute` used before definition — the **same mistake twice**, two files. | **No** | `retry_loops` = 0 | `count_retry_loops/2` needs ≥3 **consecutive** Bash calls with the **same normalized command**. An edit and a `mix format` sit between the hits. |
 | 3 | Wrong verb (`/phx:full` on an existing plan), `--codex` misuse. | **Partially** | `user_corrections` = 2 | Counts *that* Oliver pushed back, not *what about*. A counter, not a classifier. |
 | 4 | One context compaction. | **Yes** | `context_compactions` = 1 | The only row the detector sees cleanly — and it means "this session was long". |
@@ -47,6 +47,15 @@ raw: 6.785714285714286   score: ~1.0 (saturated)   dominant: user_corrections
 ```
 
 ## Three findings this fixture produced
+
+**0. Row 1 is now detected — by a second detector, not by the score.**
+`Faber.Detect.Hazard` (2026-07-17) sees the false green as a `:pipe_masks_exit` **hazard**, and
+`Faber.Scan.Result.hazards` carries it. Read the table's row 1 precisely: the friction score still
+scores this session's lie at **zero on all six signals**, and the three findings below all still
+hold unchanged. The hazard detector does not fix them — it sidesteps them, by reading what the
+session was *about to run* rather than how badly it went. It sees **one** class of silent success
+(`Hazard.known_kinds/0` is the honest list), not silent successes in general.
+Characterization: `test/faber/detect/hazard_test.exs`.
 
 **1. The false green doesn't merely evade the score — it *dilutes* it.**
 The plan this came from recorded "contributes 0 to all six signals". That is right about the five
