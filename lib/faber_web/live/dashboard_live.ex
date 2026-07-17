@@ -250,7 +250,8 @@ defmodule FaberWeb.DashboardLive do
          {idx, ""} <- Integer.parse(i),
          true <- idx == socket.assigns.proposal_i,
          %{kind: :hook} <- proposal,
-         false <- Map.has_key?(proposal, :error) do
+         false <- Map.has_key?(proposal, :error),
+         :ok <- hook_eval_gate(proposal) do
       case do_install_hook(proposal, force) do
         {:ok, msg} ->
           {:noreply,
@@ -269,6 +270,9 @@ defmodule FaberWeb.DashboardLive do
            :error,
            "Install is disabled — set `config :faber, :web_allow_install, true`."
          )}
+
+      {:error, msg} ->
+        {:noreply, put_flash(socket, :error, msg)}
 
       _ ->
         {:noreply, socket}
@@ -529,6 +533,31 @@ defmodule FaberWeb.DashboardLive do
         %{error: humanize_error(reason)}
     end
   end
+
+  # W2 — the hook twin of `Faber.CLI`'s `:failed_gate` refusal, and it must stay a twin: a surface
+  # that quietly disagrees with the CLI about what is safe to write is exactly the drift the two
+  # test suites mirror each other to catch. The rationale for gating hooks but not skills lives on
+  # `Faber.CLI.refuse_hook_install/2` — in one sentence: a hook's eval dimensions are necessary
+  # conditions ("a hook that can't run, can't see its input, or points nowhere isn't a mediocre
+  # hook, it's not a hook"), and a broken hook is broken while auto-executing.
+  #
+  # `passed` matches on `true`, not on truthiness: a restored format-1/2 record has no eval and
+  # arrives as `nil`, and "we don't know whether this passed" must refuse, not install.
+  defp hook_eval_gate(%{passed: true}), do: :ok
+
+  defp hook_eval_gate(proposal) do
+    {:error,
+     "#{proposal.name} was NOT installed — it did not pass the hook eval" <>
+       score_suffix(proposal) <>
+       ". A hook's dimensions are necessary conditions, not scores: one that can't run, can't see " <>
+       "its input, or points at nothing is broken — and it would be broken while running on every " <>
+       "matching tool call."}
+  end
+
+  defp score_suffix(%{composite: c, threshold: t}) when is_number(c) and is_number(t),
+    do: " (#{Float.round(c * 1.0, 2)} < #{t})"
+
+  defp score_suffix(_proposal), do: " (this draft predates the eval being stored with it)"
 
   # Write the hook: script + provenance marker + one settings.json pointer, via the shared installer
   # (which re-runs the safety veto on the exact bytes — a passing score is not permission to write).
@@ -1528,34 +1557,41 @@ defmodule FaberWeb.DashboardLive do
           into an agent's world and the menu asks which; a hook is a Claude Code mechanism written to
           settings.json, so there is nothing to ask. --%>
     <div :if={!@proposal[:error] and @proposal[:kind] == :hook} class="proposal-card">
-      <div class="proposal-head">
-        <div class="proposal-meta">
-          <span class="proposal-name">{@proposal.name}</span>
-          <span class="badge kind-hook">hook</span>
-          <span class={"badge " <> if(@proposal.passed, do: "pass", else: "fail")}>
-            {verdict(@proposal)}
-          </span>
-          <span class="composite">composite {fmt(@proposal.composite)}</span>
-        </div>
-        <div class="proposal-buttons">
-          <button class="ghost copy-btn" type="button" data-copy={"#skill-#{@row}"}>
-            Copy hook
-          </button>
-          <button
-            :if={@allow_install}
-            class="ghost install-btn"
-            type="button"
-            phx-click="install_hook"
-            phx-value-i={@row}
-            phx-value-force={@already && "true"}
-            data-confirm={hook_install_confirm(@already, @proposal.name)}
-          >
-            {if @already, do: "Reinstall hook", else: "Install hook"}
-          </button>
-        </div>
+      <div class="proposal-meta hook-meta">
+        <span class="proposal-name">{@proposal.name}</span>
+        <span class="badge kind-hook">hook</span>
+        <span class={"badge " <> if(@proposal.passed, do: "pass", else: "fail")}>
+          {verdict(@proposal)}
+        </span>
+        <span class="composite">composite {fmt(@proposal.composite)}</span>
+      </div>
+      <%!-- The script comes BEFORE the buttons, and that ordering is the feature — not a layout
+            preference. Faber's posture is "show the bytes, THEN confirm": the safety veto is a
+            four-regex blocklist that 7 of 8 known bypass vectors walk past, so the thing that
+            actually catches a bad hook is a person reading ~15 lines of bash. A confirm answered
+            above the script it is about is a rubber stamp.
+
+            It used to render after `.proposal-head`, so Install sat between the reader and the
+            thing they were approving. The `<pre>` was always on the page — this is not a second
+            display, it is the same one, in the order the claim requires. --%>
+      <pre id={"skill-#{@row}"} class="skill" title="Click to select all, or use Copy hook"><code>{@proposal.md}</code></pre>
+      <div class="proposal-buttons hook-buttons">
+        <button class="ghost copy-btn" type="button" data-copy={"#skill-#{@row}"}>
+          Copy hook
+        </button>
+        <button
+          :if={@allow_install}
+          class="ghost install-btn"
+          type="button"
+          phx-click="install_hook"
+          phx-value-i={@row}
+          phx-value-force={@already && "true"}
+          data-confirm={hook_install_confirm(@already, @proposal.name)}
+        >
+          {if @already, do: "Reinstall hook", else: "Install hook"}
+        </button>
       </div>
       <p :if={@installed} class="install-result">✓ {@installed.msg}</p>
-      <pre id={"skill-#{@row}"} class="skill" title="Click to select all, or use Copy hook"><code>{@proposal.md}</code></pre>
     </div>
     <div :if={!@proposal[:error] and @proposal[:kind] != :hook} class="proposal-card">
       <div class="proposal-head">

@@ -1,8 +1,25 @@
 defmodule Faber.MCP.Tools.ProposeHook do
   @moduledoc """
-  Propose a **hook** for one mined frictionless hazard, gate it through the hook eval, and
-  optionally install it. The hazard sibling of `Faber.MCP.Tools.ProposeSkill`, and opt-in under the
-  same `:mcp_allow_propose` flag for the same reason: it calls an LLM and spends tokens.
+  Propose a **hook** for one mined frictionless hazard, gate it through the hook eval, and return
+  the script. The hazard sibling of `Faber.MCP.Tools.ProposeSkill`, and opt-in under the same
+  `:mcp_allow_propose` flag for the same reason: it calls an LLM and spends tokens.
+
+  ## This tool does not install (decided 2026-07-17)
+
+  It returns the rendered script; a human installs it with `faber propose --hazard --install` or
+  from the dashboard. It had an `install: true` and it was removed, deliberately.
+
+  Faber's install posture is that **the human is the boundary**: no hook is written without a person
+  reading the script and confirming it. That is not a preference dressed up as a rule — the safety
+  veto is a blocklist of four regexes, and 7 of 8 hand-written bypass vectors walk straight past it
+  (`rm -fr /`, `nc -e /bin/sh`, `curl -d @~/.ssh/id_rsa`, base64-pipe-sh, …). A person reading ~15
+  lines of bash catches all of them. The veto is a backstop, not the boundary.
+
+  An MCP call has no human in it. The agent calling this tool is the same kind of thing that WROTE
+  the script, so "the model approves its own script" is not a review. A surface with nobody to show
+  the script to therefore does not get to install: the posture would have no subject, and keeping
+  `install: true` here would mean the veto is the only thing standing between an LLM-authored shell
+  script and `chmod 0755` + auto-execution on every matching Bash call.
 
   ## Why a separate tool rather than a `kind` param on `faber_propose_skill`
 
@@ -26,8 +43,16 @@ defmodule Faber.MCP.Tools.ProposeHook do
   use Anubis.Server.Component, type: :tool
 
   alias Anubis.Server.Response
-  alias Faber.{Adapter, Eval, Install, Propose, Scan}
+  alias Faber.{Adapter, Eval, Propose, Scan}
   alias Faber.Detect.Hazard
+
+  # This tool never installs; see the moduledoc. A constant rather than a dropped key: a model
+  # reading this payload must be told, not left to infer from an absence.
+  @never_installs "not installed — faber_propose_hook never installs. A hook auto-executes on " <>
+                    "every matching tool call, and Faber's posture is that a human reads the " <>
+                    "script and confirms before that happens. Install it with " <>
+                    "`faber propose --hazard <kind> --install` or from the dashboard, where " <>
+                    "there is someone to show it to."
 
   schema do
     field(:hazard, :string,
@@ -35,13 +60,6 @@ defmodule Faber.MCP.Tools.ProposeHook do
         "Which hazard class to write a hook for. Today: 'pipe_masks_exit' (a gate command piped " <>
           "into a filter, so the shell reports the filter's exit code and the gate can fail " <>
           "while the pipeline reports success). Default 'pipe_masks_exit'."
-    )
-
-    field(:install, :boolean,
-      description:
-        "If true, install the hook — but only when it PASSES the eval gate: the script into the " <>
-          "Faber hooks dir, plus one pointer in settings.json. Default false (propose + score " <>
-          "only; nothing is written)."
     )
 
     field(:force, :boolean,
@@ -86,8 +104,9 @@ defmodule Faber.MCP.Tools.ProposeHook do
         threshold: eval.threshold,
         passed: eval.passed,
         dimensions: dimension_scores(eval.dimensions),
-        installed:
-          maybe_install(proposal, adapter, params[:install], params[:force], eval.passed),
+        # Not an install outcome — this tool has none. Named `installed` and answered honestly so
+        # a model reading the payload cannot read an absent key as "it installed".
+        installed: @never_installs,
         script: Propose.render(proposal, adapter)
       }
 
@@ -129,43 +148,6 @@ defmodule Faber.MCP.Tools.ProposeHook do
     case Propose.propose_hook(result, hazard, adapter, opts) do
       {:ok, proposal} -> {:ok, proposal}
       {:error, reason} -> {:error, {:propose, reason}}
-    end
-  end
-
-  # Install ONLY on an explicit request AND a passing gate. Takes the two flags as plain values
-  # rather than guarding on `params.install`: an omitted field makes that guard raise, a raising
-  # guard just doesn't match, and the clause silently falls through to the one that INSTALLS — a
-  # propose-only call writing to disk, from a guard that reads like it prevents exactly that.
-  #
-  # The veto below is not a duplicate of the eval gate: `Install.Hook.install/2` re-checks the
-  # exact bytes at the write boundary, and a passing score is not permission to write a dangerous
-  # script.
-  defp maybe_install(_proposal, _adapter, install, _force, _passed) when install != true,
-    do: false
-
-  defp maybe_install(_proposal, _adapter, _install, _force, false),
-    do: "skipped: did not pass the eval gate"
-
-  defp maybe_install(proposal, adapter, _install, force, true) do
-    opts = [adapter: adapter] ++ if(force, do: [force: true], else: [])
-
-    case Install.Hook.install(proposal, opts) do
-      {:ok, %{script: script, settings: settings}} ->
-        %{script: script, settings: settings}
-
-      # The same refusal, in the same words, as the CLI and the dashboard: a safety veto is not an
-      # overwrite conflict, and `force` must not read like the fix for it.
-      {:error, {:vetoed, vetoes}} ->
-        "REFUSED — not installed: " <>
-          Enum.map_join(vetoes, "; ", &"#{&1.check_type}: #{&1.evidence}") <>
-          ". This is a safety refusal, not a score. `force` overrides an existing install, never this."
-
-      {:error, {:hand_edited, command}} ->
-        "not installed: this hook's pointer in settings.json has been hand-edited since Faber " <>
-          "wrote it (#{command}). Pass force: true to replace it, or keep your edit."
-
-      {:error, reason} ->
-        "install failed: #{inspect(reason)}"
     end
   end
 

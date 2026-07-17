@@ -89,8 +89,9 @@ defmodule Faber.MCP.Tools.ProposeHookTest do
       # The artifact is a script, not a document.
       assert reply["script"] =~ "#!/usr/bin/env bash"
 
-      # No install requested → nothing written.
-      assert reply["installed"] == false
+      # Nothing written — and `installed` says why rather than being a bare `false`, which a model
+      # could read as "this call didn't install" instead of "this tool never does".
+      assert reply["installed"] =~ "never installs"
     end
 
     @tag :tmp_dir
@@ -100,21 +101,28 @@ defmodule Faber.MCP.Tools.ProposeHookTest do
     end
 
     @tag :tmp_dir
-    test "install: true writes the script AND the pointer", ctx do
+    test "NEVER installs — not even when asked, and it says so", ctx do
+      # The decided posture (2026-07-17): the human is the boundary, so a surface with no human to
+      # show the script to does not get to install. This tool had `install: true` and it was
+      # removed. The veto is a four-regex blocklist that 7 of 8 known vectors walk past, so leaving
+      # an unattended install here would have made that blocklist the only thing between an
+      # LLM-authored shell script and `chmod 0755` + auto-execution on every matching Bash call.
+      #
+      # `install: true` is passed anyway: an unknown field must not resurrect the behaviour, and a
+      # caller (or an older agent) still sending it must not silently get a write.
       reply = ok_reply(ProposeHook.execute(%{hazard: "pipe_masks_exit", install: true}, frame()))
 
-      if reply["passed"] do
-        assert %{"script" => script, "settings" => settings} = reply["installed"]
-        assert File.exists?(script)
-        # Provenance, like every Faber-installed artifact.
-        assert script |> Path.dirname() |> Path.join(".faber.json") |> File.exists?()
+      assert reply["script"] =~ "#!/usr/bin/env bash", "the script must still be RETURNED"
 
-        assert [%{"hooks" => [%{"command" => ^script}]}] =
-                 settings |> File.read!() |> Jason.decode!() |> get_in(["hooks", "PreToolUse"])
-      else
-        assert reply["installed"] =~ "skipped"
-        refute File.exists?(Path.join(ctx.tmp_dir, "settings.json"))
-      end
+      # Told, not left to infer from an absent key.
+      assert reply["installed"] =~ "never installs"
+      assert reply["installed"] =~ "faber propose"
+
+      refute File.exists?(Path.join(ctx.tmp_dir, "settings.json")),
+             "faber_propose_hook wrote a settings.json pointer"
+
+      assert ctx.tmp_dir |> Path.join("faber-hooks") |> File.exists?() |> Kernel.!(),
+             "faber_propose_hook wrote a hook script"
     end
 
     @tag :tmp_dir

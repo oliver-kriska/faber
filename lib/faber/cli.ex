@@ -115,6 +115,7 @@ defmodule Faber.CLI do
       hazard: :string,
       cluster_threshold: :float,
       install: :boolean,
+      yes: :boolean,
       force: :boolean,
       trigger: :boolean,
       dry_run: :boolean,
@@ -742,8 +743,12 @@ defmodule Faber.CLI do
       # they keep.
       record = store_artifact(result, proposal, eval, adapter, :single)
       IO.puts(render_proposal(proposal, eval, adapter) <> render_artifact(record))
+
+      # The same W1 bug, PRE-EXISTING on the skill path — the hook path replicated it rather than
+      # inventing it. Fixed in the same commit deliberately: it is one bug wearing two hats, and
+      # leaving the twin would mean `faber propose --install` reports honestly for a hook and lies
+      # for a skill, which is worse than either behaviour applied consistently.
       maybe_install(proposal, adapter, opts[:install])
-      0
     else
       {:dry_run, report} ->
         IO.puts(report)
@@ -777,8 +782,14 @@ defmodule Faber.CLI do
          {:ok, eval} <- Eval.score(proposal, adapter: adapter) do
       record = store_artifact(result, proposal, eval, adapter, :single)
       IO.puts(render_proposal(proposal, eval, adapter) <> render_artifact(record))
-      maybe_install_hook(proposal, adapter, opts[:install], opts[:force])
-      0
+
+      # W1 — the exit code must be the INSTALL's, not a constant. This returned a bare `0`, so a
+      # vetoed hook, a hand-edited pointer, an unreadable settings.json and a declined confirm all
+      # reported success to whatever called it. `--install` that silently didn't is precisely the
+      # false-green this whole feature exists to detect, in the feature itself.
+      #
+      # Flagged independently by elixir-reviewer AND codex → HIGH CONFIDENCE.
+      maybe_install_hook(proposal, adapter, opts, eval.passed)
     else
       {:dry_run, report} ->
         IO.puts(report)
@@ -822,10 +833,109 @@ defmodule Faber.CLI do
     Propose.propose_hook(result, hazard, adapter)
   end
 
-  defp maybe_install_hook(_proposal, _adapter, install, _force) when install in [nil, false],
-    do: :ok
+  # `0`, not `:ok` — see `maybe_install/3`. This value is the command's exit code.
+  defp maybe_install_hook(proposal, adapter, opts, passed) do
+    cond do
+      opts[:install] != true -> 0
+      not passed -> refuse_hook_install(proposal.name, :failed_gate)
+      true -> confirm_then_install(proposal, adapter, opts)
+    end
+  end
 
-  defp maybe_install_hook(proposal, adapter, true, force) do
+  defp confirm_then_install(proposal, adapter, opts) do
+    case confirm_hook_install(proposal.name, opts[:yes]) do
+      :ok -> do_install_hook(proposal, adapter, opts[:force])
+      {:error, reason} -> refuse_hook_install(proposal.name, reason)
+    end
+  end
+
+  # The last gate before an LLM-authored shell script is written, chmod 0755, and pointed at from
+  # settings.json to auto-run on every matching tool call.
+  #
+  # The script is already on screen — `render_proposal/3` printed the whole thing — so this asks
+  # rather than re-printing it. That is the posture: the veto is a four-regex blocklist that 7 of 8
+  # hand-written bypass vectors walk past, and the thing that actually catches them is a person
+  # reading ~15 lines of bash. This is where that person gets to say no.
+  #
+  # Three cases, and the third is the one worth arguing about:
+  #
+  #   * `--yes` — pre-authorized. The scripting escape hatch, and (named honestly in `--help`) the
+  #     obvious way to hand the whole guarantee back.
+  #   * a tty — ask.
+  #   * NOT a tty and no `--yes` — REFUSE. Not "prompt anyway" (there is nobody to answer, so it
+  #     would hang a pipeline forever), and not "install anyway" (that is the unattended write this
+  #     whole posture exists to prevent — the same reason `faber_propose_hook` no longer installs).
+  #     A script that wants this must say `--yes`, which is one word and entirely explicit.
+  defp confirm_hook_install(_name, true), do: :ok
+
+  defp confirm_hook_install(name, _yes) do
+    if tty?() do
+      prompt =
+        "\nThis writes the script above to disk, chmod 0755, and points settings.json at it so " <>
+          "Claude Code runs it on every matching tool call.\nInstall #{name}? [y/N] "
+
+      case prompt |> IO.gets() |> to_string() |> String.trim() |> String.downcase() do
+        answer when answer in ["y", "yes"] -> :ok
+        _ -> {:error, :declined}
+      end
+    else
+      {:error, :no_tty}
+    end
+  end
+
+  # `:io.columns/0` answers `{:error, :enotsup}` for a non-tty — the same probe `session_width/0`
+  # uses. NOT `IO.ANSI.enabled?`, which is read once at VM boot and pinned off by the test helper.
+  defp tty?, do: match?({:ok, _}, :io.columns())
+
+  # W2, decided per-kind. A HOOK's install is gated on `eval.passed`; a SKILL's is not. That is not
+  # an inconsistency left lying around — it is the reason `@hook_eval` has its own dimensions at all:
+  #
+  #   * A skill's dimensions are QUALITIES — specificity, action density, Iron Laws. A skill that
+  #     scores badly is a mediocre document sitting in a directory. It does nothing until an agent
+  #     chooses to read it, and a human who dislikes it can ignore it. Averaging is meaningful there,
+  #     and so is shipping a 0.6.
+  #   * A hook's dimensions are NECESSARY CONDITIONS — `Faber.Eval.Native`'s own words: "a hook that
+  #     can't run, can't see its input, or points nowhere isn't a mediocre hook, it's not a hook."
+  #     A failing hook is BROKEN, and it is broken *while auto-executing on every matching tool
+  #     call*: `hook_reads_stdin` failing means it fires blind (so it blocks everything or nothing),
+  #     `hook_pointer` failing means it silently never runs, `safety` failing means it is dangerous.
+  #     None of those is a score to weigh against a user's judgement — there is nothing to trade off.
+  #
+  # `--force` does NOT override this, exactly as it does not override the write-boundary veto:
+  # `--force` means "replace what is already installed". Letting it also mean "install something
+  # broken" is how one flag quietly becomes the escape hatch for every gate in the path.
+  defp refuse_hook_install(name, :failed_gate) do
+    IO.puts(
+      :stderr,
+      "faber propose: #{name} was NOT installed — it did not pass the hook eval.\n" <>
+        "A hook's dimensions are necessary conditions, not scores: one that can't run, can't see " <>
+        "its input, or points at nothing is not a low-quality hook, it's a broken one — and it " <>
+        "would be broken while running on every matching tool call.\n" <>
+        "The score above says which dimension failed. --force does not override this (it " <>
+        "overrides an existing install, never a refusal)."
+    )
+
+    1
+  end
+
+  defp refuse_hook_install(name, :declined) do
+    IO.puts("#{name} was not installed.")
+    0
+  end
+
+  defp refuse_hook_install(name, :no_tty) do
+    IO.puts(
+      :stderr,
+      "faber propose: #{name} was NOT installed — installing a hook needs a person to confirm it, " <>
+        "and stdin is not a terminal.\n" <>
+        "A hook auto-runs on every matching tool call, so nothing installs one unattended.\n" <>
+        "Pass --yes to confirm up front (this is you taking that read on trust)."
+    )
+
+    1
+  end
+
+  defp do_install_hook(proposal, adapter, force) do
     opts = [adapter: adapter] ++ if(force, do: [force: true], else: [])
 
     case Install.Hook.install(proposal, opts) do
@@ -1347,15 +1457,19 @@ defmodule Faber.CLI do
     """
   end
 
-  defp maybe_install(_proposal, _adapter, install) when install in [nil, false], do: :ok
+  # `0`, not `:ok`: this IS the command's exit code now (W1). "No install was asked for" is a
+  # success — nothing was meant to happen and nothing did.
+  defp maybe_install(_proposal, _adapter, install) when install in [nil, false], do: 0
 
   defp maybe_install(proposal, adapter, true) do
     # `propose --install` and `install <id>` are the same operation on the same bytes — the rendered
     # SKILL.md — so they go through one function. Two paths would mean the diff-first guard applies
     # to one and not the other, which is exactly the kind of drift that makes a blind overwrite
     # possible again.
-    _ = install_skill(proposal.name, Propose.render_skill_md(proposal, adapter), [])
-    :ok
+    #
+    # `install_skill/3` has always returned a real 0/1; the status was simply thrown away here (the
+    # `_ =` was load-bearing in the wrong direction). That is W1 on the skill path.
+    install_skill(proposal.name, Propose.render_skill_md(proposal, adapter), [])
   end
 
   # Never a blind overwrite. An existing skill under the same name may be hand-edited, or may be a
@@ -1478,9 +1592,21 @@ defmodule Faber.CLI do
   # a lost artifact, never a failed command. Refusing to print output the user has already paid for
   # because we could not also file it would destroy the very thing this exists to protect.
   defp store_artifact(key_or_result, proposal, eval, adapter, outcome, source_sessions \\ nil) do
+    # `render/2`, not `render_skill_md/2`: this function is kind-generic and `propose --hazard`
+    # sends hooks through it. (The old name still rendered a hook correctly — it delegates — but it
+    # read like this store only ever held skills, which is how the `kind` below got missed.)
+    #
+    # `kind`/`event`/`matcher` are as load-bearing here as in the dashboard's writer, and for the
+    # same reason: without them a stored hook is indistinguishable from a skill, and the dashboard
+    # restores it as a skill card whose Install writes a bash script into `~/.claude/skills`. This
+    # writer defaulted to `:skill` — worse than absent, because an explicit "skill" defeats the
+    # byte-sniff that carries pre-format-3 records forward. Two writers, one record shape.
     attrs = %{
       name: proposal.name,
-      md: Propose.render_skill_md(proposal, adapter),
+      md: Propose.render(proposal, adapter),
+      kind: proposal.kind,
+      event: proposal.event,
+      matcher: proposal.matcher,
       eval: eval || %{},
       adapter: adapter.name,
       outcome: outcome,
@@ -2031,7 +2157,7 @@ defmodule Faber.CLI do
                                                      --json: raw values + the full signal vector;
                                                      --min-messages: skip shorter sessions)
       faber propose [--rank N | --top N] [--hazard KIND] [--cluster-threshold F] [--install]
-                    [--force] [--trigger]
+                    [--yes] [--force] [--trigger]
                     [--dry-run] [--source S] [--format F] [--db PATH] [--base DIR] [--all]
                     [--min-messages N]              Draft + eval a skill from your friction
                                                     (--hazard KIND: draft a HOOK instead, for a
@@ -2042,6 +2168,18 @@ defmodule Faber.CLI do
                                                      so it combines with neither --rank nor --top.
                                                      `faber scan --json` lists the hazards found
                                                      per session; today: pipe_masks_exit;
+                                                     --install on a HOOK asks you to confirm the
+                                                     script first: it auto-runs on every matching
+                                                     tool call, and the safety veto is a backstop,
+                                                     not a review — you reading it is the check.
+                                                     --yes skips that confirm, for scripts and CI.
+                                                     It is also the one way to reinstate exactly the
+                                                     risk the confirm removes: with --yes, an
+                                                     LLM-written shell script is installed and armed
+                                                     with nobody having read it. Without a terminal
+                                                     (a pipe, CI) --install REFUSES rather than
+                                                     prompting or installing blind; --yes is how you
+                                                     say that is what you meant;
                                                      --top N: draft the top-N sessions, cluster
                                                      near-duplicates and LLM-merge each cluster —
                                                      every merge must pass the eval gate or the

@@ -230,6 +230,142 @@ defmodule FaberWeb.DashboardHookTest do
   end
 
   @tag :tmp_dir
+  test "the script is rendered BEFORE the Install button, not after it", %{conn: conn} do
+    # PC-T3. The review claimed the dashboard "never shows the script" and that was wrong — the
+    # `<pre>` was always there. But the plan's correction was ALSO wrong in the other direction: it
+    # recorded the script as rendering *above* the Install button, and it did not. The button came
+    # first, so the confirm could be answered before the reader ever reached the bytes.
+    #
+    # Ordering IS the posture. "Show the script, then confirm" is the whole reason the veto is
+    # allowed to be a backstop; a confirm answered above its subject is a rubber stamp. Asserted on
+    # DOM order because that is the claim — not on any visual property, which this test cannot see.
+    {view, _detail, i} = open_hazard_session(conn)
+
+    card =
+      view
+      |> render_click("propose_hook", %{"i" => to_string(i), "kind" => "pipe_masks_exit"})
+      |> then(fn _ -> render_async(view, @async_timeout) end)
+
+    script_at = :binary.match(card, "#!/usr/bin/env bash") |> elem(0)
+    install_at = :binary.match(card, ~s(phx-click="install_hook")) |> elem(0)
+
+    assert script_at < install_at,
+           "the Install button precedes the script it installs — the confirm would be answered " <>
+             "before the reader reaches the bytes"
+  end
+
+  @tag :tmp_dir
+  test "install_hook is refused server-side when the flag is off — the hidden button is not a gate",
+       %{conn: conn} do
+    # S3, mirroring the `propose_hook` test above. `@allow_install` only hides the BUTTON; a raw
+    # client event does not care about markup. This is the one that matters more of the two: propose
+    # spends tokens, install writes an auto-executing script to disk.
+    {view, _detail, i} = open_hazard_session(conn)
+
+    view
+    |> render_click("propose_hook", %{"i" => to_string(i), "kind" => "pipe_masks_exit"})
+    |> then(fn _ -> render_async(view, @async_timeout) end)
+
+    Application.put_env(:faber, :web_allow_install, false)
+
+    html = render_click(view, "install_hook", %{"i" => to_string(i)})
+
+    assert html =~ "web_allow_install"
+
+    refute File.exists?(
+             Path.join([
+               Application.get_env(:faber, :hooks_dir),
+               "no-masked-gate-exit",
+               "hook.sh"
+             ])
+           ),
+           "a raw install_hook event wrote a script with installs disabled"
+
+    refute File.exists?(Application.get_env(:faber, :settings_path)),
+           "a raw install_hook event wrote a settings.json pointer with installs disabled"
+  end
+
+  @tag :tmp_dir
+  test "a hook that FAILED its eval is not installable — the score is a gate, not a caption",
+       %{conn: conn} do
+    # W2, and the dashboard half of the per-kind decision (`Faber.CLI.refuse_hook_install/2` carries
+    # the argument). Before this, both surfaces rendered `passed` as a badge and then installed
+    # regardless — the only thing standing between a broken hook and `chmod 0755` was the veto,
+    # which does not look at whether the script can run at all.
+    #
+    # Driven through the restore path because that is the honest way to get a failing eval in front
+    # of the button: seed the store with a hook whose eval failed, select the session, click.
+    result =
+      [base: "test/fixtures", min_messages: 0]
+      |> Faber.Scan.run()
+      |> Enum.find(&(&1.hazards != []))
+
+    assert result, "the hazard fixture vanished — this test has lost its subject"
+
+    Faber.Proposal.Store.put(result, %{
+      name: "no-masked-gate-exit",
+      md: "#!/usr/bin/env bash\nexit 0\n",
+      kind: :hook,
+      event: "PreToolUse",
+      matcher: "Bash",
+      adapter: "faber-elixir",
+      eval: %{composite: 0.41, passed: false, threshold: 0.9, dimensions: %{}}
+    })
+
+    {view, _detail, i} = open_hazard_session(conn)
+    html = render_click(view, "install_hook", %{"i" => to_string(i)})
+
+    assert html =~ "did not pass the hook eval"
+
+    assert html =~ "necessary conditions",
+           "the refusal must say WHY a hook is gated when a skill isn't"
+
+    refute File.exists?(
+             Path.join([
+               Application.get_env(:faber, :hooks_dir),
+               "no-masked-gate-exit",
+               "hook.sh"
+             ])
+           ),
+           "a hook that failed its eval was written to disk anyway"
+
+    refute File.exists?(Application.get_env(:faber, :settings_path)),
+           "a hook that failed its eval got a settings.json pointer"
+  end
+
+  @tag :tmp_dir
+  test "a restored hook with NO stored eval refuses rather than installing on an unknown score",
+       %{conn: conn} do
+    # Fail-closed. A format-1/2 record predates the eval being stored, so `passed` restores as `nil`.
+    # `nil` is not `false` — it is "we don't know", and the gate matches on `true` precisely so that
+    # an unknown score refuses. An old draft is the LEAST reviewed thing on disk; it is the last
+    # artifact that should get the benefit of the doubt.
+    result =
+      [base: "test/fixtures", min_messages: 0]
+      |> Faber.Scan.run()
+      |> Enum.find(&(&1.hazards != []))
+
+    Faber.Proposal.Store.put(result, %{
+      name: "no-masked-gate-exit",
+      md: "#!/usr/bin/env bash\nexit 0\n",
+      kind: :hook,
+      event: "PreToolUse",
+      matcher: "Bash",
+      adapter: "faber-elixir",
+      eval: %{}
+    })
+
+    {view, _detail, i} = open_hazard_session(conn)
+    html = render_click(view, "install_hook", %{"i" => to_string(i)})
+
+    assert html =~ "did not pass the hook eval"
+    assert html =~ "predates the eval being stored"
+
+    refute File.exists?(Application.get_env(:faber, :settings_path)),
+           "a hook with an unknown eval result was installed"
+  end
+
+  @tag :tmp_dir
   test "an unknown hazard class from a raw client event is ignored, not crashed on", %{conn: conn} do
     {view, _detail, i} = open_hazard_session(conn)
 

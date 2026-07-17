@@ -825,6 +825,39 @@ defmodule Faber.CLITest do
       assert File.read!(path) =~ "name:"
     end
 
+    test "W1 — a refused --install exits NON-ZERO (it used to exit 0)" do
+      # `propose_hazard/2` and `propose/2` both discarded the installer's return and answered a
+      # constant `0`, so a vetoed skill, a hand-edited pointer or an unreadable settings.json all
+      # reported success. `faber propose --install` in a script or CI therefore said "fine" while
+      # having installed nothing — the exact false-green this project exists to detect, in the tool
+      # that detects it. Flagged independently by elixir-reviewer AND codex.
+      #
+      # Driven through the REAL refusal (an existing skill on disk that --install must not clobber)
+      # rather than a mocked error, so it fails if the plumbing regresses anywhere along the path.
+      tmp = Path.join(System.tmp_dir!(), "faber-cli-w1-#{System.unique_integer([:positive])}")
+      prev = Application.get_env(:faber, :skills_dir)
+      Application.put_env(:faber, :skills_dir, tmp)
+
+      on_exit(fn ->
+        if prev,
+          do: Application.put_env(:faber, :skills_dir, prev),
+          else: Application.delete_env(:faber, :skills_dir)
+
+        File.rm_rf(tmp)
+      end)
+
+      # First install succeeds → exit 0. The clean half of the assertion: this must not become a
+      # blanket non-zero.
+      capture_io(fn -> assert CLI.run(:propose, @fixtures ++ [rank: 1, install: true]) == 0 end)
+
+      # Second install hits the never-blind-overwrite guard and refuses. Nothing was installed, so
+      # the exit code must say so.
+      capture_io(fn ->
+        assert CLI.run(:propose, @fixtures ++ [rank: 1, install: true]) == 1,
+               "a refused --install still exited 0 — W1"
+      end)
+    end
+
     test "refine loops propose → eval → keep and renders the history (stub LLM)" do
       # The Stub LLM re-proposes an identical skill each iteration, so every candidate is a
       # "no improvement" rejection — the run still completes, renders the per-iteration history

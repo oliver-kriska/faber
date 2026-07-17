@@ -950,9 +950,15 @@ tbody tr.srow:focus-visible {
   overflow-x: auto;
   white-space: pre;
 }
+/* A TYPE label, not a score — so it must not wear the accent. `.badge.tier` is the identical gold
+   wash (see below), and a tier-2 session carrying a hazard renders both side by side, where two
+   gold pills say "two of the same kind of fact" about things that are not the same kind of fact at
+   all. The accent is the palette's one signal colour; spending it on a taxonomy label devalues it
+   everywhere else. Outlined neutral: still a badge, visibly not a score. */
 .badge.kind-hook {
-  background: rgba(216, 163, 74, 0.14);
-  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--muted);
 }
 
 .detail-actions {
@@ -1134,6 +1140,15 @@ tbody tr.srow:focus-visible {
 .proposal-buttons {
   display: flex;
   gap: var(--space-2);
+}
+/* The hook card puts the script ABOVE its buttons (see `proposal_card/1`) — the reader must reach
+   the bytes before the control that acts on them. These two only carry the spacing that
+   `.proposal-head` used to provide for the skill card's single row. */
+.hook-meta {
+  margin-bottom: var(--space-3);
+}
+.hook-buttons {
+  margin-top: var(--space-3);
 }
 .proposal-error {
   display: flex;
