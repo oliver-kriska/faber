@@ -273,6 +273,54 @@ defmodule Faber.EvalHookTest do
       assert result.dimensions["executable"]["score"] == 0.5
     end
 
+    # S-1: the same finding one column right. `code_only/1` rejected lines whose TRIMMED START is
+    # `#`, so moving the comment to the end of a code line walked straight past the fix.
+    test "a TRAILING comment mentioning jq is not a script that runs jq", %{adapter: adapter} do
+      blind =
+        hook(
+          script:
+            "#!/usr/bin/env bash\necho 'always fine'   # use jq to inspect the command\nexit 0\n"
+        )
+
+      assert {:ok, result} = Eval.score(blind, adapter: adapter)
+
+      refute result.passed, "a blind hook passed on a jq mentioned in a TRAILING comment"
+      assert result.dimensions["executable"]["score"] == 0.5
+    end
+
+    # The other direction, and the reason this tracks quotes instead of skipping any line that has
+    # one: over-stripping would reject an HONEST hook, which is the worse error of the two.
+    test "a `#` inside quotes is not a comment — the code around it still counts" do
+      keep = [
+        # the `#` is inside single quotes; the jq AFTER it is real code
+        {"awk '{print $1 # x}' | jq -r .", "a # inside single quotes ended the line early"},
+        # a trailing comment on a line whose CODE reads stdin — the read must survive the strip
+        {"command=$(printf '%s' \"$input\" | jq -r '.cmd')  # read the call",
+         "a real jq was stripped along with its trailing comment"},
+        # `#` mid-word is a literal, not a comment
+        {"jq -r .a#b", "a # mid-word was treated as a comment"}
+      ]
+
+      for {line, msg} <- keep do
+        script = "#!/usr/bin/env bash\n#{line}\nexit 0\n"
+        assert {true, _} = Matchers.hook_reads_stdin(script, %{event: "PreToolUse"}), msg
+      end
+    end
+
+    # The bound, stated rather than discovered later. `echo "# jq"` is not a comment — it is code
+    # echoing a literal string — so `code_only/1` keeps it and the check reads the `jq` as a real
+    # one. That is this matcher's contract working as written ("a COMMENT mentioning jq is not a
+    # script that runs jq"), not a hole in it: deciding that a quoted string is inert would mean
+    # parsing what the script MEANS, and erring that way rejects honest hooks. Generous here is the
+    # bounded direction; the veto, which must never be generous, strips nothing at all.
+    test "a `#` in a quoted STRING is code, not a comment — and the check says so" do
+      assert {true, _} =
+               Matchers.hook_reads_stdin(
+                 "#!/usr/bin/env bash\necho \"# jq is not run here\"\nexit 0\n",
+                 %{event: "PreToolUse"}
+               )
+    end
+
     test "a real stdin read in the script still passes", %{adapter: adapter} do
       # The other half: stripping comments must not make the check blind to actual code.
       for read <- ["input=$(cat)", "jq -r '.x'", "read -r line", "cat <&0", "grep x </dev/stdin"] do

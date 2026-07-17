@@ -76,7 +76,13 @@ defmodule Faber.Eval do
   #
   # Per-CHECK, not per-dimension: `has_iron_laws` also lives in `safety`, and a skill merely missing
   # Iron Laws is *poor*, not *dangerous* — it should score badly and stay gradeable, not be vetoed.
-  @veto_checks ~w(no_dangerous_patterns)
+  #
+  # `hook_no_format_chars` is here rather than in `@hook_eval` for the reason the whole list exists:
+  # a weighted average cannot express "never install this", and a bidi override in a script is not a
+  # quality to trade off against good structure. It self-scopes to `kind: :hook` (see the matcher),
+  # so naming it here costs a skill nothing — and buys the restore path, which has no render to
+  # inspect, the same refusal as the propose path.
+  @veto_checks ~w(no_dangerous_patterns hook_no_format_chars)
 
   @doc """
   Score a proposal or SKILL.md string.
@@ -586,8 +592,11 @@ defmodule Faber.Eval do
 
   # An executable artifact gets no safe-section exemption: every line of it runs, and it has no
   # documentation for the exemption to protect.
-  defp veto_params(:hook), do: %{exempt_safe_sections: false}
-  defp veto_params(_kind), do: %{}
+  #
+  # `kind` is passed explicitly rather than left absent for `hook_no_format_chars` to infer. A check
+  # that guesses what it is reading guesses wrong on exactly the artifact that was built to fool it.
+  defp veto_params(:hook), do: %{exempt_safe_sections: false, kind: :hook}
+  defp veto_params(kind), do: %{kind: kind}
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

@@ -184,7 +184,21 @@ _VAGUE_DEFAULT = ["general", "various", "etc", "sometimes", "might", "possibly"]
 
 
 def description_no_vague(content, forbidden=None, **_):
+    """Vague words in the description, from a pack-supplied (untrusted) list.
+
+    ``forbidden`` comes from a pack's YAML, so it is validated before use: ``re.escape(42)`` raises
+    a TypeError mid-scan, and a bare *string* is worse than a raise -- it iterates its CHARACTERS,
+    so ``forbidden: general`` silently checks for "g", "e", "n"... and reports a confident, wrong
+    answer. Fail closed on both, matching the Elixir twin
+    (``Faber.Eval.Matchers.description_no_vague/2``): an unusable rule is a FAILED check, never a
+    crash and never a vacuous pass.
+    """
     forbidden = forbidden or _VAGUE_DEFAULT
+    if not isinstance(forbidden, list):
+        return False, f"invalid forbidden list: {forbidden!r}"
+    bad = [w for w in forbidden if not isinstance(w, str)]
+    if bad:
+        return False, f"invalid forbidden entries (each must be a string): {bad}"
     fm, _ = split_frontmatter(content)
     desc = fm.get("description", "").lower()
     found = [w for w in forbidden if re.search(rf"\b{re.escape(w)}\b", desc)]
@@ -499,9 +513,55 @@ def _code_only(content: str) -> str:
     Each errs toward rejecting the artifact. Comments are dropped before continuations are spliced,
     matching bash: a trailing backslash does NOT continue a comment, so the line after ``# ... \\``
     is code and must survive.
+
+    Whole-line AND trailing comments. Rejecting only lines whose trimmed start is ``#`` left the same
+    bug one column to the right: ``echo 'always fine'   # use jq to inspect the command`` scored
+    ``(True, "reads stdin")`` on a script that never reads stdin -- the leading-comment fix with the
+    comment moved to the end of the line.
     """
-    lines = [ln for ln in content.split("\n") if not ln.strip().startswith("#")]
+    lines = [
+        _strip_trailing_comment(ln)
+        for ln in content.split("\n")
+        if not ln.strip().startswith("#")
+    ]
     return _splice_continuations("\n".join(lines))
+
+
+def _strip_trailing_comment(line: str) -> str:
+    """Drop a trailing ``#`` comment, reading the line the way bash does.
+
+    ``#`` opens a comment only when it is **outside every quote** and **starts a word**, so
+    ``echo "# not a comment"`` keeps its ``#`` and so does ``echo a#b``.
+
+    Quote-tracking rather than "skip any line containing a quote": that rule cannot fix its own
+    reproduction (the measured line carries ``'...'``), and the concern behind it is handled here
+    directly -- in ``awk '{print $1 # x}' | jq -r .`` the ``#`` is inside single quotes, so nothing
+    is stripped and the ``jq`` after it still counts. Twin of
+    ``Faber.Eval.Matchers.strip_trailing_comment/1``.
+    """
+    quote = None
+    out = []
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote is None and ch == "\\" and i + 1 < len(line):
+            out.append(ch)
+            out.append(line[i + 1])
+            i += 2
+            continue
+        if quote is not None:
+            out.append(ch)
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            out.append(ch)
+            quote = ch
+        elif ch == "#" and (not out or out[-1] in (" ", "\t")):
+            return "".join(out).rstrip()
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def hook_reads_stdin(content, event=None, **_):
@@ -561,10 +621,43 @@ def hook_pointer(content, event=None, matcher=None, known_events=None, **_):
     return True, f"pointer: {event} / {matcher}"
 
 
+def hook_no_format_chars(content, kind=None, **_):
+    """An executable artifact carries no Unicode format characters (``Cf``).
+
+    A veto, not a score, and deliberately not a strip. The install posture rests on a person reading
+    ~15 lines of bash -- the blocklist is a backstop 7 of 8 known vectors walk past. ``Cf`` (bidi
+    overrides, zero-width joiners) changes what a terminal *displays* without changing what bash
+    *executes*, so it doesn't evade that boundary, it attacks it: the reader confirms one script and
+    runs another.
+
+    Stripping instead would mutate the bytes after the eval scored them and after the human read
+    them -- a smaller copy of the bug being fixed. See the Elixir twin,
+    ``Faber.Eval.Matchers.hook_no_format_chars/2``.
+
+    Scoped to ``kind == "hook"``: U+200D ZWJ *is* ``Cf`` and is how emoji are joined, so vetoing
+    markdown on this would refuse an honest skill whose description contains one. In bash there is
+    no such reading.
+
+    ``\\p{Cf}`` in the Elixir twin; Python's ``re`` has no ``\\p{}``, so the category is checked
+    directly -- the same split as ``hook_pointer`` above.
+    """
+    if kind != "hook":
+        return True, "not an executable artifact — format characters are text, not tampering"
+    for ch in content:
+        if unicodedata.category(ch) == "Cf":
+            return False, (
+                f"script contains a Unicode format character (U+{ord(ch):04X}) — it changes what "
+                "the script LOOKS like without changing what it DOES, and a person reading this "
+                "script is what stands between it and every matching tool call"
+            )
+    return True, "no Unicode format characters"
+
+
 MATCHERS = {
     "hook_shebang": hook_shebang,
     "hook_reads_stdin": hook_reads_stdin,
     "hook_pointer": hook_pointer,
+    "hook_no_format_chars": hook_no_format_chars,
     "section_exists": section_exists,
     "max_section_lines": max_section_lines,
     "line_count": line_count,

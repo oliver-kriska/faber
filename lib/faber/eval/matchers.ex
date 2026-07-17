@@ -211,13 +211,48 @@ defmodule Faber.Eval.Matchers do
     end
   end
 
+  # `forbidden` is pack-supplied YAML, i.e. untrusted input, and `Regex.escape/1` **raises** on a
+  # non-binary — so `- 42` (an unquoted YAML scalar, a typo rather than an attack) took down the eval
+  # mid-scan with a FunctionClauseError instead of failing the check. Reproduced end-to-end: the pack
+  # passes `Adapter.validate/1`, which checks `eval.yaml`'s mode/entrypoints/root and never looks
+  # inside a dimension's check params.
+  #
+  # Fail closed, exactly like the neighbouring `compile_pattern/1`: an unusable rule is a FAILED
+  # check, never a crash and never a silent skip. A raise here aborts the whole score; a `false`
+  # says which entries are unusable and lets the gate refuse honestly.
   def description_no_vague(content, params) do
     forbidden = params[:forbidden] || @vague_default
     {fm, _} = split_frontmatter(content)
     desc = fm |> Map.get("description", "") |> String.downcase()
-    found = Enum.filter(forbidden, &Regex.match?(~r/\b#{Regex.escape(&1)}\b/, desc))
-    if found == [], do: {true, "no vague words"}, else: {false, "vague words: #{inspect(found)}"}
+
+    with {:ok, words} <- forbidden_words(forbidden) do
+      found = Enum.filter(words, &Regex.match?(~r/\b#{Regex.escape(&1)}\b/, desc))
+
+      if found == [],
+        do: {true, "no vague words"},
+        else: {false, "vague words: #{inspect(found)}"}
+    end
   end
+
+  # A non-list `forbidden` fails too: `Enum.filter/2` on a bare string raises Protocol.UndefinedError,
+  # which is the same outage wearing a different exception.
+  defp forbidden_words(forbidden) when is_list(forbidden) do
+    case Enum.reject(forbidden, &is_binary/1) do
+      [] ->
+        {:ok, forbidden}
+
+      bad ->
+        # `charlists: :as_lists` so a YAML `- 42` reports `[42]` and not `~c"*"` — the default
+        # inspect prints a list of small integers as a charlist, which is the least useful possible
+        # thing to tell someone debugging their pack.
+        {false,
+         "invalid forbidden entries (each must be a string): " <>
+           inspect(bad, charlists: :as_lists)}
+    end
+  end
+
+  defp forbidden_words(other),
+    do: {false, "invalid forbidden list (must be a list of strings): #{inspect(other)}"}
 
   def description_structure(content, _params) do
     {fm, _} = split_frontmatter(content)
@@ -371,7 +406,15 @@ defmodule Faber.Eval.Matchers do
   # argument against instance-gating. So the executable path skips the pipeline entirely: any
   # markdown transform added here later cannot silently apply to a script, without the author
   # having to notice this comment.
-  defp body_haystack(body, false), do: splice_continuations(body)
+  #
+  # `nil` reads as `false`, i.e. EXECUTABLE — the strict side. Matching the literal `false` alone put
+  # `nil` on the markdown path, which is the *permissive* one, so an explicit
+  # `exempt_safe_sections: nil` exempted `## Anti-patterns` + `curl … | sh` and the veto passed it.
+  # The sidecar never had this: Python's `if exempt_safe_sections:` reads `None` as falsy, so the two
+  # engines disagreed on `nil` with **native** as the lenient one. Parity alone would not have caught
+  # it — no fixture passed `nil`, which is exactly why the suite was green on it. An unset flag must
+  # never be the reason a payload is exempt.
+  defp body_haystack(body, exempt) when exempt in [false, nil], do: splice_continuations(body)
 
   defp body_haystack(body, _true) do
     body
@@ -600,6 +643,53 @@ defmodule Faber.Eval.Matchers do
     end
   end
 
+  @doc """
+  An executable artifact carries **no Unicode format characters** (`\\p{Cf}`: bidi overrides,
+  zero-width joiners/spaces). A veto, not a score, and deliberately not a strip.
+
+  The whole install posture rests on a person reading ~15 lines of bash: the veto is a four-regex
+  blocklist that 7 of 8 hand-written vectors walk past, and the thing that actually catches them is
+  the human. `\\p{Cf}` changes what a terminal *displays* without changing what bash *executes* — so
+  it does not evade the boundary, it attacks it. The reader confirms one script and runs another.
+
+  **Why veto rather than strip.** `Propose.comment_safe/1` strips these from the seven tokens that
+  land in `#` comments and cannot execute, and skips `{{script}}`, which bash runs. Extending the
+  strip there was the obvious fix and is the wrong one: stripping mutates the bytes *after* the eval
+  scored them and *after* the human read them — a smaller copy of the very bug it would be fixing.
+  Refusing is the only answer that keeps seen-bytes == scored-bytes == written-bytes. Sitting in
+  `Faber.Eval`'s `@veto_checks` also covers the restore path for free, where there is no render to
+  strip in.
+
+  **Scoped to `kind: :hook`** (`Faber.Eval.veto_params/1` supplies it). Not squeamishness about
+  scope: U+200D ZWJ *is* `Cf` and is how emoji are joined, so vetoing markdown on this would refuse
+  an honest skill whose description contains 👨‍👩‍👧. In bash there is no such reading — a format
+  character in a script is tampering under any grammar.
+  """
+  @spec hook_no_format_chars(String.t(), map()) :: {boolean(), String.t()}
+  def hook_no_format_chars(content, params) do
+    if params[:kind] == :hook do
+      scan_format_chars(content)
+    else
+      {true, "not an executable artifact — format characters are text, not tampering"}
+    end
+  end
+
+  defp scan_format_chars(content) do
+    case Regex.run(~r/\p{Cf}/u, content) do
+      nil ->
+        {true, "no Unicode format characters"}
+
+      [char] ->
+        {false,
+         "script contains a Unicode format character (U+#{codepoint(char)}) — it changes what " <>
+           "the script LOOKS like without changing what it DOES, and a person reading this script " <>
+           "is what stands between it and every matching tool call"}
+    end
+  end
+
+  defp codepoint(<<cp::utf8>>),
+    do: cp |> Integer.to_string(16) |> String.pad_leading(4, "0")
+
   # How a hook can read the tool call Claude Code pipes to it on stdin as JSON. A hook that never
   # reads stdin cannot know what it is deciding about — it can only make the same decision every
   # time, which is a hook that either blocks everything or does nothing.
@@ -663,13 +753,59 @@ defmodule Faber.Eval.Matchers do
   # Each errs toward rejecting the artifact. Comments are dropped before continuations are spliced,
   # matching bash: a trailing backslash does NOT continue a comment (verified against real bash),
   # so the line after `# … \` is code and must survive.
+  #
+  # Whole-line AND trailing comments. Rejecting only lines whose trimmed start is `#` left the same
+  # bug one column to the right: `echo 'always fine'   # use jq to inspect the command` scored
+  # `{true, "reads stdin"}` on a script that never reads stdin. That is the da26a8f finding — which
+  # fixed *leading* comments — with the comment moved to the end of the line. The class is "a comment
+  # mentioning jq is not a script that runs jq"; the instance was the only thing fixed.
   defp code_only(content) do
     content
     |> String.split("\n")
     |> Enum.reject(&String.starts_with?(String.trim(&1), "#"))
-    |> Enum.join("\n")
+    |> Enum.map_join("\n", &strip_trailing_comment/1)
     |> splice_continuations()
   end
+
+  # Drop a trailing `#` comment, reading the line the way bash does. `#` opens a comment only when it
+  # is **outside every quote** and **starts a word** — so `echo "# not a comment"` keeps its `#`, and
+  # so does `echo a#b` (a `#` mid-word is a literal).
+  #
+  # Quote-tracking rather than "skip any line containing a quote", which was the first design and is
+  # too weak to fix its own reproduction: the measured S-1 line carries `'…'`, so a quote-blind rule
+  # skips it and the bug survives. The concern that motivated that rule is real and this handles it
+  # directly — in `awk '{print $1 # x}' | jq -r .` the `#` is inside single quotes, so nothing is
+  # stripped and the `jq` after it still counts. Erring toward *removing* text would reject an honest
+  # hook; erring toward *keeping* it merely leaves the check generous. Tracking the quotes is what
+  # avoids having to choose.
+  defp strip_trailing_comment(line), do: scan_code(line, "", nil)
+
+  # `quote` is the delimiter we are inside (`?'` / `?"`), or nil outside.
+  defp scan_code("", acc, _quote), do: acc
+
+  # A backslash escapes the next byte outside quotes (including a `#`, which then isn't a comment).
+  defp scan_code(<<?\\, c::utf8, rest::binary>>, acc, nil),
+    do: scan_code(rest, acc <> <<?\\, c::utf8>>, nil)
+
+  # Closing the quote we're in. Matched before the opening clauses so `'` closes `'` rather than
+  # nesting — and a `"` inside `'…'` is a literal, not an opener.
+  defp scan_code(<<q::utf8, rest::binary>>, acc, q), do: scan_code(rest, acc <> <<q::utf8>>, nil)
+
+  defp scan_code(<<c::utf8, rest::binary>>, acc, quote) when not is_nil(quote),
+    do: scan_code(rest, acc <> <<c::utf8>>, quote)
+
+  defp scan_code(<<q::utf8, rest::binary>>, acc, nil) when q in [?', ?"],
+    do: scan_code(rest, acc <> <<q::utf8>>, q)
+
+  # The comment, at last — but only if the `#` starts a word. `a#b` is one word and no comment.
+  defp scan_code(<<?#, rest::binary>>, acc, nil) do
+    if acc == "" or String.last(acc) in [" ", "\t"],
+      do: String.trim_trailing(acc),
+      else: scan_code(rest, acc <> "#", nil)
+  end
+
+  defp scan_code(<<c::utf8, rest::binary>>, acc, nil),
+    do: scan_code(rest, acc <> <<c::utf8>>, nil)
 
   @doc """
   The `settings.json` pointer shape: `event` must be one of `params[:known_events]` and `matcher`
@@ -760,6 +896,7 @@ defmodule Faber.Eval.Matchers do
       "hook_shebang" -> hook_shebang(content, params)
       "hook_reads_stdin" -> hook_reads_stdin(content, params)
       "hook_pointer" -> hook_pointer(content, params)
+      "hook_no_format_chars" -> hook_no_format_chars(content, params)
       "section_exists" -> section_exists(content, params)
       "max_section_lines" -> max_section_lines(content, params)
       "line_count" -> line_count(content, params)
