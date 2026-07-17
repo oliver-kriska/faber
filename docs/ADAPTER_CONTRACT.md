@@ -307,10 +307,17 @@ these tokens are inert prose:
 - The replacement is a **space, not a deletion**: deleting the newline from `Pre\nToolUse` would
   splice it into a valid-looking `PreToolUse`, turning a garbled token into a plausible one.
 
-`{{script}}` is exempt because it is the artifact — it is *meant* to be executable — and it is what
-the safety veto and the hook eval both scrutinize. If your template puts a token somewhere other
-than a comment, that is your escaping to reason about; the engine's guarantee is that these tokens
-cannot break *out* of a comment.
+`{{script}}` is exempt from *defanging* because it is the artifact — it is *meant* to be executable,
+and a `Cc` replaced with a space would corrupt it. Exempt from defanging is not exempt from scrutiny:
+it is what the safety veto and the hook eval read, and the veto **rejects a `Cf` in the script
+outright** (`hook_no_format_chars`). The asymmetry follows from what each class does. A `Cc` in a
+script is legitimate — every newline is one. A `Cf` is not: it changes what the script *looks like*
+without changing what it does, and the human reading it is the boundary, so there is nothing for a
+bidi override to do here except lie to them. That check is a **veto**, not a scored dimension: no
+composite can average it away.
+
+If your template puts a token somewhere other than a comment, that is your escaping to reason about;
+the engine's guarantee is that these tokens cannot break *out* of a comment.
 
 ## 7. `eval/` — domain matchers + trigger fixtures
 

@@ -665,6 +665,24 @@ Faber.Install.list_faber_installed()                       # only Faber's own sk
 Faber.Install.drift?(path)                                 # hand-edited since we wrote it?
 ```
 
+### Installing a stored *hook*
+
+The store keeps hooks alongside skills, so `faber install <id>` may be handed either. It reads what
+the artifact **is** and installs it as that — a hook goes through the hook path, never the skill
+one, and it carries the full §6 posture rather than a lesser version of it because you reached it
+by id:
+
+```sh
+faber install <id>               # a hook: prints the script, then asks
+faber install <id> --yes         # skip the confirm (scripting; §6 states the trade)
+```
+
+The eval gate applies here too: a hook whose eval didn't pass is refused, and `--force` doesn't
+override that (it replaces an existing install; it is not a way past a refusal). A hook stored
+before Faber recorded evals has no eval to pass, so it is refused as well — re-propose it.
+
+`faber show <id>` displays either kind and installs nothing.
+
 **Sync** makes *other* agents aware of the installed skills. It maintains one managed,
 digest-guarded block in each agent's shared context file — your own text in that file is never
 touched, and hand-edits *inside* the block are detected and refused without `--force`:
