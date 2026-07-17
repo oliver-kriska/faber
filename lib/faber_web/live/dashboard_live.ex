@@ -249,9 +249,9 @@ defmodule FaberWeb.DashboardLive do
     with true <- allow_install?(),
          {idx, ""} <- Integer.parse(i),
          true <- idx == socket.assigns.proposal_i,
-         %{kind: :hook, proposal: %Proposal{} = p, adapter: adapter} <- proposal,
+         %{kind: :hook} <- proposal,
          false <- Map.has_key?(proposal, :error) do
-      case do_install_hook(p, adapter, force) do
+      case do_install_hook(proposal, force) do
         {:ok, msg} ->
           {:noreply,
            socket
@@ -488,7 +488,22 @@ defmodule FaberWeb.DashboardLive do
 
       # Persist before handing it over, for the reason `do_propose/1` spells out: this artifact cost
       # tokens, and until it is on disk a refresh destroys it.
-      Store.put(result, %{name: proposal.name, md: md, eval: eval, adapter: adapter.name})
+      #
+      # `kind` and the pointer travel WITH the bytes. Without them a restored hook was
+      # indistinguishable from a skill — the card picks on `@proposal[:kind] != :hook`, and
+      # `nil != :hook` is true — so it came back as a skill card whose Install would write this
+      # bash script to `~/.claude/skills/<name>/SKILL.md`, where it is neither a hook nor a skill
+      # and never runs. `event`/`matcher` are stored rather than parsed back out of the rendered
+      # comment, so the restored card can install the stored bytes as a real hook.
+      Store.put(result, %{
+        name: proposal.name,
+        md: md,
+        kind: :hook,
+        event: proposal.event,
+        matcher: proposal.matcher,
+        eval: eval,
+        adapter: adapter.name
+      })
 
       %{
         name: proposal.name,
@@ -517,32 +532,58 @@ defmodule FaberWeb.DashboardLive do
 
   # Write the hook: script + provenance marker + one settings.json pointer, via the shared installer
   # (which re-runs the safety veto on the exact bytes — a passing score is not permission to write).
-  defp do_install_hook(%Proposal{} = p, adapter, force) do
-    opts = [adapter: adapter] ++ if(force, do: [force: true], else: [])
+  #
+  # Two sources, and which one you get is not cosmetic:
+  #
+  #   * a FRESH proposal still holds its `%Proposal{}` and `%Adapter{}`, so it installs by rendering
+  #     through the same pack the eval just scored, in the same process.
+  #   * a RESTORED proposal has neither — only the stored bytes. It installs those bytes, which is
+  #     the honest thing to do and not merely the convenient one: the pack on disk may have been
+  #     edited since the draft was scored and shown, and the posture "no hook is written without a
+  #     human seeing the script" only means something if the seen bytes are the written bytes.
+  defp do_install_hook(proposal, force) do
+    {subject, extra} = hook_install_target(proposal)
+    opts = extra ++ if(force, do: [force: true], else: [])
 
-    case Faber.Install.Hook.install(p, opts) do
+    case Faber.Install.Hook.install(subject, opts) do
       {:ok, %{script: script, settings: settings}} ->
-        {:ok, "Installed #{p.name} → #{shorten(script)} · pointer added to #{shorten(settings)}"}
-
-      # Same words as the CLI and the MCP tool. Deliberately does not suggest force: it overrides an
-      # existing install, never a safety refusal.
-      {:error, {:vetoed, vetoes}} ->
-        {:error,
-         "REFUSED — #{p.name} was not installed: " <>
-           Enum.map_join(vetoes, "; ", & &1.evidence) <> " (safety refusal, not a score)"}
-
-      {:error, {:hand_edited, command}} ->
-        {:error,
-         "#{p.name}'s pointer in settings.json has been hand-edited since Faber wrote it " <>
-           "(#{command}) — use Reinstall to replace it, or keep your edit."}
-
-      {:error, {:exists, path}} ->
-        {:error, "#{p.name} already installed at #{shorten(path)} — use Reinstall to overwrite"}
+        {:ok,
+         "Installed #{proposal.name} → #{shorten(script)} · pointer added to #{shorten(settings)}"}
 
       {:error, reason} ->
-        {:error, "Hook install failed: #{inspect(reason)}"}
+        {:error, hook_install_error(reason, proposal.name)}
     end
   end
+
+  defp hook_install_target(%{proposal: %Proposal{} = p, adapter: adapter}),
+    do: {p, [adapter: adapter]}
+
+  defp hook_install_target(%{name: name, md: md, event: event, matcher: matcher}),
+    do: {{name, md, event, matcher}, []}
+
+  # Same words as the CLI and the MCP tool. Deliberately does not suggest force for a veto: force
+  # overrides an existing install, never a safety refusal.
+  defp hook_install_error({:vetoed, vetoes}, name) do
+    "REFUSED — #{name} was not installed: " <>
+      Enum.map_join(vetoes, "; ", & &1.evidence) <> " (safety refusal, not a score)"
+  end
+
+  defp hook_install_error({:hand_edited, command}, name) do
+    "#{name}'s pointer in settings.json has been hand-edited since Faber wrote it " <>
+      "(#{command}) — use Reinstall to replace it, or keep your edit."
+  end
+
+  defp hook_install_error({:exists, path}, name),
+    do: "#{name} already installed at #{shorten(path)} — use Reinstall to overwrite"
+
+  # A hook drafted before format 3 has bytes but no stored pointer, so it cannot be installed from
+  # the store. Say that plainly rather than failing opaquely — re-proposing rebuilds it.
+  defp hook_install_error(:no_pointer, name) do
+    "#{name} was drafted before Faber stored hook pointers, so its event/matcher aren't on " <>
+      "disk — re-propose it to install."
+  end
+
+  defp hook_install_error(reason, _name), do: "Hook install failed: #{inspect(reason)}"
 
   # The adapter this dashboard drafts for. `nil` when the pack can't be loaded: the stack markers
   # then stay silent and `do_propose/1` surfaces the real load error, rather than the table
@@ -634,6 +675,11 @@ defmodule FaberWeb.DashboardLive do
         %{
           name: record.name,
           md: record.md,
+          # B4: without `kind` the card fell through to `@proposal[:kind] != :hook` — true for
+          # `nil` — and a bash script came back as a skill card with the agent install menu.
+          kind: record.kind,
+          event: record.event,
+          matcher: record.matcher,
           composite: record.eval[:composite],
           passed: record.eval[:passed],
           threshold: record.eval[:threshold],

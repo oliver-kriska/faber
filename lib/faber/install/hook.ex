@@ -46,12 +46,36 @@ defmodule Faber.Install.Hook do
   hand-edited pointer). Returns `{:ok, %{script: path, settings: path}}` or `{:error, reason}` —
   including `{:error, {:vetoed, vetoes}}` when the script must never be written, `{:error, {:exists,
   path}}`, and `{:error, {:hand_edited, command}}`.
+
+  Two shapes, differing only in where the script text comes from:
+
+    * `%Proposal{kind: :hook}` — rendered through `:adapter`'s template. The fresh
+      propose→eval→install path, where render, eval and install all run in one process against one
+      loaded pack, so the bytes provably agree.
+    * `{name, md, event, matcher}` — the already-rendered bytes, written as given. The restore path
+      (`Faber.Proposal.Store`), and the same shape `Install.install({name, md})` has always used for
+      a restored skill. Returns `{:error, :no_pointer}` when `event`/`matcher` are absent, which is
+      what a pre-format-3 record looks like.
+
+  Both are refused by the safety veto at the write boundary; the bytes shape is not a way past it.
   """
-  @spec install(Proposal.t(), keyword()) ::
-          {:ok, %{script: Path.t(), settings: Path.t()}} | {:error, term()}
-  def install(proposal, opts \\ [])
+  @spec install(
+          Proposal.t() | {String.t(), String.t(), String.t() | nil, String.t() | nil},
+          keyword()
+        ) :: {:ok, %{script: Path.t(), settings: Path.t()}} | {:error, term()}
+  def install(proposal_or_bytes, opts \\ [])
 
   def install(%Proposal{kind: :hook} = p, opts) do
+    do_install(p.name, p.event, p.matcher, {:proposal, p}, opts)
+  end
+
+  def install(%Proposal{kind: kind}, _opts), do: {:error, {:not_a_hook, kind}}
+
+  def install({name, md, event, matcher}, opts) when is_binary(name) and is_binary(md) do
+    do_install(name, event, matcher, {:bytes, md}, opts)
+  end
+
+  defp do_install(name, event, matcher, source, opts) do
     settings_path = opts[:settings_path] || settings_path()
 
     # Decide the settings merge BEFORE writing the script, so a refusal (hand-edited pointer,
@@ -59,17 +83,51 @@ defmodule Faber.Install.Hook do
     # are saved: if that save then fails, an inert script is orphaned — which is the safe direction.
     # A pointer to a script that isn't there is a hook Claude Code tries to run on every matching
     # call and can't.
-    with {:ok, settings} <- read_settings(settings_path),
-         script_path = script_path(p, opts),
-         {:ok, merged} <- merge_pointer(settings, p, script_path, opts),
-         {:ok, ^script_path} <- write_script(p, opts),
+    with :ok <- check_pointer(event, matcher),
+         {:ok, settings} <- read_settings(settings_path),
+         script_path = script_path(name, opts),
+         {:ok, merged} <- merge_pointer(settings, event, matcher, script_path, opts),
+         {:ok, ^script_path} <- write_script(source, name, opts),
          :ok <- File.chmod(script_path, 0o755),
          :ok <- save_settings(settings_path, merged) do
       {:ok, %{script: script_path, settings: settings_path}}
     end
   end
 
-  def install(%Proposal{kind: kind}, _opts), do: {:error, {:not_a_hook, kind}}
+  # A pointer with no event or no matcher cannot be written into settings.json — `oput(hooks, nil,
+  # …)` would produce a `null` key rather than fail. Reachable from the bytes path: a pre-format-3
+  # store record has no `event`/`matcher` (they were only persisted from format 3 on), so a hook
+  # drafted before that bump restores with its script but without its pointer.
+  defp check_pointer(event, matcher) when is_binary(event) and is_binary(matcher), do: :ok
+  defp check_pointer(_event, _matcher), do: {:error, :no_pointer}
+
+  # The script text, from whichever end the caller has:
+  #
+  #   * `{:proposal, p}` — RENDER through the pack. The fresh propose→eval→install path, where the
+  #     render, the eval and the install all happen in one process against one loaded pack, so the
+  #     bytes provably agree.
+  #   * `{:bytes, md}` — write the bytes AS GIVEN. The restore path, where the pack could have been
+  #     edited since the draft was scored and stored. Re-rendering there would write something other
+  #     than what the eval scored and — the part that matters — other than what the human confirmed.
+  #     The install posture is "no hook is written without a human seeing the script"; that is only
+  #     true if the seen bytes are the written bytes. Mirrors `Install.install({name, md})`, which
+  #     is how a restored SKILL has always installed.
+  #
+  # Both go through `Install.install/2`, so both are refused by the safety veto at the write
+  # boundary — the bytes path is not a way around it.
+  defp write_script({:proposal, p}, _name, opts) do
+    Install.install(p, Keyword.put_new(opts, :dir, default_dir()))
+  end
+
+  defp write_script({:bytes, md}, name, opts) do
+    Install.install(
+      {name, md},
+      opts
+      |> Keyword.put_new(:dir, default_dir())
+      |> Keyword.put(:kind, :hook)
+      |> Keyword.put(:filename, Proposal.filename(:hook))
+    )
+  end
 
   @doc """
   The Faber-owned hooks root. Its own dir, not `~/.claude/skills` — a hook is not a skill, and skill
@@ -89,18 +147,21 @@ defmodule Faber.Install.Hook do
   @doc """
   Where this hook's script lives (or would live). Pure — it touches nothing.
   """
-  @spec script_path(Proposal.t(), keyword()) :: Path.t()
-  def script_path(%Proposal{} = p, opts \\ []) do
-    Path.join([opts[:dir] || default_dir(), to_string(p.name), Proposal.filename(p)])
+  @spec script_path(Proposal.t() | String.t(), keyword()) :: Path.t()
+  def script_path(proposal_or_name, opts \\ [])
+
+  def script_path(%Proposal{} = p, opts), do: script_path(to_string(p.name), opts)
+
+  # A hook's script path is a function of its NAME, not of the rest of the proposal — which is what
+  # lets the restore path (`{name, md, event, matcher}`) compute the same path for the same hook.
+  def script_path(name, opts) when is_binary(name) do
+    Path.join([opts[:dir] || default_dir(), name, Proposal.filename(:hook)])
   end
 
   # `Faber.Install.install/2` does the whole write: it validates the (untrusted) name, runs the
   # safety veto against the exact bytes it is about to write — with `kind: :hook`, so a `##` shell
   # comment can't buy an exemption meant for prose — creates the dir, writes, and drops the
   # `.faber.json` marker. Nothing here re-implements any of that.
-  defp write_script(%Proposal{} = p, opts) do
-    Install.install(p, Keyword.put_new(opts, :dir, default_dir()))
-  end
 
   # ── settings.json ──────────────────────────────────────────────────────────
 
@@ -132,12 +193,12 @@ defmodule Faber.Install.Hook do
 
   # The merge. `:unchanged` is returned as-is by `save_settings`'s caller writing identical bytes —
   # cheap, and it keeps the function total.
-  defp merge_pointer(settings, %Proposal{} = p, script_path, opts) do
+  defp merge_pointer(settings, event, matcher, script_path, opts) do
     hooks = oget(settings, "hooks", empty())
-    entries = oget(hooks, p.event, [])
+    entries = oget(hooks, event, [])
 
-    with {:ok, entries} <- put_command(entries, p.matcher, script_path, opts) do
-      {:ok, oput(settings, "hooks", oput(hooks, p.event, entries))}
+    with {:ok, entries} <- put_command(entries, matcher, script_path, opts) do
+      {:ok, oput(settings, "hooks", oput(hooks, event, entries))}
     end
   end
 

@@ -38,6 +38,7 @@ defmodule Faber.Proposal.Store do
     * it's greppable, and the user can read or delete a proposal with `cat` and `rm` — no Faber.
   """
 
+  alias Faber.Proposal
   alias Faber.Scan
 
   require Logger
@@ -54,9 +55,13 @@ defmodule Faber.Proposal.Store do
   # `unstamped: :unreadable` because format 1 wrote `"format": 1` from the very first record — this
   # store has never written an unstamped one, so a file without a version did not come from here.
   # (Its bug was the *reader*: `%{"format" => @format}` matched exactly and ate v1 when v2 shipped.)
+  # Format 3 adds `kind`, `event` and `matcher`. The bump is the honest signal that the written
+  # shape changed; 1 and 2 stay readable because `decode/1` carries them forward (see
+  # `decode_kind/2` — a pre-3 record's kind is inferred from its own bytes, never defaulted to
+  # `:skill`, which is the reading that caused B4).
   use Faber.Store.Format,
-    format: 2,
-    readable_formats: [1, 2],
+    format: 3,
+    readable_formats: [1, 2, 3],
     data_class: :paid,
     unstamped: :unreadable
 
@@ -84,6 +89,9 @@ defmodule Faber.Proposal.Store do
           session_stamp: term(),
           name: String.t(),
           md: String.t(),
+          kind: Proposal.kind(),
+          event: String.t() | nil,
+          matcher: String.t() | nil,
           eval: map(),
           adapter: String.t() | nil,
           outcome: outcome(),
@@ -140,6 +148,14 @@ defmodule Faber.Proposal.Store do
       session_stamp: meta[:session_stamp],
       name: name,
       md: md,
+      # What this artifact IS, and — for a hook — where it points. Without these a restored hook was
+      # indistinguishable from a skill (`nil != :hook` is true), so it came back as a skill card
+      # whose Install would write a bash script to `~/.claude/skills/<name>/SKILL.md`. `event` and
+      # `matcher` are stored rather than re-derived from the script text, because parsing them back
+      # out of a rendered comment is parsing back what we already had.
+      kind: Map.get(attrs, :kind, :skill),
+      event: Map.get(attrs, :event),
+      matcher: Map.get(attrs, :matcher),
       eval: Map.get(attrs, :eval, %{}),
       adapter: Map.get(attrs, :adapter),
       outcome: Map.get(attrs, :outcome, :single),
@@ -362,6 +378,9 @@ defmodule Faber.Proposal.Store do
       session_stamp: raw["session_stamp"],
       name: raw["name"],
       md: raw["md"],
+      kind: decode_kind(raw["kind"], raw["md"]),
+      event: raw["event"],
+      matcher: raw["matcher"],
       eval: normalize_eval(raw["eval"]),
       adapter: raw["adapter"],
       # Defaults that carry a format-1 record forward rather than dropping it. A v1 record is a
@@ -384,6 +403,22 @@ defmodule Faber.Proposal.Store do
   }
 
   defp decode_outcome(value), do: Map.get(@outcomes, value, :single)
+
+  # Allowlisted for the same reason as @outcomes: these files are hand-editable.
+  @kinds %{"skill" => :skill, "hook" => :hook}
+
+  # A pre-format-3 record carries no `kind`, and defaulting it to `:skill` would preserve B4 for
+  # every hook already on disk — that IS the bug (`nil` read as "not a hook"). So the kind is
+  # inferred from the artifact's own bytes instead, which is reliable rather than a guess: the hook
+  # renderer GUARANTEES `#!` on line 1 (`Propose.script_body/1` strips the model's shebang so the
+  # template can own it), and a SKILL.md opens with `---` frontmatter. The artifact says what it is.
+  defp decode_kind(nil, md), do: sniff_kind(md)
+  defp decode_kind(value, md), do: Map.get(@kinds, value) || sniff_kind(md)
+
+  defp sniff_kind(md) when is_binary(md),
+    do: if(String.starts_with?(md, "#!"), do: :hook, else: :skill)
+
+  defp sniff_kind(_), do: :skill
 
   # JSON has no atoms, so a naive round-trip hands back `%{"composite" => _}` for something that
   # went in as `%{composite: _}` — an asymmetry every caller would eventually get wrong. Map the

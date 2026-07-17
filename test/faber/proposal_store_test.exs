@@ -107,7 +107,7 @@ defmodule Faber.ProposalStoreTest do
 
       # ...and the format is still on disk, where it belongs — that's what the reader gates on.
       path = Path.join(Faber.proposals_dir(), "#{written.id}.json")
-      assert %{"format" => 2} = path |> File.read!() |> Jason.decode!()
+      assert %{"format" => 3} = path |> File.read!() |> Jason.decode!()
     end
 
     test "latest/1 returns nil for a session with no proposals" do
@@ -388,6 +388,50 @@ defmodule Faber.ProposalStoreTest do
       # a single-session draft (the CLI wasn't a writer yet, and the dashboard proposes one session).
       assert record.outcome == :single
       assert record.source_sessions == ["sess-old"]
+
+      # v1 also predates `kind`. It reads as :skill because its BYTES say so (`---` frontmatter),
+      # not because :skill is the default — see the hook case below, where that distinction is the
+      # whole point.
+      assert record.kind == :skill
+      assert record.event == nil
+    end
+
+    test "a format-2 HOOK still reads as a hook — kind is inferred from its bytes, not defaulted" do
+      # The B4 back-compat edge, and the reason `decode_kind/2` sniffs instead of defaulting. Hooks
+      # shipped under format 2, which had no `kind` column, so records like this one are already on
+      # disk. Defaulting a missing `kind` to `:skill` would be the *same* `nil`-means-not-a-hook
+      # reading that caused B4 — it would restore this bash script as a skill card whose Install
+      # writes it to `~/.claude/skills/<name>/SKILL.md`. The artifact says what it is: the renderer
+      # guarantees `#!` on line 1.
+      File.mkdir_p!(Faber.proposals_dir())
+
+      v2 = %{
+        "format" => 2,
+        "id" => "cccccccccccc-dddddddddddd",
+        "session_key" => "sess-hook",
+        "session_path" => "/tmp/proj/hook.jsonl",
+        "session_stamp" => 999,
+        "name" => "no-masked-gate-exit",
+        "md" =>
+          "#!/usr/bin/env bash\n# no-masked-gate-exit — guards a gate\nset -uo pipefail\nexit 0\n",
+        "eval" => %{"composite" => 0.95, "passed" => true},
+        "adapter" => "faber-elixir",
+        "created_at" => "2026-07-16T00:00:00Z"
+      }
+
+      Faber.proposals_dir()
+      |> Path.join("cccccccccccc-dddddddddddd.json")
+      |> File.write!(Jason.encode!(v2))
+
+      assert [record] = Store.list()
+
+      assert record.kind == :hook,
+             "a format-2 hook came back as a skill — B4, for records on disk"
+
+      # But its pointer genuinely wasn't stored, and that cannot be sniffed back out. Absent, not
+      # guessed — `Install.Hook.install/2` refuses with `:no_pointer` and the UI says re-propose.
+      assert record.event == nil
+      assert record.matcher == nil
     end
 
     test "a record from an unknown FUTURE format is skipped, not crashed on" do

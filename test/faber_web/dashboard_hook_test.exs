@@ -28,7 +28,8 @@ defmodule FaberWeb.DashboardHookTest do
       install: Application.get_env(:faber, :web_allow_install),
       hooks: Application.get_env(:faber, :hooks_dir),
       settings: Application.get_env(:faber, :settings_path),
-      proposals: Application.get_env(:faber, :proposals_dir)
+      proposals: Application.get_env(:faber, :proposals_dir),
+      store: Application.get_env(:faber, :proposal_store)
     }
 
     Application.put_env(:faber, :dashboard_scan_opts, base: "test/fixtures", min_messages: 0)
@@ -37,6 +38,13 @@ defmodule FaberWeb.DashboardHookTest do
     Application.put_env(:faber, :hooks_dir, Path.join(tmp_dir, "faber-hooks"))
     Application.put_env(:faber, :settings_path, Path.join(tmp_dir, "settings.json"))
     Application.put_env(:faber, :proposals_dir, Path.join(tmp_dir, "proposals"))
+
+    # `config/test.exs` disables the proposal store globally, so nothing in the suite ever exercised
+    # the restore path — which is exactly how B4 shipped: `restore_proposal/1` dropping `kind` was
+    # unreachable from any test, in the env where every gate runs. Enabled here, scoped to this file
+    # and pointed at `tmp_dir`, so the restore path is covered without any test writing to the real
+    # `~/.faber`.
+    Application.put_env(:faber, :proposal_store, true)
 
     on_exit(fn -> Enum.each(prev, fn {k, v} -> restore(key(k), v) end) end)
 
@@ -49,6 +57,7 @@ defmodule FaberWeb.DashboardHookTest do
   defp key(:hooks), do: :hooks_dir
   defp key(:settings), do: :settings_path
   defp key(:proposals), do: :proposals_dir
+  defp key(:store), do: :proposal_store
 
   defp restore(k, nil), do: Application.delete_env(:faber, k)
   defp restore(k, v), do: Application.put_env(:faber, k, v)
@@ -151,6 +160,73 @@ defmodule FaberWeb.DashboardHookTest do
 
     assert html =~ "web_allow_propose"
     refute html =~ "Proposing a hook"
+  end
+
+  @tag :tmp_dir
+  test "a RESTORED hook is still a hook — it cannot come back as a skill card", %{conn: conn} do
+    # B4, found by codex where six Claude agents missed it. The store persisted `%{name, md, eval,
+    # adapter}` with no `kind`; `restore_proposal/1` rebuilt without it; the card picks on
+    # `@proposal[:kind] != :hook`, and `nil != :hook` is TRUE. So selecting away and back turned a
+    # bash script into a skill card WITH the agent install menu — one click from writing
+    # `#!/usr/bin/env bash` into `~/.claude/skills/<name>/SKILL.md`, where it is not a hook, not a
+    # skill, and never runs.
+    {view, _detail, i} = open_hazard_session(conn)
+
+    view
+    |> render_click("propose_hook", %{"i" => to_string(i), "kind" => "pipe_masks_exit"})
+    |> then(fn _ -> render_async(view, @async_timeout) end)
+
+    # Select away, then back — the restore path.
+    other = if i == 1, do: 2, else: 1
+    render_click(view, "select", %{"i" => to_string(other)})
+    restored = render_click(view, "select", %{"i" => to_string(i)})
+
+    assert restored =~ "no-masked-gate-exit", "the restore path did not put the proposal back"
+    assert restored =~ "#!/usr/bin/env bash"
+
+    # The card is a HOOK card: it offers the hook install and NOT the agent picker.
+    assert restored =~ "Install hook"
+
+    refute restored =~ ~s(phx-click="install"),
+           "a restored hook came back as a SKILL card — its Install would write the script to " <>
+             "~/.claude/skills/<name>/SKILL.md"
+
+    refute restored =~ "data-install-toggle",
+           "a restored hook came back with the agent install menu"
+  end
+
+  @tag :tmp_dir
+  test "a restored hook installs the bytes it displayed", %{conn: conn} do
+    # PB-T2, option (c). A restored hook must be installable *as a hook*, and must install the
+    # stored bytes — the ones on screen — rather than a fresh render through a pack that may have
+    # changed since. The locked posture is "the human confirms the script"; that only means
+    # something if the confirmed bytes are the written bytes.
+    {view, _detail, i} = open_hazard_session(conn)
+
+    card =
+      view
+      |> render_click("propose_hook", %{"i" => to_string(i), "kind" => "pipe_masks_exit"})
+      |> then(fn _ -> render_async(view, @async_timeout) end)
+
+    assert card =~ "no-masked-gate-exit"
+
+    other = if i == 1, do: 2, else: 1
+    render_click(view, "select", %{"i" => to_string(other)})
+    render_click(view, "select", %{"i" => to_string(i)})
+
+    render_click(view, "install_hook", %{"i" => to_string(i)})
+
+    script =
+      Path.join([Application.get_env(:faber, :hooks_dir), "no-masked-gate-exit", "hook.sh"])
+
+    assert File.exists?(script), "a restored hook's Install button did nothing"
+    assert File.read!(script) =~ "#!/usr/bin/env bash"
+
+    settings = Application.get_env(:faber, :settings_path) |> File.read!() |> Jason.decode!()
+
+    assert [%{"matcher" => "Bash", "hooks" => [%{"command" => ^script}]}] =
+             settings["hooks"]["PreToolUse"],
+           "the restored hook's pointer did not carry its event/matcher"
   end
 
   @tag :tmp_dir
