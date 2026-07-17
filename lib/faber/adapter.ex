@@ -22,6 +22,7 @@ defmodule Faber.Adapter do
   alias __MODULE__
 
   @severities ~w(low medium high)
+  @produces ~w(skill agent hook)
   @semver ~r/^\d+\.\d+\.\d+$/
   @name_re ~r/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
 
@@ -128,6 +129,7 @@ defmodule Faber.Adapter do
       "file_globs must each compile to a valid glob pattern"
     )
     |> validate_entries(a.playbooks, "playbook", &playbook_problems/1)
+    |> template_problems(a)
     |> eval_problems(a)
     |> unique_ids(a.laws, "law")
     |> unique_ids(a.signatures, "signature")
@@ -373,6 +375,24 @@ defmodule Faber.Adapter do
   # copied the whole accumulator per entry.
   defp validate_entries(acc, entries, _label, fun) do
     Enum.reduce(entries, acc, fn entry, acc -> fun.(entry) ++ acc end)
+  end
+
+  # A template's `produces` names the artifact kind it renders (contract §6.5), and it is the key
+  # every render path fetches by. An unknown value is therefore a pack that loads clean and silently
+  # renders nothing — the same fail-quietly shape `eval_problems/2` exists to prevent. Asserted here,
+  # at the load boundary, because the pack is untrusted: `read_templates/1` keys the map by whatever
+  # the manifest said, so the key may not even be a binary.
+  defp template_problems(acc, %Adapter{templates: templates}) do
+    templates
+    |> Map.keys()
+    |> Enum.sort_by(&inspect/1)
+    |> Enum.reduce(acc, fn produces, acc ->
+      check(
+        acc,
+        is_binary(produces) and produces in @produces,
+        "template `produces` must be one of #{inspect(@produces)}, got: #{inspect(produces)}"
+      )
+    end)
   end
 
   # `eval/eval.yaml` is untrusted declarative input that decides how a skill gets *scored*, so it is

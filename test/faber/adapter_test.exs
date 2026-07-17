@@ -278,6 +278,55 @@ defmodule Faber.AdapterTest do
     end
   end
 
+  describe "load/1 template `produces` validation" do
+    test "a pack declaring produces: hook loads clean (emission not built yet is not an error)" do
+      dir = write_adapter_with_templates("faber-hookpack", "produces: hook")
+
+      assert {:ok, a} = Adapter.load(dir)
+      assert a.templates == %{"hook" => "scaffold body"}
+      assert Adapter.validate(a) == []
+    end
+
+    test "every kind in the contract's set is accepted" do
+      for kind <- ~w(skill agent hook) do
+        dir = write_adapter_with_templates("faber-#{kind}pack", "produces: #{kind}")
+        assert {:ok, a} = Adapter.load(dir)
+        assert Adapter.validate(a) == []
+      end
+    end
+
+    test "an unknown produces fails load with a clear message" do
+      dir = write_adapter_with_templates("faber-banana", "produces: banana")
+
+      assert {:error, {:invalid_adapter, reasons}} = Adapter.load(dir)
+      assert Enum.any?(reasons, &(&1 =~ ~s(got: "banana")))
+      assert Enum.any?(reasons, &(&1 =~ ~s(must be one of ["skill", "agent", "hook"])))
+    end
+
+    test "a non-string produces (untrusted pack) is rejected, not crashed on" do
+      dir = write_adapter_with_templates("faber-numeric", "produces: 42")
+
+      assert {:error, {:invalid_adapter, reasons}} = Adapter.load(dir)
+      assert Enum.any?(reasons, &(&1 =~ "got: 42"))
+    end
+  end
+
+  # A pack whose templates/manifest.yaml carries a single entry with the given `produces:` line.
+  defp write_adapter_with_templates(name, produces_line) do
+    dir = write_adapter(name, "signatures: []")
+    tpl = Path.join(dir, "templates")
+    File.mkdir_p!(tpl)
+
+    File.write!(Path.join(tpl, "manifest.yaml"), """
+    templates:
+      - file: scaffold.md.tmpl
+        #{produces_line}
+    """)
+
+    File.write!(Path.join(tpl, "scaffold.md.tmpl"), "scaffold body")
+    dir
+  end
+
   # Write a minimal valid adapter pack into a unique tmp dir (name == dir basename, as the
   # contract requires) with the given `detect/signatures.yaml` body. Auto-removed on exit.
   defp write_adapter(name, detect_yaml) do

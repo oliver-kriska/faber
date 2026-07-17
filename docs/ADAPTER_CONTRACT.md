@@ -251,8 +251,8 @@ the body as the playbook the proposer/loop may fold in. No host-language code.
 ### 6.5 `templates/` — artifact scaffolds
 
 Each non-README file is a scaffold for an artifact the proposer emits (a skill, an agent,
-a hook), in the stack's idiom. Placeholders use `{{double_brace}}` tokens. A
-`templates/manifest.yaml` (optional) names each template and the artifact type it produces:
+a hook), in the stack's idiom. Placeholders use `{{double_brace}}` tokens.
+`templates/manifest.yaml` names each template and the artifact type it produces:
 
 ```yaml
 templates:
@@ -261,8 +261,14 @@ templates:
     description: "SKILL.md scaffold with Iron Laws + quick-patterns sections"
 ```
 
-If `manifest.yaml` is absent, the engine infers `produces` from a `.<type>.tmpl` suffix
-(e.g. `foo.skill.tmpl`). Unknown placeholders left unfilled are a generation warning.
+The manifest is how a template is found: the engine keys the loaded templates by `produces`
+and the proposer fetches the scaffold for the kind it is rendering. Both `file` and `produces`
+are **required** per entry, and `produces` must be one of `skill | agent | hook` — an unknown
+value is a load-time validation error, not a template that silently renders nothing. There is
+no inference from the filename; a pack with no `manifest.yaml` contributes no templates and
+falls back to the engine's built-in scaffold. `file` must resolve inside `templates/` (an
+absolute path or `..` escape is rejected and logged). Unknown placeholders left unfilled are a
+generation warning.
 
 ## 7. `eval/` — domain matchers + trigger fixtures
 
