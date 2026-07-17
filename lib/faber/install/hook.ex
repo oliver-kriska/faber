@@ -206,18 +206,17 @@ defmodule Faber.Install.Hook do
     end
   end
 
-  # S3/PE-T5. Write to a sibling tmp file and `rename` over the target — `rename(2)` is atomic within
-  # a filesystem, and the tmp is a sibling precisely so it is on the same one.
+  # Write to a sibling tmp file and `rename` over the target — `rename(2)` is atomic within a
+  # filesystem, and the tmp is a sibling precisely so it is on the same one.
   #
-  # This was `File.write/2`, which opens the target with O_TRUNC: the user's settings.json is emptied
-  # *first*, and only then refilled. Anything that stops the VM in that window (^C on `faber propose
-  # --install`, an OOM kill, a `mix` task shutdown) leaves the file truncated — and that file is not
-  # Faber's. It carries the user's permissions, MCP servers, env, and every hook they wrote
-  # themselves. Losing Faber's own pointer would be an inconvenience; this loses THEIR config, to
-  # install a hook they asked for. `Faber.write_private/2` documents exactly this hazard for Faber's
-  # own files — the hook installer just wasn't using it.
+  # Never `File.write/2` here: it opens the target with O_TRUNC, so the user's settings.json is
+  # emptied *first* and only then refilled. Anything that stops the VM in that window (^C on `faber
+  # propose --install`, an OOM kill, a `mix` task shutdown) leaves the file truncated — and that
+  # file is not Faber's. It carries the user's permissions, MCP servers, env, and every hook they
+  # wrote themselves. Losing Faber's own pointer would be an inconvenience; this loses THEIR config,
+  # to install a hook they asked for.
   #
-  # It cannot simply CALL `write_private/2`, hence the near-duplicate: that helper chmods to `0600`,
+  # It cannot simply CALL `Faber.write_private/2`, hence the near-duplicate: that helper chmods to `0600`,
   # which is right for a file Faber owns inside its own `0700` dir and wrong here. settings.json
   # belongs to the user (typically `0644`), and silently narrowing the mode of a shared file we did
   # not create is the enumerate-and-claim mistake in another costume. So: preserve the existing mode
@@ -344,18 +343,17 @@ defmodule Faber.Install.Hook do
   defp find_ours(entries, script_path) do
     ours = command_hook(script_path)
 
+    # The FIRST hook mentioning our script decides the verdict; entries after it are not evidence
+    # about it. `Stream.flat_map` + `Enum.find` say that and stop there — a fold over every entry
+    # would need a guard to keep a later hook from overwriting the answer.
     entries
-    |> Enum.flat_map(&oget(&1, "hooks", []))
-    |> Enum.filter(&mentions?(&1, script_path))
-    |> Enum.reduce_while(:none, fn hook, _acc ->
-      # S2. Was an `Enum.reduce` carrying an `acc != :none -> acc` guard, i.e. it walked the whole
-      # list and then ignored everything after the first match. Same answer, but it described a
-      # fold over all entries when the operation is "find the first" — and the guard was the only
-      # thing standing between that and a later entry overwriting the verdict.
-      if hook == ours,
-        do: {:halt, {:exact, script_path}},
-        else: {:halt, {:altered, oget(hook, "command", script_path)}}
-    end)
+    |> Stream.flat_map(&oget(&1, "hooks", []))
+    |> Enum.find(&mentions?(&1, script_path))
+    |> case do
+      nil -> :none
+      ^ours -> {:exact, script_path}
+      hook -> {:altered, oget(hook, "command", script_path)}
+    end
   end
 
   defp mentions?(hook, script_path) do

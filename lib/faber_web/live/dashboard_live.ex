@@ -246,9 +246,8 @@ defmodule FaberWeb.DashboardLive do
     proposal = socket.assigns.proposal
     force = params["force"] == "true"
 
-    with true <- allow_install?(),
-         {idx, ""} <- Integer.parse(i),
-         true <- idx == socket.assigns.proposal_i,
+    with :ok <- install_allowed?(),
+         {:ok, idx} <- current_index(i, socket.assigns.proposal_i),
          %{kind: :hook} <- proposal,
          false <- Map.has_key?(proposal, :error),
          :ok <- hook_eval_gate(proposal) do
@@ -263,19 +262,8 @@ defmodule FaberWeb.DashboardLive do
           {:noreply, put_flash(socket, :error, msg)}
       end
     else
-      false ->
-        {:noreply,
-         put_flash(
-           socket,
-           :error,
-           "Install is disabled — set `config :faber, :web_allow_install, true`."
-         )}
-
-      {:error, msg} ->
-        {:noreply, put_flash(socket, :error, msg)}
-
-      _ ->
-        {:noreply, socket}
+      {:error, reason} -> {:noreply, put_flash(socket, :error, install_refusal(reason))}
+      _ -> {:noreply, put_flash(socket, :error, install_refusal(:not_installable))}
     end
   end
 
@@ -312,13 +300,12 @@ defmodule FaberWeb.DashboardLive do
     # by accident.
     force = params["force"] == "true"
 
-    with true <- allow_install?(),
-         {idx, ""} <- Integer.parse(i),
-         true <- idx == socket.assigns.proposal_i,
+    with :ok <- install_allowed?(),
+         {:ok, idx} <- current_index(i, socket.assigns.proposal_i),
          :skill <- Map.get(proposal, :kind, :skill),
          %{name: name, md: md} <- proposal,
          false <- Map.has_key?(proposal, :error),
-         true <- Map.has_key?(Faber.Install.agent_context_files(), agent) do
+         :ok <- known_agent(agent) do
       # Stamp which session this skill came from (idx == proposal_i, so the row is valid) so the
       # "installed" marker can be recovered from disk after a refresh.
       session = Enum.at(socket.assigns.results, idx - 1)
@@ -335,27 +322,14 @@ defmodule FaberWeb.DashboardLive do
           {:noreply, put_flash(socket, :error, msg)}
       end
     else
-      false ->
-        {:noreply,
-         put_flash(
-           socket,
-           :error,
-           "Install is disabled — set `config :faber, :web_allow_install, true`."
-         )}
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, install_refusal(reason))}
 
-      # Only reachable from a raw event or a stale DOM, which is exactly why it answers rather than
-      # going quiet: a refusal nobody can see is indistinguishable from a write.
       :hook ->
-        {:noreply,
-         put_flash(
-           socket,
-           :error,
-           "#{socket.assigns.proposal.name} is a hook, not a skill — it installs with Install " <>
-             "hook, which gates on the eval and shows you the script first."
-         )}
+        {:noreply, put_flash(socket, :error, install_refusal({:is_a_hook, proposal[:name]}))}
 
       _ ->
-        {:noreply, socket}
+        {:noreply, put_flash(socket, :error, install_refusal(:not_installable))}
     end
   end
 
@@ -553,15 +527,66 @@ defmodule FaberWeb.DashboardLive do
     end
   end
 
-  # W2 — the hook twin of `Faber.CLI`'s `:failed_gate` refusal, and it must stay a twin: a surface
+  # The hook twin of `Faber.CLI`'s `:failed_gate` refusal, and it must stay a twin: a surface
   # that quietly disagrees with the CLI about what is safe to write is exactly the drift the two
   # test suites mirror each other to catch. The rationale for gating hooks but not skills lives on
-  # `Faber.CLI.refuse_hook_install/2` — in one sentence: a hook's eval dimensions are necessary
+  # `Faber.CLI.refuse_hook_install/3` — in one sentence: a hook's eval dimensions are necessary
   # conditions ("a hook that can't run, can't see its input, or points nowhere isn't a mediocre
   # hook, it's not a hook"), and a broken hook is broken while auto-executing.
   #
   # `passed` matches on `true`, not on truthiness: a restored format-1/2 record has no eval and
   # arrives as `nil`, and "we don't know whether this passed" must refuse, not install.
+  # ── the install guards, shared by both handlers ────────────────────────────
+  #
+  # Each answers with a DISTINCT value, because a `with` can only tell its failures apart if they
+  # arrive different. Bare booleans collapsed two unrelated refusals onto one `false ->` clause, so a
+  # stale index reported "Install is disabled" — a message naming a config flag the user hasn't
+  # touched, for a problem that is a reload.
+  #
+  # And every path ends in a flash. `Integer.parse/1` failing fell to a bare `_ -> {:noreply,
+  # socket}`: total silence on a stale DOM or raced tabs, where the user clicks Install and the page
+  # does *nothing*. Silence is the worst answer available here — it is indistinguishable from a
+  # write that worked, which is the whole false-green class this feature exists to detect.
+  defp install_allowed? do
+    if allow_install?(), do: :ok, else: {:error, :disabled}
+  end
+
+  # `i` is client-supplied and must name the proposal CURRENTLY on screen — never a stale or
+  # mismatched one. Unparseable and mismatched are one refusal (`:stale`) because they are one
+  # situation to the user: the page is out of date.
+  defp current_index(i, proposal_i) do
+    case Integer.parse(i) do
+      {^proposal_i, ""} -> {:ok, proposal_i}
+      _ -> {:error, :stale}
+    end
+  end
+
+  defp known_agent(agent) do
+    if Map.has_key?(Faber.Install.agent_context_files(), agent),
+      do: :ok,
+      else: {:error, {:unknown_agent, agent}}
+  end
+
+  defp install_refusal(:disabled),
+    do: "Install is disabled — set `config :faber, :web_allow_install, true`."
+
+  defp install_refusal(:stale),
+    do: "That proposal is no longer the one on screen — reload and open the session again."
+
+  defp install_refusal({:unknown_agent, agent}),
+    do: "#{agent} isn't an agent Faber knows how to install for."
+
+  defp install_refusal({:is_a_hook, name}) do
+    "#{name} is a hook, not a skill — it installs with Install hook, which gates on the eval and " <>
+      "shows you the script first."
+  end
+
+  defp install_refusal(:not_installable),
+    do: "That proposal can't be installed — reload and try again."
+
+  # A binary from `hook_eval_gate/1` and friends is already a human-facing sentence.
+  defp install_refusal(msg) when is_binary(msg), do: msg
+
   defp hook_eval_gate(%{passed: true}), do: :ok
 
   defp hook_eval_gate(proposal) do
@@ -723,8 +748,9 @@ defmodule FaberWeb.DashboardLive do
         %{
           name: record.name,
           md: record.md,
-          # B4: without `kind` the card fell through to `@proposal[:kind] != :hook` — true for
-          # `nil` — and a bash script came back as a skill card with the agent install menu.
+          # Load-bearing: without `kind` the card falls through to `@proposal[:kind] != :hook` —
+          # true for `nil` — and a bash script comes back as a skill card with the agent install
+          # menu.
           kind: record.kind,
           event: record.event,
           matcher: record.matcher,

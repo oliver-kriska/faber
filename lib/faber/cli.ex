@@ -744,10 +744,8 @@ defmodule Faber.CLI do
       record = store_artifact(result, proposal, eval, adapter, :single)
       IO.puts(render_proposal(proposal, eval, adapter) <> render_artifact(record))
 
-      # The same W1 bug, PRE-EXISTING on the skill path — the hook path replicated it rather than
-      # inventing it. Fixed in the same commit deliberately: it is one bug wearing two hats, and
-      # leaving the twin would mean `faber propose --install` reports honestly for a hook and lies
-      # for a skill, which is worse than either behaviour applied consistently.
+      # The exit code is the INSTALL's, on this path exactly as on the hook path: `--install` that
+      # silently didn't must not report success.
       maybe_install(proposal, adapter, opts[:install])
     else
       {:dry_run, report} ->
@@ -783,12 +781,10 @@ defmodule Faber.CLI do
       record = store_artifact(result, proposal, eval, adapter, :single)
       IO.puts(render_proposal(proposal, eval, adapter) <> render_artifact(record))
 
-      # W1 — the exit code must be the INSTALL's, not a constant. This returned a bare `0`, so a
-      # vetoed hook, a hand-edited pointer, an unreadable settings.json and a declined confirm all
-      # reported success to whatever called it. `--install` that silently didn't is precisely the
-      # false-green this whole feature exists to detect, in the feature itself.
-      #
-      # Flagged independently by elixir-reviewer AND codex → HIGH CONFIDENCE.
+      # The exit code must be the INSTALL's, never a constant: a vetoed hook, a hand-edited pointer,
+      # an unreadable settings.json and a declined confirm each mean this command did not do what it
+      # was asked. `--install` that silently didn't is precisely the false-green this whole feature
+      # exists to detect, in the feature itself.
       maybe_install_hook(proposal, adapter, opts, eval.passed)
     else
       {:dry_run, report} ->
@@ -887,7 +883,7 @@ defmodule Faber.CLI do
   # uses. NOT `IO.ANSI.enabled?`, which is read once at VM boot and pinned off by the test helper.
   defp tty?, do: match?({:ok, _}, :io.columns())
 
-  # W2, decided per-kind. A HOOK's install is gated on `eval.passed`; a SKILL's is not. That is not
+  # Decided per-kind. A HOOK's install is gated on `eval.passed`; a SKILL's is not. That is not
   # an inconsistency left lying around — it is the reason `@hook_eval` has its own dimensions at all:
   #
   #   * A skill's dimensions are QUALITIES — specificity, action density, Iron Laws. A skill that
@@ -1535,8 +1531,8 @@ defmodule Faber.CLI do
     """
   end
 
-  # `0`, not `:ok`: this IS the command's exit code now (W1). "No install was asked for" is a
-  # success — nothing was meant to happen and nothing did.
+  # `0`, not `:ok`: this IS the command's exit code. "No install was asked for" is a success —
+  # nothing was meant to happen and nothing did.
   defp maybe_install(_proposal, _adapter, install) when install in [nil, false], do: 0
 
   defp maybe_install(proposal, adapter, true) do
@@ -1545,8 +1541,8 @@ defmodule Faber.CLI do
     # to one and not the other, which is exactly the kind of drift that makes a blind overwrite
     # possible again.
     #
-    # `install_skill/3` has always returned a real 0/1; the status was simply thrown away here (the
-    # `_ =` was load-bearing in the wrong direction). That is W1 on the skill path.
+    # `install_skill/3` returns a real 0/1 and it must be RETURNED, never discarded: `--install` that
+    # silently didn't must not report success.
     install_skill(proposal.name, Propose.render_skill_md(proposal, adapter), [])
   end
 

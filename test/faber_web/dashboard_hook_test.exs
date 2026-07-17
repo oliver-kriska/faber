@@ -71,6 +71,18 @@ defmodule FaberWeb.DashboardHookTest do
   defp restore(k, nil), do: Application.delete_env(:faber, k)
   defp restore(k, v), do: Application.put_env(:faber, k, v)
 
+  # The scan result for the fixture carrying the hazard — the seed for every store-backed restore
+  # test below.
+  defp hazard_result do
+    result =
+      [base: "test/fixtures", min_messages: 0]
+      |> Faber.Scan.run()
+      |> Enum.find(&(&1.hazards != []))
+
+    assert result, "the hazard fixture vanished — this test has lost its subject"
+    result
+  end
+
   # Open the detail pane on the session carrying the seeded hazard, and hand back the view + html.
   defp open_hazard_session(conn) do
     {:ok, view, _} = live(conn, "/")
@@ -427,6 +439,54 @@ defmodule FaberWeb.DashboardHookTest do
            "a raw install event wrote a hook's bash script into the skills dir as a SKILL.md"
 
     assert html =~ "not a skill", "the refusal must say what was actually refused"
+  end
+
+  # S-4. Both handlers had the same two bugs, so they are fixed and tested together: an unparseable
+  # `i` fell to a bare `_ -> {:noreply, socket}` (total silence), and the `false ->` clause caught
+  # BOTH `allow_install?()` and `idx == proposal_i`, so a stale index blamed a config flag.
+  @tag :tmp_dir
+  test "a stale or unparseable index is answered, not silently swallowed", %{conn: conn} do
+    Store.put(hazard_result(), %{
+      name: "no-masked-gate-exit",
+      md: "#!/usr/bin/env bash\nexit 0\n",
+      kind: :hook,
+      event: "PreToolUse",
+      matcher: "Bash",
+      adapter: "faber-elixir",
+      eval: %{composite: 1.0, passed: true, threshold: 0.9, dimensions: %{}}
+    })
+
+    {view, _detail, i} = open_hazard_session(conn)
+
+    for {event, params} <- [
+          {"install_hook", %{"i" => "not-a-number"}},
+          {"install_hook", %{"i" => "#{i + 99}"}},
+          {"install", %{"agent" => "claude", "i" => "not-a-number"}},
+          {"install", %{"agent" => "claude", "i" => "#{i + 99}"}}
+        ] do
+      html = render_click(view, event, params)
+
+      # Silence is the worst answer here: the user clicks Install and the page does nothing, which
+      # is indistinguishable from a write that worked.
+      assert html =~ "no longer the one on screen",
+             "#{event} with #{inspect(params)} gave no feedback at all"
+
+      # And it must not blame a config flag the user never touched.
+      refute html =~ "web_allow_install",
+             "#{event} reported a stale index as an install-disabled error"
+    end
+  end
+
+  @tag :tmp_dir
+  test "an unknown agent is named, not ignored", %{conn: conn} do
+    {view, _detail, i} = open_hazard_session(conn)
+
+    view
+    |> render_click("propose", %{"i" => to_string(i)})
+    |> then(fn _ -> render_async(view, @async_timeout) end)
+
+    html = render_click(view, "install", %{"agent" => "emacs", "i" => to_string(i)})
+    assert html =~ "emacs"
   end
 
   @tag :tmp_dir

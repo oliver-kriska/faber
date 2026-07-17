@@ -58,7 +58,7 @@ defmodule Faber.Proposal.Store do
   # Format 3 adds `kind`, `event` and `matcher`. The bump is the honest signal that the written
   # shape changed; 1 and 2 stay readable because `decode/1` carries them forward (see
   # `decode_kind/2` — a pre-3 record's kind is inferred from its own bytes, never defaulted to
-  # `:skill`, which is the reading that caused B4).
+  # `:skill`).
   use Faber.Store.Format,
     format: 3,
     readable_formats: [1, 2, 3],
@@ -407,8 +407,8 @@ defmodule Faber.Proposal.Store do
   # Allowlisted for the same reason as @outcomes: these files are hand-editable.
   @kinds %{"skill" => :skill, "hook" => :hook}
 
-  # A pre-format-3 record carries no `kind`, and defaulting it to `:skill` would preserve B4 for
-  # every hook already on disk — that IS the bug (`nil` read as "not a hook"). So the kind is
+  # A pre-format-3 record carries no `kind`, and defaulting it to `:skill` would hand every hook
+  # already on disk to the skill installer — a bash script written into a skills dir. So the kind is
   # inferred from the artifact's own bytes instead, which is reliable rather than a guess: the hook
   # renderer GUARANTEES `#!` on line 1 (`Propose.script_body/1` strips the model's shebang so the
   # template can own it), and a SKILL.md opens with `---` frontmatter. The artifact says what it is.

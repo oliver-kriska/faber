@@ -553,8 +553,8 @@ defmodule Faber.Propose do
   # Two classes of character come out, and the second is the less obvious one:
   #
   #   * `\p{Cc}` (control) — a `#` comment ends at a newline, so a token carrying one stops being a
-  #     comment and becomes a command. This is B1, reproduced live: `matcher: "Bash\n<payload>\n#"`
-  #     rendered the payload as a live line and still scored `composite: 1.0, vetoed: []`.
+  #     comment and becomes a command. Reproduced live: `matcher: "Bash\n<payload>\n#"` rendered the
+  #     payload as a live line and still scored `composite: 1.0, vetoed: []`.
   #
   #   * `\p{Cf}` (format: bidi overrides, zero-width joiners) — these change what a terminal
   #     *displays* without changing the bytes. That matters here more than it looks: Faber's install
