@@ -775,6 +775,13 @@ That button spends LLM tokens, so it sits behind a browser confirm; it's on by d
 (human-initiated) and can be disabled outright with `config :faber, :web_allow_propose, false`.
 The endpoint binds loopback only and pins socket origins to localhost.
 
+Selecting a session opens its **detail pane**, which is also where its **hazards** appear (§6) with
+a **Propose a hook** button beside them. They are deliberately not a column in the table: that
+table is sorted by friction, and a hazard has none — the session carrying one may rank last. A
+column would say hazards are part of the score, when they are precisely what the score cannot see.
+Installing a hook from here writes the script *and* the `settings.json` pointer, so its confirm
+names both.
+
 The same process serves a **read-only MCP server** at `http://localhost:<port>/mcp`. Connect a
 coding agent:
 

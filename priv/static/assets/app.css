@@ -901,6 +901,60 @@ tbody tr.srow:focus-visible {
   margin-bottom: var(--space-2);
 }
 
+/* Frictionless hazards. Carries a left rule and the accent rather than --bad: this is not an error
+   the session hit, it is a risk it ran straight through. Red would read as "something failed here",
+   and the whole point is that nothing did. */
+.detail-hazards {
+  margin: var(--space-5) 0;
+  border-left: 2px solid var(--accent);
+  padding-left: var(--space-3);
+}
+.hazard-note {
+  color: var(--fg-dim);
+  font-size: 0.85rem;
+  margin: 0 0 var(--space-3);
+  max-width: 62ch;
+}
+.hazard + .hazard {
+  margin-top: var(--space-4);
+}
+.hazard-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.hazard-kind {
+  font-weight: 700;
+}
+.hazard-count,
+.hazard-pointer {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.hazard-pointer {
+  font-family: var(--font-mono);
+}
+/* The offending command, verbatim. Scrolls rather than wrapping — a wrapped shell pipeline reads as
+   two commands, and this one is quoted precisely because its exact shape is the problem. */
+.hazard-evidence {
+  display: block;
+  margin: var(--space-2) 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--fg-dim);
+  overflow-x: auto;
+  white-space: pre;
+}
+.badge.kind-hook {
+  background: rgba(216, 163, 74, 0.14);
+  color: var(--accent);
+}
+
 .detail-actions {
   display: flex;
   align-items: center;

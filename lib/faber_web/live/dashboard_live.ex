@@ -17,7 +17,7 @@ defmodule FaberWeb.DashboardLive do
 
   require Logger
 
-  alias Faber.{Adapter, Eval, Propose, Scan}
+  alias Faber.{Adapter, Eval, Proposal, Propose, Scan}
   alias Faber.Proposal.Store
 
   # How many ranked rows the table shows before "Show more". We keep the *full* scan
@@ -190,6 +190,85 @@ defmodule FaberWeb.DashboardLive do
 
       {:error, {:stack_mismatch, adapter, result}} ->
         {:noreply, put_flash(socket, :error, stack_mismatch_message(adapter, result))}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  # Draft a HOOK for one of the selected session's hazards. Same gates, same async slot, same
+  # cancel — only the artifact differs. It is reachable only from the detail pane, deliberately:
+  # a hazard is not part of the friction ranking (a session carrying one may rank last, as the
+  # fixture that scores 0.0 does), so a column in a table sorted by friction would say the opposite
+  # of the truth. It is a fact about the session you opened.
+  def handle_event("propose_hook", _params, %{assigns: %{proposing_i: p}} = socket)
+      when not is_nil(p),
+      do: {:noreply, socket}
+
+  def handle_event("propose_hook", %{"i" => i, "kind" => kind}, socket) do
+    with true <- allow_propose?(),
+         {idx, ""} <- Integer.parse(i),
+         result when not is_nil(result) <- Enum.at(socket.assigns.results, idx - 1),
+         hazard when not is_nil(hazard) <-
+           Enum.find(result.hazards, &(to_string(&1.kind) == kind)),
+         :ok <- gate_stack(socket.assigns.adapter, result) do
+      {:noreply,
+       socket
+       |> assign(
+         selected_i: idx,
+         proposing_i: idx,
+         proposal: nil,
+         proposal_i: nil,
+         installed: nil
+       )
+       |> start_async(:propose, fn -> do_propose_hook(result, hazard) end)}
+    else
+      false ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "Propose is disabled — set `config :faber, :web_allow_propose, true`."
+         )}
+
+      {:error, {:stack_mismatch, adapter, result}} ->
+        {:noreply, put_flash(socket, :error, stack_mismatch_message(adapter, result))}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  # Install the hook currently on screen: its script into the Faber hooks dir, plus one pointer in
+  # settings.json. No agent picker, unlike a skill — a hook is a Claude Code mechanism, and there is
+  # no "install this hook for Codex".
+  def handle_event("install_hook", %{"i" => i} = params, socket) do
+    proposal = socket.assigns.proposal
+    force = params["force"] == "true"
+
+    with true <- allow_install?(),
+         {idx, ""} <- Integer.parse(i),
+         true <- idx == socket.assigns.proposal_i,
+         %{kind: :hook, proposal: %Proposal{} = p, adapter: adapter} <- proposal,
+         false <- Map.has_key?(proposal, :error) do
+      case do_install_hook(p, adapter, force) do
+        {:ok, msg} ->
+          {:noreply,
+           socket
+           |> assign(:installed, %{i: idx, agent: "claude", msg: msg})
+           |> put_flash(:info, msg)}
+
+        {:error, msg} ->
+          {:noreply, put_flash(socket, :error, msg)}
+      end
+    else
+      false ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "Install is disabled — set `config :faber, :web_allow_install, true`."
+         )}
 
       _ ->
         {:noreply, socket}
@@ -388,6 +467,80 @@ defmodule FaberWeb.DashboardLive do
       {:error, reason} ->
         Logger.error("dashboard propose failed: #{inspect(reason)}")
         %{error: humanize_error(reason)}
+    end
+  end
+
+  # The hook sibling of `do_propose/1`, with the same second, independent adapter read for the same
+  # fail-closed reason. Two differences that matter:
+  #
+  #   * `Eval.score/2` is handed the hook proposal, so it selects the HOOK eval set by kind — the
+  #     skill matchers would score a shell script ~0.15-0.30 against a 0.75 bar and reject every
+  #     hook ever written.
+  #   * the whole `%Proposal{}` is carried into the assigns, not just its rendered bytes. A skill
+  #     installs from `{name, md}`; a hook's pointer needs its `event` and `matcher` too, and
+  #     re-deriving those from the script text would be parsing back what we already have.
+  defp do_propose_hook(result, hazard) do
+    with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
+         :ok <- Propose.stack_gate(adapter, result),
+         {:ok, proposal} <- Propose.propose_hook(result, hazard, adapter),
+         {:ok, eval} <- Eval.score(proposal, adapter: adapter) do
+      md = Propose.render(proposal, adapter)
+
+      # Persist before handing it over, for the reason `do_propose/1` spells out: this artifact cost
+      # tokens, and until it is on disk a refresh destroys it.
+      Store.put(result, %{name: proposal.name, md: md, eval: eval, adapter: adapter.name})
+
+      %{
+        name: proposal.name,
+        md: md,
+        kind: :hook,
+        proposal: proposal,
+        # The adapter travels with the proposal so the install re-renders through the SAME pack the
+        # eval scored. `Install.Hook.install/2` takes a `%Proposal{}` and renders it (a skill
+        # installs from already-rendered bytes and has no such gap), so re-loading the pack at
+        # install time would let a pack edited in between put different bytes on disk than the ones
+        # that passed the gate. Without it the render finds no `hook` template at all and raises.
+        adapter: adapter,
+        composite: eval.composite,
+        passed: eval.passed,
+        threshold: eval.threshold
+      }
+    else
+      {:error, {:stack_mismatch, adapter, result}} ->
+        %{error: stack_mismatch_message(adapter, result)}
+
+      {:error, reason} ->
+        Logger.error("dashboard propose_hook failed: #{inspect(reason)}")
+        %{error: humanize_error(reason)}
+    end
+  end
+
+  # Write the hook: script + provenance marker + one settings.json pointer, via the shared installer
+  # (which re-runs the safety veto on the exact bytes — a passing score is not permission to write).
+  defp do_install_hook(%Proposal{} = p, adapter, force) do
+    opts = [adapter: adapter] ++ if(force, do: [force: true], else: [])
+
+    case Faber.Install.Hook.install(p, opts) do
+      {:ok, %{script: script, settings: settings}} ->
+        {:ok, "Installed #{p.name} → #{shorten(script)} · pointer added to #{shorten(settings)}"}
+
+      # Same words as the CLI and the MCP tool. Deliberately does not suggest force: it overrides an
+      # existing install, never a safety refusal.
+      {:error, {:vetoed, vetoes}} ->
+        {:error,
+         "REFUSED — #{p.name} was not installed: " <>
+           Enum.map_join(vetoes, "; ", & &1.evidence) <> " (safety refusal, not a score)"}
+
+      {:error, {:hand_edited, command}} ->
+        {:error,
+         "#{p.name}'s pointer in settings.json has been hand-edited since Faber wrote it " <>
+           "(#{command}) — use Reinstall to replace it, or keep your edit."}
+
+      {:error, {:exists, path}} ->
+        {:error, "#{p.name} already installed at #{shorten(path)} — use Reinstall to overwrite"}
+
+      {:error, reason} ->
+        {:error, "Hook install failed: #{inspect(reason)}"}
     end
   end
 
@@ -645,12 +798,19 @@ defmodule FaberWeb.DashboardLive do
   # there's something there. The filename follows the proposal's kind — a hook and a skill of the
   # same name are different files, so asking about the wrong one would offer "Install" over an
   # existing artifact.
+  #
+  # The DIR follows the kind too, and must: hooks live in their own root, not the skills tree (which
+  # is walked for `SKILL.md`). Looking a hook up in the skills dir would never find it, so the
+  # button would always read "Install" and then fail on an existing one.
   defp artifact_installed?(%{name: name} = proposal) when is_binary(name) do
-    filename = Faber.Proposal.filename(Map.get(proposal, :kind, :skill))
-    [Faber.Install.default_dir(), name, filename] |> Path.join() |> File.exists?()
+    kind = Map.get(proposal, :kind, :skill)
+    [artifact_dir(kind), name, Faber.Proposal.filename(kind)] |> Path.join() |> File.exists?()
   end
 
   defp artifact_installed?(_proposal), do: false
+
+  defp artifact_dir(:hook), do: Faber.Install.Hook.default_dir()
+  defp artifact_dir(_skill), do: Faber.Install.default_dir()
 
   defp install_confirm(true, name, label) do
     "Reinstall “#{name}” for #{label}? This OVERWRITES the existing skill in your " <>
@@ -660,6 +820,18 @@ defmodule FaberWeb.DashboardLive do
   defp install_confirm(false, name, label) do
     "Install “#{name}” for #{label}? This writes a SKILL.md into your " <>
       "~/.claude/skills and updates the #{label} context file."
+  end
+
+  # Names both writes, because one of them is a file Faber doesn't own. Someone approving this is
+  # agreeing to a line in their settings.json, and should be told so before, not after.
+  defp hook_install_confirm(true, name) do
+    "Reinstall “#{name}”? This OVERWRITES the existing hook script and its pointer in your " <>
+      "~/.claude/settings.json — including any edit you've made to that pointer."
+  end
+
+  defp hook_install_confirm(false, name) do
+    "Install “#{name}”? This writes a hook script into ~/.claude/faber-hooks and adds one " <>
+      "pointer to your ~/.claude/settings.json. Claude Code will run it on every matching tool call."
   end
 
   # Write the skill + sync the chosen agent's pointer. A plain install never force-overwrites (the
@@ -1206,6 +1378,40 @@ defmodule FaberWeb.DashboardLive do
           </div>
         </div>
 
+        <%!-- Frictionless hazards. Only here, never in the ranked table: this section's whole point
+              is that the ranking cannot see these, so a column in a table sorted by friction would
+              claim the opposite. The block is presence-gated — a session without one says nothing
+              rather than reassuring you it is clean, which Faber cannot know (it detects one
+              class). --%>
+        <div :if={@session.hazards != []} class="detail-hazards">
+          <span class="detail-label">Hazards — dangerous, and frictionless</span>
+          <p class="hazard-note">
+            This session ran {if length(@session.hazards) == 1, do: "this", else: "these"}
+            without struggling, so {if length(@session.hazards) == 1, do: "it adds", else: "they add"}
+            nothing to the friction above. A skill wouldn't help — nothing looked wrong at the time.
+            A hook runs before the command.
+          </p>
+          <div :for={h <- @session.hazards} class="hazard">
+            <div class="hazard-head">
+              <span class="hazard-kind">{signal(h.kind)}</span>
+              <span class="hazard-count">×{h.count}</span>
+              <span class="hazard-pointer">{h.suggested_event} · {h.matcher}</span>
+            </div>
+            <code class="hazard-evidence">{h.evidence}</code>
+            <button
+              :if={@allow_propose and stack_ok?(@adapter, @session)}
+              class="propose-btn hook-btn"
+              phx-click="propose_hook"
+              phx-value-i={@selected_i}
+              phx-value-kind={h.kind}
+              disabled={@proposing}
+              data-confirm="This calls the configured LLM (claude -p by default) and spends tokens. Continue?"
+            >
+              {if @proposing, do: "Proposing…", else: "Propose a hook"}
+            </button>
+          </div>
+        </div>
+
         <div class="detail-actions">
           <button
             :if={@allow_propose and stack_ok?(@adapter, @session)}
@@ -1272,7 +1478,40 @@ defmodule FaberWeb.DashboardLive do
         Try again
       </button>
     </div>
-    <div :if={!@proposal[:error]} class="proposal-card">
+    <%!-- A hook diverges from the skill card at exactly one place: where it installs TO. A skill goes
+          into an agent's world and the menu asks which; a hook is a Claude Code mechanism written to
+          settings.json, so there is nothing to ask. --%>
+    <div :if={!@proposal[:error] and @proposal[:kind] == :hook} class="proposal-card">
+      <div class="proposal-head">
+        <div class="proposal-meta">
+          <span class="proposal-name">{@proposal.name}</span>
+          <span class="badge kind-hook">hook</span>
+          <span class={"badge " <> if(@proposal.passed, do: "pass", else: "fail")}>
+            {verdict(@proposal)}
+          </span>
+          <span class="composite">composite {fmt(@proposal.composite)}</span>
+        </div>
+        <div class="proposal-buttons">
+          <button class="ghost copy-btn" type="button" data-copy={"#skill-#{@row}"}>
+            Copy hook
+          </button>
+          <button
+            :if={@allow_install}
+            class="ghost install-btn"
+            type="button"
+            phx-click="install_hook"
+            phx-value-i={@row}
+            phx-value-force={@already && "true"}
+            data-confirm={hook_install_confirm(@already, @proposal.name)}
+          >
+            {if @already, do: "Reinstall hook", else: "Install hook"}
+          </button>
+        </div>
+      </div>
+      <p :if={@installed} class="install-result">✓ {@installed.msg}</p>
+      <pre id={"skill-#{@row}"} class="skill" title="Click to select all, or use Copy hook"><code>{@proposal.md}</code></pre>
+    </div>
+    <div :if={!@proposal[:error] and @proposal[:kind] != :hook} class="proposal-card">
       <div class="proposal-head">
         <div class="proposal-meta">
           <span class="proposal-name">{@proposal.name}</span>

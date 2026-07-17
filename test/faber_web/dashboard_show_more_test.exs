@@ -1,6 +1,6 @@
 defmodule FaberWeb.DashboardShowMoreTest do
   # Exercises the "Show more" reveal, which only appears once the matching set exceeds the display
-  # cap. The fixture corpus is 5 sessions — under the 25-row production cap — so this module shrinks
+  # cap. The fixture corpus is 6 sessions — under the 25-row production cap — so this module shrinks
   # the cap via `dashboard_display_cap` to drive the reveal. That mutates application env, so it runs
   # `async: false` (in isolation from `DashboardLiveTest`, which is async and cap-25 dependent) and
   # restores the env afterwards.
