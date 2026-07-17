@@ -44,5 +44,46 @@ defmodule Faber.LiveProposeTest do
       assert {:ok, path} = Install.install(proposal, dir: tmp, adapter: adapter, force: true)
       assert File.exists?(path)
     end
+
+    test "scan → propose_hook(claude -p) → hook eval yields a hook that can actually run" do
+      # PE-T1. `Faber.HazardToHookTest` runs the hook spine end to end against a script
+      # hand-authored in `Faber.LLM.Stub` — so it proves the pipeline does not MANGLE a correct
+      # script, and says nothing about whether it PRODUCES one. That gap is not academic: B1 hid in
+      # it for four commits, because a benign stub never sends the vector.
+      #
+      # This is the other half. A real model drafts against the real adapter, and the hook eval —
+      # whose dimensions are necessary conditions, not qualities — decides. It asserts structure,
+      # never content: the model is nondeterministic, and pinning its bash would make this a test
+      # of one generation rather than of the pipeline.
+      {:ok, adapter} = Adapter.load("adapters/faber-elixir")
+
+      result = @fixtures |> Scan.run() |> Enum.find(&(&1.hazards != []))
+      assert result, "no fixture carries a hazard — this test has lost its subject"
+      hazard = hd(result.hazards)
+
+      assert {:ok, proposal} =
+               Propose.propose_hook(result, hazard, adapter,
+                 llm: Faber.LLM.ClaudeCLI,
+                 model: "sonnet"
+               )
+
+      assert proposal.kind == :hook
+      assert proposal.name =~ ~r/\A[a-z0-9][a-z0-9-]{0,63}\z/
+
+      # The pointer is what Claude Code actually reads. A hook with a bogus event is not a bad
+      # hook, it is a file that never runs.
+      assert proposal.event in ~w(PreToolUse PostToolUse SessionStart Stop)
+      assert is_binary(proposal.matcher) and proposal.matcher != ""
+
+      assert {:ok, eval} = Eval.score(proposal, adapter: adapter)
+
+      # No floor-with-margin here, unlike the skill above. The hook set has no model-variable
+      # dimensions to leave room for — `passed` IS the question, and it is the same gate that now
+      # decides whether an install is allowed to happen at all (W2). A real model that cannot clear
+      # it is the finding.
+      assert eval.passed,
+             "live hook scored #{eval.composite} (threshold #{eval.threshold}) — " <>
+               "dimensions: #{inspect(eval.dimensions, limit: :infinity)}"
+    end
   end
 end

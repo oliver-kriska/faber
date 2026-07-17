@@ -151,6 +151,19 @@ defmodule FaberWeb.DashboardHookTest do
   end
 
   @tag :tmp_dir
+  test "each hazard's Propose button is distinguishable by label alone (S4)", %{conn: conn} do
+    # The visible text is "Propose a hook" on every hazard; what tells them apart is the hazard
+    # rendered above each one. A screen reader listing this pane's buttons drops exactly that
+    # spatial cue, so the accessible name has to carry the hazard itself.
+    {_view, detail, _i} = open_hazard_session(conn)
+
+    assert detail =~ ~s(aria-label="Propose a hook for )
+
+    assert detail =~ ~r/aria-label="Propose a hook for [^"]+"/,
+           "the per-hazard Propose button has no hazard in its accessible name"
+  end
+
+  @tag :tmp_dir
   test "propose_hook is refused server-side when the flag is off — the hidden button is not a gate",
        %{conn: conn} do
     {view, _detail, i} = open_hazard_session(conn)

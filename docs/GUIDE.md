@@ -134,7 +134,7 @@ drift). For `scan` and `propose` each surface carries flags the other does not:
 | Binary | From a checkout | How they differ |
 |---|---|---|
 | `faber scan` | `mix faber.scan` | task adds `--top N` (rows) and `--no-dedupe`; binary adds `--rank-by`, `--source`/`--db`, `--json`, `--quiet` |
-| `faber propose` | `mix faber.propose` | task adds `--adapter DIR`, `--write DIR`, `--no-eval`, `--trigger-samples N`; binary adds `--install`/`--force`, `--top N`/`--cluster-threshold`, `--dry-run`, `--source`/`--db`, `--min-messages N` |
+| `faber propose` | `mix faber.propose` | task adds `--adapter DIR`, `--write DIR`, `--no-eval`, `--trigger-samples N`; binary adds `--install`/`--force`/`--yes`, `--top N`/`--cluster-threshold`, `--dry-run`, `--source`/`--db`, `--min-messages N` |
 | `faber refine` | `mix faber.refine` | identical — the task is a thin delegate |
 | `faber propose --top N` | — | library: `Faber.Consolidate.run/3` |
 | `faber feedback` | — | library: `Faber.Feedback.report/1` |
@@ -426,7 +426,8 @@ That needs a **hook** — a script Claude Code runs automatically, before the co
 ```sh
 faber scan --json | jq -r '.sessions[].hazards[].kind' | sort -u   # what's there
 faber propose --hazard pipe_masks_exit                             # draft the hook
-faber propose --hazard pipe_masks_exit --install                   # and install it
+faber propose --hazard pipe_masks_exit --install                   # print it, then ask
+faber propose --hazard pipe_masks_exit --install --yes             # ...or don't ask (see below)
 ```
 
 Because hazards are orthogonal to the ranking, `--hazard` selects the first session carrying that
@@ -441,14 +442,45 @@ stdin; is its `settings.json` pointer valid) at a **higher** bar of 0.90, plus t
 every artifact faces. That veto reads a hook as *executable*: `##` is a markdown heading in a skill
 but an ordinary shell comment in a script, and it buys no exemption here.
 
+**`--install` shows you the script and then asks.** This is the part of the design worth
+understanding rather than clicking through, because the honest version is uncomfortable: a hook is a
+shell script *an LLM wrote*, marked executable, wired to run on every matching tool call. The safety
+veto that guards that write is a blocklist, and a blocklist over "dangerous bash" is not a thing
+anyone knows how to complete — of eight bypass vectors written by hand against it, seven walked
+past. So the veto is a backstop, not the boundary. **You are the boundary.** The script is printed
+in full, and then you confirm it — which is why the confirm comes *after* the script and not before
+it.
+
+Three consequences, all deliberate:
+
+- **`--yes` skips the confirm**, for scripting. It is a real escape hatch and this guide will not
+  pretend otherwise: passing it hands back the guarantee described above, in exchange for a
+  pipeline that doesn't block. That trade is yours to make; it should just be a decision rather
+  than a default.
+- **No terminal and no `--yes` refuses.** It does not prompt (nobody is there to answer, so it
+  would hang forever) and it does not install anyway. A script that wants this says `--yes`.
+- **The MCP tool never installs at all.** `faber_propose_hook` returns the script and stops (§12).
+  An agent calling it has no human to show the script to, and that is precisely the situation this
+  posture exists for.
+
+**A hook that fails its eval is not installed** — and unlike a skill, that is a hard gate. `--force`
+does not override it (`--force` replaces an existing install; it is not a way past a refusal). The
+asymmetry is intentional: a skill's dimensions measure *quality*, and a mediocre skill is a document
+you can ignore. A hook's dimensions are *necessary conditions* — one that can't run, can't see its
+stdin, or points at a bogus event isn't a low-quality hook, it's a broken one, and it would be
+broken while executing on every matching call.
+
 **What `--install` writes** — two things, deliberately split:
 
 - the **script**, at `~/.claude/faber-hooks/<name>/hook.sh`, with the same `.faber.json` provenance
   marker every Faber-installed artifact carries (§19);
 - one **pointer** in `~/.claude/settings.json` — the smallest possible footprint in a file Faber
   does not own. Faber merges at the event level (your other hooks survive), preserves your key
-  order, is idempotent on re-install, and **refuses to overwrite a pointer you have hand-edited**
-  unless you pass `--force`.
+  order and file mode, is idempotent on re-install, and **refuses to overwrite a pointer you have
+  hand-edited** unless you pass `--force`. The write is atomic (a temp file renamed over the
+  target), so interrupting an install cannot leave you with a truncated settings.json — that file
+  holds your permissions, MCP servers and your own hooks, and losing them to install one of ours
+  would be a poor trade.
 
 **Today Faber detects one hazard class**, `pipe_masks_exit`. A clean scan means *that class* wasn't
 found — not that your sessions are hazard-free. Adding a class is a pattern entry in
@@ -780,7 +812,9 @@ a **Propose a hook** button beside them. They are deliberately not a column in t
 table is sorted by friction, and a hazard has none — the session carrying one may rank last. A
 column would say hazards are part of the score, when they are precisely what the score cannot see.
 Installing a hook from here writes the script *and* the `settings.json` pointer, so its confirm
-names both.
+names both — and the card renders the full script *above* that button, because a confirm answered
+before you reach the bytes is a rubber stamp (§6). A hook that failed its eval has no working
+Install: the dashboard refuses it exactly as the CLI does.
 
 The same process serves a **read-only MCP server** at `http://localhost:<port>/mcp`. Connect a
 coding agent:
@@ -795,7 +829,16 @@ claude mcp add --transport http faber http://localhost:4710/mcp
 | `faber_list_skills` | installed skills (name + description) | no |
 | `faber_get_skill` | one skill's full `SKILL.md` | no |
 | `faber_propose_skill` | propose + gate (+ optionally install) a **skill** for a ranked finding — calls an LLM | **yes**: `config :faber, :mcp_allow_propose, true` |
-| `faber_propose_hook` | propose + gate (+ optionally install) a **hook** for a hazard class (§6) — calls an LLM | **yes**: same flag |
+| `faber_propose_hook` | propose + gate a **hook** for a hazard class (§6) — calls an LLM. Returns the script; **never installs** | **yes**: same flag |
+
+**`faber_propose_hook` never writes.** It had an `install` option and it was removed. Installing a
+hook means marking an LLM-authored script executable and wiring it to run on every matching tool
+call, and the only real guard on that is a human reading the script first (§6) — which an MCP tool
+called by an agent has no way to do. So it returns the script and says, in the reply itself, that
+installing is `faber propose --hazard KIND --install`'s job. Passing `install: true` anyway changes
+nothing; a test sends one to keep it that way. Its sibling `faber_propose_skill` still installs on
+request, for the same reason hooks are gated and skills aren't: a skill is a document that does
+nothing until something reads it.
 
 `faber_propose_hook` is a separate tool rather than a `kind` param, because the two share no input:
 one selects by rank in a friction ranking, the other by hazard class — and a hazard has no friction

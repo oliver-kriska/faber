@@ -200,6 +200,54 @@ defmodule Faber.InstallHookTest do
     end
   end
 
+  describe "settings.json is written atomically (S3 / PE-T5)" do
+    @tag :tmp_dir
+    test "the user's file is never truncated in place — the replacement arrives by rename", ctx do
+      path = Path.join(ctx.tmp_dir, "settings.json")
+
+      File.write!(path, """
+      {"model": "opus", "permissions": {"allow": ["Bash(ls:*)"]}}
+      """)
+
+      before = File.stat!(path)
+
+      assert {:ok, _} = Hook.install(proposal(), opts(ctx))
+
+      # A rename swaps the inode. That is the whole assertion: `File.write/2` would have opened the
+      # user's file with O_TRUNC and refilled it, so a `^C` between the two leaves them with an
+      # EMPTY settings.json — not Faber's pointer lost, but their permissions, MCP servers and
+      # hand-written hooks lost, while installing a hook they asked for.
+      refute File.stat!(path).inode == before.inode,
+             "settings.json was written in place — the truncate window is still open"
+
+      # The rename is the LAST step, so the user's own keys survive it.
+      assert decoded(ctx)["model"] == "opus"
+      assert decoded(ctx)["permissions"]["allow"] == ["Bash(ls:*)"]
+    end
+
+    @tag :tmp_dir
+    test "the user's file mode survives the rename", ctx do
+      path = Path.join(ctx.tmp_dir, "settings.json")
+      File.write!(path, ~s({"model": "opus"}\n))
+      File.chmod!(path, 0o644)
+
+      assert {:ok, _} = Hook.install(proposal(), opts(ctx))
+
+      # `rename` brings the tmp file's mode with it. Without carrying the mode across, installing a
+      # hook would silently re-permission a file Faber does not own — the same enumerate-and-claim
+      # mistake as writing into a dir and calling all of it ours.
+      assert Bitwise.band(File.stat!(path).mode, 0o777) == 0o644
+    end
+
+    @tag :tmp_dir
+    test "no tmp file is left behind", ctx do
+      assert {:ok, _} = Hook.install(proposal(), opts(ctx))
+
+      refute File.exists?(Path.join(ctx.tmp_dir, "settings.json.faber.tmp")),
+             "the atomic write left its scratch file in the user's ~/.claude"
+    end
+  end
+
   describe "idempotency + never-clobber" do
     @tag :tmp_dir
     test "re-installing is a no-op — one pointer, not two", ctx do

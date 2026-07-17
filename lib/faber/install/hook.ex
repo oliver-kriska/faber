@@ -185,9 +185,53 @@ defmodule Faber.Install.Hook do
     end
   end
 
+  # S3/PE-T5. Write to a sibling tmp file and `rename` over the target — `rename(2)` is atomic within
+  # a filesystem, and the tmp is a sibling precisely so it is on the same one.
+  #
+  # This was `File.write/2`, which opens the target with O_TRUNC: the user's settings.json is emptied
+  # *first*, and only then refilled. Anything that stops the VM in that window (^C on `faber propose
+  # --install`, an OOM kill, a `mix` task shutdown) leaves the file truncated — and that file is not
+  # Faber's. It carries the user's permissions, MCP servers, env, and every hook they wrote
+  # themselves. Losing Faber's own pointer would be an inconvenience; this loses THEIR config, to
+  # install a hook they asked for. `Faber.write_private/2` documents exactly this hazard for Faber's
+  # own files — the hook installer just wasn't using it.
+  #
+  # It cannot simply CALL `write_private/2`, hence the near-duplicate: that helper chmods to `0600`,
+  # which is right for a file Faber owns inside its own `0700` dir and wrong here. settings.json
+  # belongs to the user (typically `0644`), and silently narrowing the mode of a shared file we did
+  # not create is the enumerate-and-claim mistake in another costume. So: preserve the existing mode
+  # when there is one, and let a genuinely new file take the umask default.
+  #
+  # RESIDUAL, deliberately not "fixed" here: read→merge→write is still not serialized, so a writer
+  # that lands inside our window has its change reverted (a lost update, not a corrupt file). The
+  # window is sub-millisecond and every writer is now human-triggered behind a confirm — the CLI and
+  # the dashboard; `faber_propose_hook` stopped writing at all (PC-T1). Closing it properly needs a
+  # cross-process lock, and a stale lockfile from a crashed run that blocks every future install is a
+  # worse and much more likely failure than the race it prevents. Named rather than papered over.
   defp save_settings(path, obj) do
-    with :ok <- File.mkdir_p(Path.dirname(path)) do
-      File.write(path, Jason.encode!(obj, pretty: true) <> "\n")
+    tmp = path <> ".faber.tmp"
+    body = Jason.encode!(obj, pretty: true) <> "\n"
+
+    with :ok <- File.mkdir_p(Path.dirname(path)),
+         :ok <- File.write(tmp, body),
+         :ok <- copy_mode(path, tmp),
+         :ok <- File.rename(tmp, path) do
+      :ok
+    else
+      {:error, _} = err ->
+        File.rm(tmp)
+        err
+    end
+  end
+
+  # Carry the target's mode onto the replacement. `rename` swaps the inode, so without this an
+  # install would silently reset settings.json to the umask default.
+  defp copy_mode(path, tmp) do
+    case File.stat(path) do
+      {:ok, %File.Stat{mode: mode}} -> File.chmod(tmp, mode)
+      # No file yet — first hook on a fresh machine. The umask default is the right answer.
+      {:error, :enoent} -> :ok
+      {:error, _} = err -> err
     end
   end
 
@@ -235,12 +279,14 @@ defmodule Faber.Install.Hook do
     entries
     |> Enum.flat_map(&oget(&1, "hooks", []))
     |> Enum.filter(&mentions?(&1, script_path))
-    |> Enum.reduce(:none, fn hook, acc ->
-      cond do
-        acc != :none -> acc
-        hook == ours -> {:exact, script_path}
-        true -> {:altered, oget(hook, "command", script_path)}
-      end
+    |> Enum.reduce_while(:none, fn hook, _acc ->
+      # S2. Was an `Enum.reduce` carrying an `acc != :none -> acc` guard, i.e. it walked the whole
+      # list and then ignored everything after the first match. Same answer, but it described a
+      # fold over all entries when the operation is "find the first" — and the guard was the only
+      # thing standing between that and a later entry overwriting the verdict.
+      if hook == ours,
+        do: {:halt, {:exact, script_path}},
+        else: {:halt, {:altered, oget(hook, "command", script_path)}}
     end)
   end
 

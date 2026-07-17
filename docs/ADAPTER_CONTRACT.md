@@ -291,6 +291,27 @@ The **template owns the shebang**, not the model: `{{script}}` is the body with 
 only a shebang on line 1 — a second one is a comment, and a file whose line 1 says `bash`
 while line 3 says `zsh` says one thing and does another.
 
+**Every hook token except `{{script}}` is defanged before substitution.** Control and format
+characters (Unicode `Cc` and `Cf`) are replaced with a space and runs of whitespace collapsed. This
+is not cosmetic, and the reason is worth stating because a template author will otherwise assume
+these tokens are inert prose:
+
+- In `hook.sh.tmpl` every one of them lands **inside a `#` comment**. A comment ends at a newline,
+  so a `matcher` of `"Bash\necho PWNED\n#"` closes the comment and contributes a live shell line to
+  a script that is about to be `chmod 0755`'d. Measured before the fix: it scored composite 1.0 with
+  an empty veto list.
+- `Cf` covers the bidi overrides (Trojan Source). Those never reach a shell — they exist to deceive
+  the *human* reading the script, and under this design that human **is** the security boundary, so
+  a character whose only function is to misrepresent what they are approving has no business in the
+  file.
+- The replacement is a **space, not a deletion**: deleting the newline from `Pre\nToolUse` would
+  splice it into a valid-looking `PreToolUse`, turning a garbled token into a plausible one.
+
+`{{script}}` is exempt because it is the artifact — it is *meant* to be executable — and it is what
+the safety veto and the hook eval both scrutinize. If your template puts a token somewhere other
+than a comment, that is your escaping to reason about; the engine's guarantee is that these tokens
+cannot break *out* of a comment.
+
 ## 7. `eval/` — domain matchers + trigger fixtures
 
 This is the only subdirectory that may contain **executable code**, and it is **Python**. It

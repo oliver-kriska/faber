@@ -1473,6 +1473,12 @@ defmodule FaberWeb.DashboardLive do
               <span class="hazard-pointer">{h.suggested_event} · {h.matcher}</span>
             </div>
             <code class="hazard-evidence">{h.evidence}</code>
+    <%!-- S4. Every hazard renders the same "Propose a hook" text, so a screen reader listing
+            the buttons on this pane reads the identical label N times with nothing to pick between
+            them. The visible text can stay short because the hazard it belongs to is right above it
+            — visually. That spatial cue is exactly what the labels list drops, so the label carries
+            the hazard's name itself. Moot at one detector class; it stops being moot on the day a
+            second one lands, which is not a day anyone will remember this button on. --%>
             <button
               :if={@allow_propose and stack_ok?(@adapter, @session)}
               class="propose-btn hook-btn"
@@ -1480,6 +1486,7 @@ defmodule FaberWeb.DashboardLive do
               phx-value-i={@selected_i}
               phx-value-kind={h.kind}
               disabled={@proposing}
+              aria-label={"Propose a hook for #{signal(h.kind)}"}
               data-confirm="This calls the configured LLM (claude -p by default) and spends tokens. Continue?"
             >
               {if @proposing, do: "Proposing…", else: "Propose a hook"}
