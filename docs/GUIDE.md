@@ -283,7 +283,7 @@ at `--min-messages` and `--all` rather than at `--base`/`--format`. See §21.
 | Flag | Meaning | Default |
 |---|---|---|
 | `--all` | rank every project on the machine, not just the one you're in | off (scoped to the cwd's project) |
-| `--limit N` | cap sessions scored (an even sample across the corpus, not a prefix) | all |
+| `--limit N` | cap sessions scored (an even sample across the corpus, not a prefix). Where the scope can't narrow discovery — a project scope on `codex`/`gemini`/`opencode` — every session has to be scored to know what's in scope, so it caps *results* instead: the top N of the ranking. | all |
 | `--rank-by raw\|rate` | total friction vs. friction per message | `raw` |
 | `--json` | machine-readable: raw values, the full signal vector, no padding | off |
 | `--format F` | agent format: `claude`, `codex`, `cline`, `gemini`, `opencode` | `claude` |

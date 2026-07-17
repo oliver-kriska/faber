@@ -307,6 +307,87 @@ defmodule Faber.ScanScopeTest do
     end
   end
 
+  describe "an un-narrowed scope's post-filter :limit" do
+    @describetag :tmp_dir
+
+    # On this path `:limit` is a cap on RESULTS, not a speed knob (`split_limit/2` — everything is
+    # scored either way). A cap on results is a cap on the ranking's TOP, so it can only be applied
+    # once the ranking exists. Taking N first and sorting them afterwards sorts an arbitrary sample
+    # and calls it a ranking — and the sample is arbitrary twice over: the scoring stream runs
+    # `ordered: false`, so the surviving N are whichever sessions happened to finish first.
+    setup %{tmp_dir: tmp} do
+      base = Path.join(tmp, "transcripts")
+      dir = transcript_dir!(base, "/p/faber")
+
+      # `quiet` sorts (and so discovers) first and has one frictionless turn; `noisy` sorts last and
+      # carries a retry loop. The ranking must put `noisy` on top of `quiet` — the whole product is
+      # that ordering.
+      File.write!(Path.join(dir, "aa_quiet.jsonl"), user_turn("quiet", "/p/faber", "all good"))
+      File.write!(Path.join(dir, "zz_noisy.jsonl"), retry_loop("noisy", "/p/faber"))
+
+      {:ok, base: base}
+    end
+
+    test "keeps the HIGHEST-friction session, not whichever was scored first", %{base: base} do
+      scope = %Scope{kind: :project, root: "/p/faber", label: "faber", base: nil}
+
+      assert scan_ids(base, scope) == ["noisy", "quiet"],
+             "the ranking itself must put noisy on top"
+
+      # `max_concurrency: 1` pins the scoring order to the discovery order, so this fails on the
+      # defect itself rather than on the scheduler: `aa_quiet` is scored first either way. Left
+      # unpinned the same assertion is merely FLAKY — which is the bug's real shape, and the reason
+      # it survived: a wrong ranking that is wrong only sometimes reads as a scan that "found
+      # something else this time".
+      assert [
+               base: base,
+               scope: scope,
+               min_messages: 0,
+               cache: false,
+               limit: 1,
+               max_concurrency: 1
+             ]
+             |> Scan.run()
+             |> ids() == ["noisy"],
+             "--limit 1 returned the session that was scored first, not the one that ranks first"
+    end
+
+    test "caps the ranking with a PREFIX, not an even spread across it", %{base: base} do
+      # `maybe_take/2` samples an even spread — right for capping which sessions get SCORED, and
+      # wrong for capping a finished ranking, where it would hand back ranks 1, 4, 7 of 9 and call
+      # them the top 3. Six more quiet sessions make the two rules give different answers: a spread
+      # over 8 results with limit 2 takes indexes 0 and 4, so the second slot goes to a quiet
+      # session while `mid` — rank 2 — is dropped.
+      {:ok, dir} = Format.Claude.project_base(base, "/p/faber")
+
+      for n <- 1..6 do
+        File.write!(Path.join(dir, "q#{n}.jsonl"), user_turn("q#{n}", "/p/faber", "fine"))
+      end
+
+      File.write!(Path.join(dir, "mm_mid.jsonl"), retry_loop("mid", "/p/faber", 2))
+
+      scope = %Scope{kind: :project, root: "/p/faber", label: "faber", base: nil}
+
+      assert [base: base, scope: scope, min_messages: 0, cache: false, limit: 2]
+             |> Scan.run()
+             |> ids() == ["noisy", "mid"],
+             "--limit 2 must be the top 2 of the ranking, not a cross-section of it"
+    end
+  end
+
+  defp user_turn(id, cwd, text) do
+    ~s({"type":"user","sessionId":"#{id}","cwd":"#{cwd}","message":{"role":"user","content":"#{text}"}}\n)
+  end
+
+  # Identical failing Bash calls — the `retry_loops` signal. More repeats means more friction, so
+  # the count is the knob that puts a session at a known rank.
+  defp retry_loop(id, cwd, repeats \\ 3) do
+    Enum.map_join(1..repeats, "", fn i ->
+      ~s({"type":"assistant","sessionId":"#{id}","cwd":"#{cwd}","message":{"role":"assistant","content":[{"type":"tool_use","id":"t#{i}","name":"Bash","input":{"command":"mix test foo"}}]}}\n) <>
+        ~s({"type":"user","sessionId":"#{id}","cwd":"#{cwd}","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t#{i}","is_error":true,"content":"failed"}]}}\n)
+    end)
+  end
+
   defp scan_ids(base, scope) do
     [base: base, scope: scope, min_messages: 0, cache: false] |> Scan.run() |> ids()
   end

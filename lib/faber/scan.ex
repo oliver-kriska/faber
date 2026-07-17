@@ -107,8 +107,12 @@ defmodule Faber.Scan do
     * `:base` — transcript root (default: the ingest format's `default_base/0`); `:files` source only
     * `:db` — ccrider DB path (default `~/.config/ccrider/sessions.db`); `:ccrider` source only
     * `:format` — ingest format / agent (default `:claude`; see `Faber.Ingest.Format`)
-    * `:limit` — cap the number of sessions scored, sampled as an even spread across the
-      corpus (default: all). NOT an alphabetical prefix — that would hide high-friction sessions.
+    * `:limit` — cap how much comes back (default: all). What it caps depends on whether the scope
+      could narrow discovery (see `split_limit/2`): normally it caps the sessions SCORED, sampled as
+      an even spread across the corpus — never an alphabetical prefix, which would hide
+      high-friction sessions. Under a project scope on a format that can't partition by project
+      (Codex/Gemini/OpenCode), everything must be scored to know what's in scope, so it caps the
+      RESULTS instead — the top N of the finished ranking.
     * `:min_messages` — drop sessions with fewer user+assistant messages (default `4`)
     * `:max_concurrency` — fan-out width (default `System.schedulers_online/0`)
     * `:timeout` — per-session timeout in ms (default `#{@session_timeout_ms}`)
@@ -189,12 +193,16 @@ defmodule Faber.Scan do
     |> Stream.filter(&(&1.message_count >= min_messages))
     |> Stream.filter(&Scope.member?(scope, &1))
     |> Enum.to_list()
-    |> maybe_take(post_limit)
     |> dedupe(dedupe)
     # Rank by raw weighted friction (not the sigmoid score, which saturates to ~1.0 on any long
     # session). `:rank_by :rate` instead surfaces concentrated friction (raw/message). Both keep
     # `score`/`tier2` for the per-session y/n gate.
     |> Enum.sort_by(&sort_key(&1, rank_by), :desc)
+    # LAST, and it has to be: `post_limit` caps the RANKING's top, so it cannot run until the
+    # ranking exists. Taking N before this sorts an arbitrary sample and presents it as the top N —
+    # arbitrary twice over, since the scoring stream is `ordered: false` and dedupe had not yet
+    # collapsed the sidechain rows competing for those N slots.
+    |> take_top(post_limit)
   end
 
   # Where `:limit` bites depends on whether the scope could narrow discovery.
@@ -353,4 +361,15 @@ defmodule Faber.Scan do
   end
 
   defp maybe_take(paths, _limit), do: paths
+
+  # `post_limit`'s limit means something else entirely, so it must not reuse `maybe_take/2`. There
+  # the input is UNRANKED paths and a spread is the honest sample; here the input is the finished
+  # ranking, and a spread across it would return ranks 1, 4, 7 of 10 while calling them the top 3.
+  # A cap on a ranking is a prefix, and only a prefix.
+  defp take_top(results, nil), do: results
+
+  defp take_top(results, limit) when is_integer(limit) and limit > 0,
+    do: Enum.take(results, limit)
+
+  defp take_top(results, _limit), do: results
 end
