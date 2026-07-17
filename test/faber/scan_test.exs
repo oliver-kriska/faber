@@ -153,6 +153,47 @@ defmodule Faber.ScanTest do
     end
 
     @tag :tmp_dir
+    test "the sample reaches the tail of the corpus at every limit", %{tmp_dir: dir} do
+      # The general property, and the one a step-based stride cannot hold. `take_every(step) |>
+      # take(limit)` spans only `step*(limit-1)+1` paths, and `step = div(count, limit)` floors — so
+      # the shortfall is paid out of the TAIL, at every limit, not just the ones that degrade to a
+      # prefix. Measured on the real 507-session corpus at `--limit 200`, the old code reached index
+      # 398 of 506: 108 sessions unsampleable, silently. `Path.wildcard/1` sorts, so the tail is
+      # sessions, not noise — biasing against it is biasing against half the corpus by name.
+      names = for i <- 1..20, do: String.pad_leading("#{i}", 2, "0")
+
+      for name <- names do
+        File.write!(
+          Path.join(dir, "s#{name}.jsonl"),
+          ~s({"type":"user","sessionId":"#{name}","message":{"role":"user","content":"hi"}}\n)
+        )
+      end
+
+      last = "s20.jsonl"
+
+      for limit <- 1..19 do
+        sampled =
+          [base: dir, min_messages: 0, limit: limit, cache: false]
+          |> Scan.run()
+          |> Enum.map(&Path.basename(&1.path))
+
+        assert length(sampled) == limit, "limit #{limit} returned #{length(sampled)} sessions"
+
+        # The sample must span the corpus: with `limit` slots over 20 sorted sessions, the furthest
+        # reached must sit within one stride of the end, never a fixed distance short of it.
+        furthest =
+          sampled
+          |> Enum.map(&Enum.find_index(names, fn n -> &1 == "s#{n}.jsonl" end))
+          |> Enum.max()
+
+        stride = div(20, limit)
+
+        assert furthest >= 19 - stride,
+               "limit #{limit}: sample stopped at index #{furthest} of 19 — the tail (incl. #{last}) is unreachable"
+      end
+    end
+
+    @tag :tmp_dir
     test "a limit at or above the corpus size keeps every session", %{tmp_dir: dir} do
       for name <- ~w(aa bb cc) do
         File.write!(

@@ -355,12 +355,20 @@ defmodule Faber.Scan do
   # highest-friction sessions entirely.
   #
   # The spread is computed by INDEX (`i * count / limit`), not by a step, because a step cannot
-  # express this. `Enum.take_every(div(count, limit))` looks like a cross-section and silently stops
-  # being one for every `limit > count / 2`: integer division floors the step to 1, `take_every(1)`
-  # keeps everything, and `take(limit)` then hands back exactly the alphabetical prefix this
-  # function exists to avoid. It was measured on the corpus size the GUIDE itself suggests — 250
-  # sessions, `--limit 200` — where it dropped the 50 last-sorted sessions and reported nothing.
-  # A sampler whose contract holds only on half its domain is not a sampler.
+  # express it — and `Enum.take_every(div(count, limit)) |> Enum.take(limit)` fails in a way worth
+  # spelling out, because it reads as correct.
+  #
+  # That pipeline visits indices `0, step, 2*step, … (limit-1)*step`, so it spans
+  # `step*(limit-1)+1` paths. `step = div(count, limit)` FLOORS, so the span always falls short of
+  # `count` and the tail is simply unreachable — at EVERY limit, not just some. Measured against the
+  # real corpus (507 sessions, `--limit 200`): it reached index 398 of 506, so the 108 last-sorted
+  # sessions could not be sampled at all, and nothing said so. At `limit > count / 2` it degenerates
+  # further — the step floors to 1, `take_every(1)` keeps everything, and `take(limit)` hands back
+  # precisely the alphabetical prefix this function exists to avoid.
+  #
+  # Both failures are the same mistake: a stride is not a ratio. One integer cannot describe
+  # `count / limit` unless it divides evenly, and the remainder is paid out of the tail — which is
+  # exactly where an alphabetically-sorted corpus hides the sessions this scan is looking for.
   defp maybe_take(paths, nil), do: paths
 
   defp maybe_take(paths, limit) when is_integer(limit) and limit > 0 do
