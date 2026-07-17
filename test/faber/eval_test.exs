@@ -269,6 +269,73 @@ defmodule Faber.EvalTest do
       end
     end
 
+    # Same discipline as the safety-edge fixtures above, applied to the hook set the moment it
+    # exists rather than after it drifts: the hook matchers are a fresh Elixir↔Python port, and the
+    # `[]`-truthiness bug is the standing proof that a port's edges are where the engines silently
+    # disagree. Every hook matcher gets a passing AND a failing fixture in both engines.
+    test "native and sidecar agree on the hook matchers, passing and failing" do
+      good = """
+      #!/usr/bin/env bash
+      input=$(cat)
+      command=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
+      case "$command" in *"| tail"*) exit 2 ;; esac
+      exit 0
+      """
+
+      hook_eval = Faber.Eval.Native.hook_eval()
+
+      cases = [
+        # a well-formed hook: every check passes in both engines
+        {"good", good, %{event: "PreToolUse", matcher: "Bash", known_events: ["PreToolUse"]}},
+        # no shebang — the `executable` dimension must drop identically
+        {"no-shebang", String.replace(good, "#!/usr/bin/env bash\n", ""),
+         %{event: "PreToolUse", matcher: "Bash", known_events: ["PreToolUse"]}},
+        # never reads stdin
+        {"blind", "#!/usr/bin/env bash\nexit 0\n",
+         %{event: "PreToolUse", matcher: "Bash", known_events: ["PreToolUse"]}},
+        # a non-tool-call event neutral-passes the stdin check in BOTH engines (the scoping edge)
+        {"session-start", "#!/usr/bin/env bash\nexit 0\n",
+         %{event: "SessionStart", matcher: "*", known_events: ["PreToolUse", "SessionStart"]}},
+        # unknown event / empty matcher / absent pointer — three distinct failure strings
+        {"bad-event", good,
+         %{event: "OnTuesday", matcher: "Bash", known_events: ["PreToolUse", "Stop"]}},
+        {"empty-matcher", good,
+         %{event: "PreToolUse", matcher: "  ", known_events: ["PreToolUse"]}},
+        {"no-pointer", good, %{}},
+        # the `##`-comment veto hole: `exempt_safe_sections: false` must hold in both engines
+        {"sneaky-comment", good <> "\n## Anti-patterns\nrm -rf /\n",
+         %{event: "PreToolUse", matcher: "Bash", known_events: ["PreToolUse"]}}
+      ]
+
+      for {label, script, pointer} <- cases do
+        eval = inject(hook_eval, pointer)
+
+        assert {:ok, native} = Eval.score(script, engine: :native, eval: eval, kind: :hook)
+        assert {:ok, sidecar} = Eval.score(script, engine: :sidecar, eval: eval, kind: :hook)
+
+        assert native.vetoed == sidecar.vetoed,
+               "#{label}: veto diverged — native #{inspect(native.vetoed)} vs " <>
+                 "sidecar #{inspect(sidecar.vetoed)}"
+
+        assert_exact_parity(native, sidecar)
+      end
+    end
+
+    # Thread a pointer into the hook checks the way `Faber.Eval` does for a `%Proposal{kind: :hook}`
+    # (its `inject_hook_pointer/2` is private, and these fixtures are raw scripts, not proposals).
+    defp inject(eval_def, pointer) do
+      Enum.map(eval_def, fn {name, weight, checks} ->
+        checks =
+          Enum.map(checks, fn {type, params} ->
+            if type in ~w(hook_pointer hook_reads_stdin),
+              do: {type, Map.merge(params, pointer)},
+              else: {type, params}
+          end)
+
+        {name, weight, checks}
+      end)
+    end
+
     test "native and sidecar agree on accuracy when ref known-sets are injected" do
       {:ok, proposal} =
         Faber.Propose.propose(sample_result(), sample_adapter(), llm: Faber.LLM.Stub)

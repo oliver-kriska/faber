@@ -257,7 +257,7 @@ _SAFE_SECTION_HINTS = (
 )
 
 
-def no_dangerous_patterns(content, patterns=None, **_):
+def no_dangerous_patterns(content, patterns=None, exempt_safe_sections=True, **_):
     patterns = patterns or _DANGEROUS_DEFAULT
 
     # The frontmatter is scanned too, and this is not a detail: it used to be dropped outright
@@ -280,9 +280,19 @@ def no_dangerous_patterns(content, patterns=None, **_):
     # ``_SAFE_SECTION_HINTS`` exempts a section that *announces* it documents dangerous patterns --
     # a skill listing ``rm -rf /`` under "Anti-patterns" is doing its job. Unheaded prose announces
     # nothing, so the pre-heading region (``None``) is never exempt. Table rows are still excluded.
+    #
+    # ``exempt_safe_sections=False`` turns that exemption off, and the hook eval set passes it. The
+    # exemption is a **prose** concept: a skill documenting a danger is not running it. An executable
+    # artifact has no such distinction -- every line runs, and ``##`` is an ordinary shell comment,
+    # so on a script the exemption is a hole. Reproduced before the parameter existed: a hook of
+    # ``#!/usr/bin/env bash`` + ``## Anti-patterns`` + ``rm -rf /`` scored a clean pass.
     safe_body_lines = []
     for name, lines in _regions(body):
-        if name is not None and any(h in name.lower() for h in _SAFE_SECTION_HINTS):
+        if (
+            exempt_safe_sections
+            and name is not None
+            and any(h in name.lower() for h in _SAFE_SECTION_HINTS)
+        ):
             continue
         safe_body_lines.extend(ln for ln in lines if not ln.strip().startswith("|"))
     haystack = fm + "\n" + "\n".join(safe_body_lines)
@@ -414,7 +424,76 @@ def valid_agent_refs(content, known_agents=None, builtin_agents=None, **_):
     return _validate_refs(refs, known_agents, "agent")
 
 
+# ── hook matchers ────────────────────────────────────────────────────────────
+#
+# Mirrors ``Faber.Eval.Matchers``' hook set. Hooks are scored by their own eval set, not the skill
+# set: a shell script has no frontmatter, Iron Laws or prose, so ``specificity_ratio`` and friends
+# don't measure a hook badly -- they don't measure it at all.
+
+
+def hook_shebang(content, **_):
+    """A hook must open with a ``#!`` shebang -- Claude Code executes the file.
+
+    Line 1 only: a ``#!`` anywhere else is just a comment.
+    """
+    first = content.split("\n", 1)[0]
+    if first.startswith("#!"):
+        return True, f"shebang: {first.strip()}"
+    return False, f"no shebang on line 1: {first[:40]!r}"
+
+
+# How a hook can read the tool call Claude Code pipes to it on stdin as JSON.
+_STDIN_READS = [
+    r"\$\(\s*cat\s*\)",
+    r"\bjq\b",
+    r"\bread\b\s+(?:-r\s+)?\w",
+    r"</dev/stdin",
+    r"\bcat\s*(?:-|<&0)\b",
+    r"\bpython3?\b[^\n]*\bjson\.load\b",
+]
+
+# Only these events hand the hook a tool call; SessionStart/Stop fire on the session.
+_TOOL_CALL_EVENTS = ("PreToolUse", "PostToolUse")
+
+
+def hook_reads_stdin(content, event=None, **_):
+    """A tool-call hook must read the tool call from stdin (Claude Code pipes it in as JSON).
+
+    Scoped by ``event``: an event that receives no tool call neutral-passes. An absent event is
+    treated as a tool-call hook -- the conservative reading, and what Faber proposes.
+    """
+    if isinstance(event, str) and event not in _TOOL_CALL_EVENTS:
+        return True, f"{event} receives no tool call — stdin not required"
+    for pat in _STDIN_READS:
+        if re.search(pat, content):
+            return True, f"reads stdin: {pat!r}"
+    return False, "never reads stdin — the hook can't see the tool call it is deciding about"
+
+
+def hook_pointer(content, event=None, matcher=None, known_events=None, **_):
+    """The settings.json pointer shape: ``event`` in ``known_events``, ``matcher`` non-empty.
+
+    Fails rather than neutral-passing when unresolved -- unlike the ref checks. A missing ref
+    known-set means "we couldn't resolve context"; a missing pointer means the hook has nowhere to
+    be installed, which is unanswerable rather than unanswered.
+    """
+    known = known_events or []
+    if not isinstance(event, str) or not event:
+        return False, "no hook event declared"
+    if known and event not in known:
+        return False, (
+            f"unknown event {event!r} — a hook on an event Claude Code never fires "
+            f"is a hook that silently never runs (known: {', '.join(known)})"
+        )
+    if not isinstance(matcher, str) or not matcher.strip():
+        return False, "empty matcher — it would have to match every tool call or none"
+    return True, f"pointer: {event} / {matcher}"
+
+
 MATCHERS = {
+    "hook_shebang": hook_shebang,
+    "hook_reads_stdin": hook_reads_stdin,
+    "hook_pointer": hook_pointer,
     "section_exists": section_exists,
     "max_section_lines": max_section_lines,
     "line_count": line_count,

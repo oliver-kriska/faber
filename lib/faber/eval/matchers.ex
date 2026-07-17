@@ -326,10 +326,17 @@ defmodule Faber.Eval.Matchers do
     # `~/.claude/skills`, so it must search the *whole* body. Searching `sections/1` let a valid
     # SKILL.md carrying `rm -rf /` between its H1 and first `##` score a clean pass, and made any
     # heading-less body (a hook script) a vacuous pass against an empty haystack.
+    #
+    # `exempt_safe_sections: false` turns the safe-section exemption OFF, and the hook eval set sets
+    # it. The exemption is a **prose** concept — a skill listing `rm -rf /` under "## Anti-patterns"
+    # is documenting it, not running it. In an executable artifact there is no such distinction: every
+    # line runs, and `##` is just an ordinary shell comment. Reproduced before adding this: a hook
+    # script of `#!/usr/bin/env bash` + `## Anti-patterns` + `rm -rf /` scored `{true, "no dangerous
+    # patterns"}` — the veto, defeated by a comment.
     body_haystack =
       body
       |> regions()
-      |> Enum.reject(fn {name, _} -> safe_section?(name) end)
+      |> reject_safe_sections(Map.get(params, :exempt_safe_sections, true))
       |> Enum.flat_map(fn {_, lines} ->
         Enum.reject(lines, &String.starts_with?(String.trim(&1), "|"))
       end)
@@ -346,6 +353,11 @@ defmodule Faber.Eval.Matchers do
       end
     end
   end
+
+  defp reject_safe_sections(regions, true),
+    do: Enum.reject(regions, fn {name, _} -> safe_section?(name) end)
+
+  defp reject_safe_sections(regions, _false), do: regions
 
   # `@safe_section_hints` exempts a section that *announces* it documents dangerous patterns — a
   # skill listing `rm -rf /` under "Anti-patterns" is doing its job. Unheaded prose announces
@@ -521,6 +533,101 @@ defmodule Faber.Eval.Matchers do
       else: {false, "missing #{label}s: #{inspect(Enum.sort(missing))}"}
   end
 
+  # ── hook matchers ──────────────────────────────────────────────────────────
+  #
+  # Hooks are scored by their own set (`Faber.Eval.Native.hook_eval/0`), not the skill set: a shell
+  # script has no frontmatter, no Iron Laws and no prose, so `specificity_ratio` and friends measure
+  # nothing on one and score it ~0.15–0.30 against a 0.75 gate. These ask the questions a hook can
+  # actually answer — will it run, will it fire in the right place, is it safe.
+
+  @doc """
+  A hook script must open with a `#!` shebang: Claude Code executes the file, so without one it is
+  at the mercy of the caller's shell. Line 1 only — a `#!` anywhere else is just a comment.
+  """
+  @spec hook_shebang(String.t(), map()) :: {boolean(), String.t()}
+  def hook_shebang(content, _params) do
+    case String.split(content, "\n", parts: 2) do
+      ["#!" <> interpreter | _] -> {true, "shebang: #!#{String.trim(interpreter)}"}
+      [first | _] -> {false, "no shebang on line 1: #{inspect(String.slice(first, 0, 40))}"}
+    end
+  end
+
+  # How a hook can read the tool call Claude Code pipes to it on stdin as JSON. A hook that never
+  # reads stdin cannot know what it is deciding about — it can only make the same decision every
+  # time, which is a hook that either blocks everything or does nothing.
+  @stdin_reads [
+    ~r/\$\(\s*cat\s*\)/,
+    ~r/\bjq\b/,
+    ~r/\bread\b\s+(?:-r\s+)?\w/,
+    ~r|</dev/stdin|,
+    ~r/\bcat\s*(?:-|<&0)\b/,
+    ~r/\bpython3?\b[^\n]*\bjson\.load\b/
+  ]
+
+  # The events that hand the hook a tool call on stdin. `SessionStart`/`Stop` fire on the session,
+  # not on a tool, so there is no tool call to read and demanding one would fail every such hook for
+  # not doing something meaningless.
+  @tool_call_events ~w(PreToolUse PostToolUse)
+
+  @doc """
+  A tool-call hook must read the tool call from stdin — Claude Code pipes it in as JSON. `jq`,
+  `$(cat)`, `read`, `</dev/stdin` and an inline `json.load` all count.
+
+  Scoped by `params[:event]` (injected by `Faber.Eval`): only `#{Enum.join(@tool_call_events, "/")}`
+  receive a tool call, so other events neutral-pass. An absent event is treated as a tool-call hook —
+  the conservative reading, since that is what Faber proposes.
+  """
+  @spec hook_reads_stdin(String.t(), map()) :: {boolean(), String.t()}
+  def hook_reads_stdin(content, params) do
+    event = params[:event]
+
+    if is_binary(event) and event not in @tool_call_events do
+      {true, "#{event} receives no tool call — stdin not required"}
+    else
+      case Enum.find(@stdin_reads, &Regex.match?(&1, content)) do
+        nil ->
+          {false, "never reads stdin — the hook can't see the tool call it is deciding about"}
+
+        re ->
+          {true, "reads stdin: #{inspect(Regex.source(re))}"}
+      end
+    end
+  end
+
+  @doc """
+  The `settings.json` pointer shape: `event` must be one of `params[:known_events]` and `matcher`
+  must be a non-empty string. `Faber.Eval` injects both off the proposal (the same way it injects
+  `:refs` into the accuracy checks) because a pointer is a property of the proposal, not of the
+  script text.
+
+  Absent an injected pointer this **fails** rather than neutral-passing. That is the opposite of
+  `valid_file_refs`'s posture and deliberately so: a missing ref known-set means "we couldn't
+  resolve context", while a missing pointer means the hook has nowhere to be installed — an
+  unanswerable question, not an unanswered one.
+  """
+  @spec hook_pointer(String.t(), map()) :: {boolean(), String.t()}
+  def hook_pointer(_content, params) do
+    event = params[:event]
+    matcher = params[:matcher]
+    known = params[:known_events] || []
+
+    cond do
+      not is_binary(event) or event == "" ->
+        {false, "no hook event declared"}
+
+      known != [] and event not in known ->
+        {false,
+         "unknown event #{inspect(event)} — a hook on an event Claude Code never fires " <>
+           "is a hook that silently never runs (known: #{Enum.join(known, ", ")})"}
+
+      not is_binary(matcher) or String.trim(matcher) == "" ->
+        {false, "empty matcher — it would have to match every tool call or none"}
+
+      true ->
+        {true, "pointer: #{event} / #{matcher}"}
+    end
+  end
+
   @doc "Dispatch a check by type. Unknown types fail (caught by the scorer)."
   @spec run_check(atom() | String.t(), String.t(), map()) :: {boolean(), String.t()}
   # A flat name → matcher dispatch table, not branching logic: every clause is a single call and
@@ -529,6 +636,9 @@ defmodule Faber.Eval.Matchers do
   # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   def run_check(type, content, params) do
     case to_string(type) do
+      "hook_shebang" -> hook_shebang(content, params)
+      "hook_reads_stdin" -> hook_reads_stdin(content, params)
+      "hook_pointer" -> hook_pointer(content, params)
       "section_exists" -> section_exists(content, params)
       "max_section_lines" -> max_section_lines(content, params)
       "line_count" -> line_count(content, params)

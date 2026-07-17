@@ -52,6 +52,17 @@ defmodule Faber.Eval do
   @schema_version "1.0"
 
   @ref_checks ~w(valid_file_refs valid_skill_refs valid_agent_refs)
+
+  # Checks whose params carry the proposal's hook pointer rather than anything readable off the
+  # rendered script. See `inject_hook_pointer/2`. `hook_reads_stdin` is here for the `event` alone:
+  # only a tool-call event pipes a tool call in, so it has to know which event it is judging.
+  @hook_checks ~w(hook_pointer hook_reads_stdin)
+
+  # The hook gate, raised from the skill default (0.75). A hook's dimensions are necessary
+  # conditions rather than qualities to average, and at 0.75 they cannot all be individually fatal —
+  # see `Faber.Eval.Native`'s `@hook_eval` for the arithmetic. Raising it is deliberate: a hook runs
+  # automatically on every matching tool call, with the user not in the loop.
+  @hook_threshold 0.90
   @behavioral_weight 0.10
 
   # Checks whose failure is **fatal to the gate regardless of the composite**, run by the engine
@@ -95,6 +106,8 @@ defmodule Faber.Eval do
   def score(proposal_or_md, opts \\ [])
 
   def score(%Proposal{} = proposal, opts) do
+    opts = kind_opts(proposal, opts)
+
     with {:ok, result} <- proposal |> render(opts) |> score(opts) do
       {:ok, maybe_add_trigger(result, proposal, opts)}
     end
@@ -104,19 +117,40 @@ defmodule Faber.Eval do
     threshold = opts[:threshold] || Application.get_env(:faber, :eval_threshold, 0.75)
 
     case run_eval(skill_md, opts) do
-      {:ok, result} -> {:ok, build_result(result, threshold, skill_md)}
+      # `:kind` reaches here from `kind_opts/2`; a bare string scored directly is markdown unless a
+      # caller says otherwise, so the veto reads it as a skill.
+      {:ok, result} -> {:ok, build_result(result, threshold, skill_md, opts[:kind] || :skill)}
       {:error, _} = err -> err
     end
   end
 
-  # Render via the adapter's `templates/` scaffold when one is supplied, so the eval scores the
-  # same artifact the proposer/installer will emit; otherwise use the built-in renderer.
-  defp render(proposal, opts) do
-    case opts[:adapter] do
-      %Adapter{} = adapter -> Propose.render_skill_md(proposal, adapter)
-      _ -> Propose.render_skill_md(proposal)
-    end
+  # Route a hook to the hook eval set, carrying its pointer along for `hook_pointer`. This is where
+  # kind selects the bar — a hook scored by the skill set fails on prose it was never going to have,
+  # and a hook scored by no set at all would be gated on nothing.
+  #
+  # `:eval` (an explicit definition) still wins, since `eval_route/1` prefers it: a caller naming the
+  # bar outranks the kind default, exactly as it does for skills. Routing through `:eval` also keeps
+  # a hook away from an adapter's `exec-in-place` scorer, which only understands SKILL.md.
+  defp kind_opts(%Proposal{kind: :hook} = p, opts) do
+    opts
+    |> Keyword.put_new(:eval, Native.hook_eval())
+    |> Keyword.put_new(:threshold, @hook_threshold)
+    |> Keyword.put_new(:kind, :hook)
+    |> Keyword.put_new(:hook_pointer, %{
+      event: p.event,
+      matcher: p.matcher,
+      known_events: Propose.hook_events()
+    })
   end
+
+  defp kind_opts(%Proposal{}, opts), do: opts
+
+  # Render via the adapter's `templates/` scaffold when one is supplied, so the eval scores the
+  # same artifact the proposer/installer will emit; otherwise use the built-in renderer. Kind-neutral
+  # (`render/2`, not `render_skill_md/2`) — scoring a hook's rendered *script* is the whole point of
+  # the hook eval set, and the plan's own rule is that matchers are probed against the rendered
+  # artifact, never a fixture, because the two render paths diverge on exactly these checks.
+  defp render(proposal, opts), do: Propose.render(proposal, opts[:adapter])
 
   @doc """
   The engine `score/2` would **attempt** for these opts, named without scoring anything — what
@@ -219,14 +253,18 @@ defmodule Faber.Eval do
   end
 
   defp run_engine(:native, skill_md, eval_def, opts) do
-    def_ = (eval_def || native_default(opts)) |> inject_refs(opts[:refs])
+    def_ =
+      (eval_def || native_default(opts))
+      |> inject_refs(opts[:refs])
+      |> inject_hook_pointer(opts[:hook_pointer])
+
     {:ok, Native.score(skill_md, def_)}
   end
 
   defp run_engine(:sidecar, skill_md, eval_def, opts) do
     request =
       %{"skill_md" => skill_md}
-      |> maybe_put("eval", eval_def)
+      |> maybe_put("eval", eval_def |> inject_hook_pointer(opts[:hook_pointer]) |> sidecar_eval())
       |> maybe_put("eval_set", sidecar_eval_set(opts[:eval_set]))
       |> maybe_put("refs", sidecar_refs(opts[:refs]))
 
@@ -250,6 +288,34 @@ defmodule Faber.Eval do
   defp sidecar_eval_set(:full), do: "full"
   defp sidecar_eval_set(_), do: nil
 
+  # Translate the internal `[{dimension, weight, [{type, params}]}]` form into the sidecar's JSON
+  # shape — `%{dimension => %{"weight" => w, "checks" => [%{"type" => t, ...params}]}}` — where a
+  # check's params are flattened alongside its type (`scorer.py`'s `_score_dimension` pops `type`
+  # and `weight` and splats the rest as kwargs).
+  #
+  # Without this, ANY explicit `:eval` sent to `engine: :sidecar` raised `Jason.Encoder` on the bare
+  # tuples. It went unnoticed because nothing sent one: the vendored-adapter path pins `:native`, and
+  # the parity tests drove the sidecar with `:eval_set`. `kind: :hook` is the first caller to put an
+  # `:eval` in opts, so it is the first to reach it — and the hook parity test is what surfaced it.
+  defp sidecar_eval(nil), do: nil
+
+  # Already in the sidecar's shape (a caller handing the Python engine its own JSON definition) —
+  # pass it through rather than mangling it. Only the internal tuple form needs translating.
+  defp sidecar_eval(def_) when is_map(def_), do: def_
+
+  defp sidecar_eval(def_) when is_list(def_) do
+    Map.new(def_, fn {name, weight, checks} ->
+      {name,
+       %{
+         "weight" => weight,
+         "checks" =>
+           Enum.map(checks, fn {type, params} ->
+             params |> Map.new(fn {k, v} -> {to_string(k), v} end) |> Map.put("type", type)
+           end)
+       }}
+    end)
+  end
+
   # Thread resolved ref known-sets into every accuracy check's params (the matcher reads only its own
   # key; extras are ignored). Keeps the matchers pure — the filesystem walk happens at the boundary.
   defp inject_refs(nil, _refs), do: nil
@@ -263,6 +329,25 @@ defmodule Faber.Eval do
         Enum.map(checks, fn {type, params} ->
           if to_string(type) in @ref_checks,
             do: {type, Map.merge(params, extra)},
+            else: {type, params}
+        end)
+
+      {name, weight, checks}
+    end)
+  end
+
+  # Thread the proposal's hook pointer into the `hook_pointer` check's params — the same shape as
+  # `inject_refs/2`, and for the same reason: a matcher stays `(content, params)`, pure and mirrorable
+  # in Python, so anything it can't read off the artifact arrives as params from the boundary.
+  defp inject_hook_pointer(nil, _pointer), do: nil
+  defp inject_hook_pointer(def_, pointer) when not is_map(pointer), do: def_
+
+  defp inject_hook_pointer(def_, pointer) when is_list(def_) do
+    Enum.map(def_, fn {name, weight, checks} ->
+      checks =
+        Enum.map(checks, fn {type, params} ->
+          if to_string(type) in @hook_checks,
+            do: {type, Map.merge(params, pointer)},
             else: {type, params}
         end)
 
@@ -428,9 +513,9 @@ defmodule Faber.Eval do
 
   defp pct(f), do: "#{round(f * 100)}%"
 
-  defp build_result(result, threshold, content) do
+  defp build_result(result, threshold, content, kind) do
     composite = result["composite"] || 0.0
-    vetoed = vetoes(content)
+    vetoed = vetoes(content, kind)
 
     %{
       schema_version: result["schema_version"] || @schema_version,
@@ -480,14 +565,29 @@ defmodule Faber.Eval do
   checked nothing at all. A gate every caller must remember is a suggestion.
 
   Pure, cheap, and derived from content alone, so it is safe to call at any layer.
+
+  `kind` (default `:skill`) selects how the artifact is read, and it is not cosmetic. The safety
+  scan exempts a section that announces it documents dangerous patterns, so a skill listing
+  `rm -rf /` under "## Anti-patterns" stays installable — it is documentation. `##` is *also* an
+  ordinary shell comment, so on a `:hook` that exemption is a hole: a script of
+  `## Anti-patterns` + `rm -rf /` was vetoed by nothing. Reproduced before this parameter existed,
+  and the write boundary is where it mattered most — `Faber.Install.install/2` calls this, so the
+  comment defeated the last line of defense, not merely a score.
   """
-  @spec vetoes(String.t()) :: [veto()]
-  def vetoes(content) when is_binary(content) do
+  @spec vetoes(String.t(), Proposal.kind()) :: [veto()]
+  def vetoes(content, kind \\ :skill) when is_binary(content) do
+    params = veto_params(kind)
+
     for check <- @veto_checks,
-        {false, evidence} <- [Matchers.run_check(check, content, %{})] do
+        {false, evidence} <- [Matchers.run_check(check, content, params)] do
       %{check_type: check, evidence: to_string(evidence)}
     end
   end
+
+  # An executable artifact gets no safe-section exemption: every line of it runs, and it has no
+  # documentation for the exemption to protect.
+  defp veto_params(:hook), do: %{exempt_safe_sections: false}
+  defp veto_params(_kind), do: %{}
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)

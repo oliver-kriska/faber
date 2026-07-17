@@ -36,9 +36,30 @@ defmodule Faber.Propose do
     should_not_trigger: [type: {:list, :string}]
   ]
 
-  @doc "The structured-output schema the proposer asks the LLM to fill."
+  # A hook is a different artifact, so it gets a different schema rather than a skill schema with
+  # most fields left blank: asking for `iron_laws` on a shell script is how you get an LLM to invent
+  # three. What a hook is: where it fires (`event` + `matcher`), what runs (`script`), and why.
+  @hook_schema [
+    name: [type: :string, required: true],
+    description: [type: :string, required: true],
+    rationale: [type: :string, required: true],
+    event: [type: :string, required: true],
+    matcher: [type: :string, required: true],
+    script: [type: :string, required: true]
+  ]
+
+  @doc "The structured-output schema the proposer asks the LLM to fill for a skill."
   @spec schema() :: keyword()
   def schema, do: @schema
+
+  @doc """
+  The structured-output schema for a `kind: :hook` proposal.
+
+  See `schema/0` for the skill shape. The two are disjoint by design — see `@hook_schema`'s
+  reasoning and `Faber.Proposal`'s "the two kinds populate disjoint halves".
+  """
+  @spec hook_schema() :: keyword()
+  def hook_schema, do: @hook_schema
 
   @doc """
   Propose a skill for a ranked session `result` under `adapter`.
@@ -62,6 +83,113 @@ defmodule Faber.Propose do
       {:ok, object} -> {:ok, build_proposal(object, result, adapter)}
       {:error, _} = err -> err
     end
+  end
+
+  @doc """
+  Propose a **hook** for a `hazard` (a `Faber.Detect.Hazard.summary/0`) found in `result`, under
+  `adapter`.
+
+  The counterpart to `propose/3`, and the reason `Faber.Detect.Hazard` exists: a hazard is a
+  frictionless danger, so no friction finding would ever have selected this session. The hazard
+  carries its own evidence and the `event`/`matcher` pointer it implies, and those seed the prompt —
+  the model is asked to write the interception, not to rediscover the problem.
+
+  Same options as `propose/3` (forwarded to `Faber.LLM.generate_object/3`), including `:feedback`
+  for reflective re-proposal. Returns `{:ok, %Faber.Proposal{kind: :hook}}` or `{:error, term()}`.
+  """
+  @spec propose_hook(Scan.Result.t(), map(), Adapter.t(), keyword()) ::
+          {:ok, Proposal.t()} | {:error, term()}
+  def propose_hook(%Scan.Result{} = result, hazard, %Adapter{} = adapter, opts \\ []) do
+    user =
+      result
+      |> hook_user_prompt(hazard, adapter)
+      |> augment_with_feedback(opts[:feedback])
+
+    opts = Keyword.put(opts, :system_prompt, hook_system_prompt(adapter))
+
+    case LLM.generate_object(user, @hook_schema, opts) do
+      {:ok, object} -> {:ok, build_hook_proposal(object, result, hazard, adapter)}
+      {:error, _} = err -> err
+    end
+  end
+
+  # The events a hook may declare. Not open-ended: a typo'd event is a hook that silently never
+  # fires, which is the same fail-quietly shape as everything else this plan closed. The eval
+  # asserts membership too (`Faber.Eval.Native`'s hook set) — this just tells the model the truth.
+  @hook_events ~w(PreToolUse PostToolUse SessionStart Stop)
+
+  @doc "The Claude Code hook events Faber will propose and install. See `Faber.Install.Hook`."
+  @spec hook_events() :: [String.t()]
+  def hook_events, do: @hook_events
+
+  defp hook_system_prompt(%Adapter{} = adapter) do
+    """
+    You are a hook author for Claude Code. Given a HAZARD mined from a real coding-agent session —
+    a dangerous command shape the session ran WITHOUT any visible struggle — write EXACTLY ONE hook
+    that intercepts it next time.
+
+    Target stack: #{adapter.name} v#{adapter.version}.
+
+    A hook is not a skill. It is a shell script Claude Code runs automatically, plus a pointer
+    saying when to run it. Do not write prose, frontmatter, or advice.
+
+    Hook rules:
+    - event: one of #{Enum.join(@hook_events, " | ")}. Prefer PreToolUse to intercept a command
+      BEFORE it runs. Note PostToolUse cannot see a successful command's exit code, so it is the
+      wrong event for anything about a command lying about success.
+    - matcher: the tool name the hook fires on (e.g. "Bash").
+    - script: a complete POSIX/bash script. It MUST start with a `#!` shebang line. Claude Code
+      pipes the tool call to it on stdin as JSON — read it (e.g. `input=$(cat)`) and pull the
+      command out (the shape is `{"tool_name": "...", "tool_input": {"command": "..."}}`).
+      Exit 0 to allow; exit 2 to BLOCK the call and show your stderr to the agent.
+    - The script must be conservative: it fires on every matching tool call, so a false positive
+      blocks legitimate work. Match the specific dangerous shape, not a broad family.
+    - The script must be safe: it must not delete, download, or execute anything. It inspects a
+      command and decides. Nothing else.
+    - description: 50–250 chars, "what + when" — what it intercepts and why that shape is dangerous.
+    - rationale: one line on why this hazard needs a hook rather than a skill.
+
+    Return the structured object only.
+    """
+  end
+
+  defp hook_user_prompt(%Scan.Result{} = r, hazard, %Adapter{name: name}) do
+    """
+    Hazard found in one #{name} session. It produced NO friction — no error, no retry, no
+    correction — which is exactly why it needs a hook: nothing about the session looked wrong.
+
+    - hazard class: #{hazard[:kind]}
+    - evidence: #{hazard[:evidence]}
+    - times this session ran that shape: #{hazard[:count] || 1}
+    - session fingerprint: #{r.fingerprint}
+    - implied hook pointer: event #{hazard[:suggested_event]}, matcher #{hazard[:matcher]}
+
+    Write the hook that intercepts the shape in the evidence. Use the implied pointer unless it is
+    wrong for the hazard, and warn/block ONLY on that shape — the safe form of the same command
+    must pass untouched.
+    """
+  end
+
+  defp build_hook_proposal(object, %Scan.Result{} = r, hazard, %Adapter{} = adapter) do
+    %Proposal{
+      kind: :hook,
+      name: get(object, :name),
+      description: get(object, :description),
+      rationale: get(object, :rationale),
+      event: get(object, :event),
+      matcher: get(object, :matcher),
+      script: get(object, :script),
+      adapter: adapter.name,
+      source: %{
+        session_id: r.session_id,
+        path: r.path,
+        # What selected this session — a hazard class, NOT a friction signal. Recorded distinctly so
+        # provenance can't imply the ranking found it (it can't; that is the whole point).
+        hazard: hazard[:kind],
+        hazard_evidence: hazard[:evidence],
+        fingerprint: r.fingerprint
+      }
+    }
   end
 
   defp augment_with_feedback(user, nil), do: user
@@ -255,6 +383,21 @@ defmodule Faber.Propose do
   @spec render_skill_md(Proposal.t(), Adapter.t()) :: String.t()
   def render_skill_md(%Proposal{} = p, %Adapter{} = adapter), do: render(p, adapter)
 
+  # String-keyed context for a hook scaffold. A hook's artifact IS its script, so the template is a
+  # thin wrapper (provenance header + the body) rather than a document with sections.
+  defp template_context(%Proposal{kind: :hook} = p) do
+    %{
+      "hook_name" => p.name,
+      "description" => escape(p.description),
+      "one_line_purpose" => oneline(p.rationale),
+      "event" => p.event,
+      "matcher" => p.matcher,
+      "script" => script_body(p.script),
+      "hazard" => to_string(p.source[:hazard] || ""),
+      "hazard_evidence" => oneline(p.source[:hazard_evidence] || "")
+    }
+  end
+
   # String-keyed context for the Mustache-subset skill scaffold. Tokens the proposal can't fill
   # (steps, patterns, argument_hint, allowed_tools) resolve to empty — the renderer drops them.
   defp template_context(%Proposal{} = p) do
@@ -281,6 +424,27 @@ defmodule Faber.Propose do
       "patterns_present" => p.patterns != [],
       "patterns" => Enum.map(p.patterns, fn pat -> %{"pattern_text" => format_pattern(pat)} end)
     }
+  end
+
+  # The template owns the shebang, so the model's must come off — a `#!` line is only a shebang on
+  # line 1; anywhere else it is a comment, and two of them means the file says one thing and does
+  # another. This is the renderer *guaranteeing* the eval's shebang check rather than the prompt
+  # wishing for it: the check passes by construction for every hook, however the model replies.
+  defp script_body(nil), do: ""
+
+  defp script_body(script) when is_binary(script) do
+    # Trim BEFORE looking for the shebang, not after: a model that opens with a blank line puts the
+    # `#!` on line 2, where this would have missed it and the template's own shebang would then have
+    # made two — the file saying `bash` on line 1 and `zsh` on line 3.
+    script
+    |> String.trim()
+    |> String.split("\n")
+    |> case do
+      ["#!" <> _ | rest] -> rest
+      lines -> lines
+    end
+    |> Enum.join("\n")
+    |> String.trim()
   end
 
   @doc """

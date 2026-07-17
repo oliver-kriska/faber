@@ -51,7 +51,9 @@ defmodule Faber.ProposalKindTest do
       adapter = %Adapter{
         templates: %{
           "skill" => "SKILL: {{skill_name}}",
-          "hook" => "HOOK FROM TEMPLATE: {{skill_name}}"
+          # A hook's context is its own vocabulary ({{hook_name}}/{{event}}/{{script}}), not the
+          # skill's — the kind selects the template AND what fills it.
+          "hook" => "HOOK FROM TEMPLATE: {{hook_name}}"
         }
       }
 

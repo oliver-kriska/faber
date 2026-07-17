@@ -96,6 +96,9 @@ defmodule Faber.Install do
       # The artifact filename follows the kind (`Faber.Proposal.filename/1`) rather than being the
       # literal "SKILL.md" spelled out here. `put_new` so an explicit caller override still wins.
       |> Keyword.put_new(:filename, Proposal.filename(p))
+      # How the veto must READ these bytes. A hook is executable, so it gets no safe-section
+      # exemption — see `Faber.Eval.vetoes/2`.
+      |> Keyword.put_new(:kind, p.kind)
     )
   end
 
@@ -105,7 +108,9 @@ defmodule Faber.Install do
     # below are pure (`Path.join`), run only after that. Same shape for both: this function is handed
     # two untrusted things, and neither gets to reach the filesystem unexamined.
     with :ok <- validate_name(name),
-         :ok <- refuse_vetoed(skill_md),
+         # `:kind` reaches here from the `%Proposal{}` clause; a bare `{name, md}` pair defaults to
+         # `:skill`, the stricter reading for markdown and the historical behavior.
+         :ok <- refuse_vetoed(skill_md, opts[:kind] || :skill),
          skill_dir = Path.join(opts[:dir] || default_dir(), name),
          path = Path.join(skill_dir, opts[:filename] || "SKILL.md"),
          :ok <- ensure_writable(path, opts),
@@ -126,8 +131,8 @@ defmodule Faber.Install do
   # disbelieve. If a legitimate skill needs to document `rm -rf /`, it says so under a heading that
   # announces it (`## Anti-patterns`, `## Gotchas`) — the matcher exempts those by design, so the
   # honest case has a supported route and the smuggled case does not.
-  defp refuse_vetoed(skill_md) do
-    case Eval.vetoes(skill_md) do
+  defp refuse_vetoed(skill_md, kind) do
+    case Eval.vetoes(skill_md, kind) do
       [] -> :ok
       vetoes -> {:error, {:vetoed, vetoes}}
     end

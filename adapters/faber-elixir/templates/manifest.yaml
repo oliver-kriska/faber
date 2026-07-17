@@ -13,3 +13,13 @@ templates:
       Workflow steps, and do/don't Patterns bullets. Workflow and Patterns are presence-gated,
       so an empty list drops the whole section. Placeholders use {{tokens}};
       {{#section}}…{{/section}} marks a repeated/conditional block.
+
+  - file: hook.sh.tmpl
+    produces: hook
+    description: >-
+      Hook script scaffold. A hook is not prose: the artifact IS its shell script, so this wraps
+      the model's body in the stack's idiom rather than sectioning a document. The template owns
+      the `#!` line (the model's is stripped in Faber.Propose) — a shebang is only a shebang on
+      line 1, so guaranteeing it here makes the eval's shebang check pass by construction instead
+      of by prompt compliance. The header carries provenance: which hazard was mined, the evidence
+      command, and the settings.json pointer the script is installed under.
