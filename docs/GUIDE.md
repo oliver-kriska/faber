@@ -322,6 +322,12 @@ What `--json` gives you over the table:
 - **`null`, not `—`.** A session with no context reading is `"max_ctx_pct": null` — a dash is not a
   number and a script should not have to parse one.
 - **The scope it used**, so a script can tell a project-scoped ranking from a global one.
+- **The hazards each session carries** — which the table cannot show, because it is sorted by
+  friction and a hazard has none (§6). This is how you find what `propose --hazard` can act on:
+
+  ```sh
+  faber scan --json | jq -r '.sessions[].hazards[].kind' | sort -u
+  ```
 
 Empty is an *answer*, not an error: a scan matching nothing is `{"count": 0, "sessions": []}` and
 exit 0, and an empty proposal store is `[]` rather than the prose explaining how to get one. Exit
@@ -338,6 +344,7 @@ faber propose --dry-run          # what it would draft and spend — costs nothi
 faber propose --rank 3           # the 3rd-ranked session
 faber propose --all              # rank across every project, not just the one you're in
 faber propose --top 5            # the top 5 sessions at once, clustered and merged (see §11)
+faber propose --hazard pipe_masks_exit   # draft a HOOK, not a skill (see below)
 faber propose --trigger          # also run the behavioral routing eval (see §7)
 faber propose --install          # install if you like what you see
 faber propose --force            # skip the stack-match gate (see below)
@@ -398,6 +405,54 @@ mix faber.propose --rank 2 --adapter adapters/faber-python \
 
 `--write DIR` saves the rendered skill without installing; `--adapter` picks a pack;
 `--trigger-samples N` pools the (stochastic) routing eval N times for a stable estimate.
+
+### `--hazard KIND`: a hook, for the sessions that went *smoothly*
+
+Everything above ranks by **friction** — retries, corrections, errored tools. That ranking is blind
+by construction to a session that did something dangerous and never struggled. The motivating case
+is real:
+
+```sh
+mix verify | tail -5; echo $?      # prints 0 — while verify really exited 8
+```
+
+The shell reports `tail`'s exit code, not `mix verify`'s. So the gate failed, the transcript says it
+passed, nothing errored, nothing was retried, and the session scores **0.0 friction**. No amount of
+ranking will ever surface it, and a skill would not help anyway: nothing about the session looked
+wrong at the time, so there is no moment at which advice would fire.
+
+That needs a **hook** — a script Claude Code runs automatically, before the command:
+
+```sh
+faber scan --json | jq -r '.sessions[].hazards[].kind' | sort -u   # what's there
+faber propose --hazard pipe_masks_exit                             # draft the hook
+faber propose --hazard pipe_masks_exit --install                   # and install it
+```
+
+Because hazards are orthogonal to the ranking, `--hazard` selects the first session carrying that
+class and **combines with neither `--rank` nor `--top`** — Faber refuses rather than silently
+picking a winner. The rest of the pipeline is the same shape: stack gate → one LLM call → eval gate
+→ install.
+
+**Hooks are evaluated by their own gate.** A hook is shell, not prose, so the skill matchers score
+one at ~0.15–0.30 against a 0.75 bar — they would reject every hook ever written. The hook set asks
+the questions that actually apply (does it start with a shebang; does it read the tool call from
+stdin; is its `settings.json` pointer valid) at a **higher** bar of 0.90, plus the same safety veto
+every artifact faces. That veto reads a hook as *executable*: `##` is a markdown heading in a skill
+but an ordinary shell comment in a script, and it buys no exemption here.
+
+**What `--install` writes** — two things, deliberately split:
+
+- the **script**, at `~/.claude/faber-hooks/<name>/hook.sh`, with the same `.faber.json` provenance
+  marker every Faber-installed artifact carries (§19);
+- one **pointer** in `~/.claude/settings.json` — the smallest possible footprint in a file Faber
+  does not own. Faber merges at the event level (your other hooks survive), preserves your key
+  order, is idempotent on re-install, and **refuses to overwrite a pointer you have hand-edited**
+  unless you pass `--force`.
+
+**Today Faber detects one hazard class**, `pipe_masks_exit`. A clean scan means *that class* wasn't
+found — not that your sessions are hazard-free. Adding a class is a pattern entry in
+`Faber.Detect.Hazard`, not a redesign.
 
 ---
 
@@ -877,7 +932,9 @@ is a valid setup.
 | `:eval_engine` | `:native` | `:native` or `:sidecar` |
 | `:eval_threshold` | `0.75` | gate bar |
 | `:adapter_dir` | `adapters/faber-elixir` | active adapter pack |
-| `:skills_dir` | `~/.claude/skills` | install target |
+| `:skills_dir` | `~/.claude/skills` | install target for a `kind: :skill` proposal |
+| `:hooks_dir` | `~/.claude/faber-hooks` | install target for a hook's script (§6). Its own dir, not `skills_dir` — a hook is not a skill, and skill discovery walks that tree looking for `SKILL.md` |
+| `:settings_path` | `~/.claude/settings.json` | the file a hook's pointer is written into. Faber merges at the event level and never rewrites the rest of it (§6) |
 | `:proposal_store` | `true` | keep every drafted proposal on disk (§9). Off ⇒ nothing is kept and you pay again for anything you didn't copy out |
 | `:proposals_dir` | `~/.faber/proposals` | where kept proposals live. Retention is manual: `faber proposals --prune [--keep N]` (default 50) is the only thing that removes one |
 | `:ingest_format` | `:claude` | default `--format` |
@@ -902,7 +959,10 @@ These are design invariants, not defaults you can accidentally flip:
   never raw transcript text or transcript file paths.
 - **Your directories are shared, not owned.** Faber tracks what *it* installed via
   `.faber.json` and only ever lists/syncs/analyzes those. Sync writes one delimited managed
-  block and refuses to overwrite hand-edits without `--force`.
+  block and refuses to overwrite hand-edits without `--force`. The same rule governs
+  `settings.json`, which Faber writes a single hook pointer into (§6): your key order is
+  preserved, your other hooks are untouched, and a pointer you have edited is never silently
+  replaced.
 - **No autonomous spending.** Every LLM call is triggered by an explicit human action; the MCP
   propose tool and the scheduler's auto-install are opt-in config.
 - **Local only.** The web endpoint binds `127.0.0.1` with origins pinned to localhost; there is

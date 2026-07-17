@@ -259,16 +259,37 @@ templates:
   - file: skill.md.tmpl
     produces: skill            # skill | agent | hook
     description: "SKILL.md scaffold with Iron Laws + quick-patterns sections"
+  - file: hook.sh.tmpl
+    produces: hook
+    description: "hook.sh scaffold — provenance header, shebang, and the script body"
 ```
 
 The manifest is how a template is found: the engine keys the loaded templates by `produces`
 and the proposer fetches the scaffold for the kind it is rendering. Both `file` and `produces`
 are **required** per entry, and `produces` must be one of `skill | agent | hook` — an unknown
 value is a load-time validation error, not a template that silently renders nothing. There is
-no inference from the filename; a pack with no `manifest.yaml` contributes no templates and
-falls back to the engine's built-in scaffold. `file` must resolve inside `templates/` (an
-absolute path or `..` escape is rejected and logged). Unknown placeholders left unfilled are a
-generation warning.
+no inference from the filename; a pack with no `manifest.yaml` contributes no templates.
+`file` must resolve inside `templates/` (an absolute path or `..` escape is rejected and
+logged). Unknown placeholders left unfilled are a generation warning.
+
+**The built-in fallback is skill-only.** A `kind: :skill` proposal with no `skill` template
+renders through the engine's built-in `SKILL.md` scaffold. Any other kind with no template
+**raises** — there is no built-in hook scaffold to fall back *to*, and silently rendering a
+skill (or an empty string, which would sail through the eval) is worse than a loud failure.
+So a pack that proposes hooks must ship a `produces: hook` template.
+
+Each kind's template gets its own token set — a hook's artifact *is* its script, so its
+scaffold is a thin wrapper rather than a document with sections:
+
+| `produces` | tokens |
+|---|---|
+| `skill` | `skill_name`, `skill_title`, `description`, `effort`, `one_line_purpose`, `usage_examples`, `iron_laws[]`, `workflow_present`/`steps[]`, `patterns_present`/`patterns[]` |
+| `hook` | `hook_name`, `description`, `one_line_purpose`, `event`, `matcher`, `script`, `hazard`, `hazard_evidence` |
+
+The **template owns the shebang**, not the model: `{{script}}` is the body with any leading
+`#!` line stripped, so the rendered file has exactly one and it is the template's. A `#!` is
+only a shebang on line 1 — a second one is a comment, and a file whose line 1 says `bash`
+while line 3 says `zsh` says one thing and does another.
 
 ## 7. `eval/` — domain matchers + trigger fixtures
 

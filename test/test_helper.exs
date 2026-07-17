@@ -1,8 +1,9 @@
 # The `:sidecar` tests shell out to python3 (the eval sidecar) for native↔Python parity; the
 # `:ccrider` and `:opencode` tests shell out to the sqlite3 CLI to read a fixture SQLite DB (ccrider's
-# session index / an OpenCode `opencode.db`). All are excluded from the default run so `mix test` is
-# hermetic (no interpreter/CLI required); run them with `mix test.full` (alias for `mix test --include
-# sidecar --include ccrider --include opencode`) in CI.
+# session index / an OpenCode `opencode.db`); the `:jq` test EXECUTES a generated hook script, which
+# parses its stdin with `jq` exactly as a real Claude Code hook does. All are excluded from the
+# default run so `mix test` is hermetic (no interpreter/CLI required); run them with `mix test.full`
+# (alias for `mix test --include sidecar --include ccrider --include opencode --include jq`) in CI.
 #
 # `:live` shells out to the local `claude -p` CLI and makes a REAL model call (your Claude Code
 # subscription, no API key) — slow and non-hermetic, so it's excluded from both `mix test` and
@@ -22,7 +23,7 @@
 # it's excluded everywhere and run deliberately:
 #   mix test --include calibration test/faber/detect_calibration_test.exs
 ExUnit.configure(
-  exclude: [:sidecar, :ccrider, :opencode, :plugin_eval, :calibration, :live, :live_api],
+  exclude: [:sidecar, :ccrider, :opencode, :jq, :plugin_eval, :calibration, :live, :live_api],
   # Read `IO.ANSI.enabled?` HERE, before it is pinned below, so ExUnit's own failure output keeps
   # its red/green when you run from a terminal. The pin is for the code under test, not the runner.
   colors: [enabled: IO.ANSI.enabled?()]

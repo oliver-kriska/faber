@@ -18,6 +18,7 @@ defmodule Faber.CLI do
   alias Faber.{Adapter, Consolidate, Eval, Install, Loop, Proposal, Propose, Scan}
   alias Faber.CLI.JSON
   alias Faber.CLI.Render
+  alias Faber.Detect.Hazard
   alias Faber.Ingest.Format
   alias Faber.Proposal.Store
   alias Faber.Scan.Scope
@@ -111,6 +112,7 @@ defmodule Faber.CLI do
     |> parse_sub(rest,
       rank: :integer,
       top: :integer,
+      hazard: :string,
       cluster_threshold: :float,
       install: :boolean,
       force: :boolean,
@@ -125,6 +127,12 @@ defmodule Faber.CLI do
       min_messages: :integer
     )
     |> reject_conflict([:rank, :top])
+    # `--rank N` and `--top N` both select by the friction ranking; `--hazard` selects by a hazard
+    # class, which is orthogonal to that ranking by construction — a session carrying a hazard may
+    # rank last, or not place at all. So each pairing asks two different questions at once, and
+    # honouring one silently would make the other vanish without a word.
+    |> reject_conflict([:hazard, :top])
+    |> reject_conflict([:hazard, :rank])
   end
 
   def parse(["refine" | rest]) do
@@ -526,9 +534,12 @@ defmodule Faber.CLI do
   # `consolidate --top 1` used to do — a single session was clustered with nothing, `:kept`, and
   # never eval'd.
   defp do_run(:propose, opts) do
-    case opts[:top] do
-      n when is_integer(n) and n > 1 -> propose_batch(opts, n)
-      _ -> propose_one(opts)
+    cond do
+      # A hazard is not a friction finding, so it does not select a session the way `--rank` does —
+      # see `propose_hazard/2`.
+      is_binary(opts[:hazard]) -> propose_hazard(opts, opts[:hazard])
+      is_integer(opts[:top]) and opts[:top] > 1 -> propose_batch(opts, opts[:top])
+      true -> propose_one(opts)
     end
   end
 
@@ -744,6 +755,109 @@ defmodule Faber.CLI do
 
       {:error, reason} ->
         IO.puts(:stderr, "faber propose failed: #{humanize_error(reason)}")
+        1
+    end
+  end
+
+  # `faber propose --hazard <kind>` — draft a HOOK for a frictionless hazard.
+  #
+  # Selection is by hazard class alone, which is why `--rank`/`--top` are refused rather than
+  # combined: a hazard is what a session *risked*, not how hard it was, and the class this detects
+  # produces no friction at all — so the session carrying it may rank last, or not place at all.
+  # Ranking by friction and then looking for a hazard there would find nothing most of the time.
+  # Instead: scan, then take the first session that HAS this hazard.
+  defp propose_hazard(opts, kind) do
+    scan_opts = scan_opts(opts)
+
+    with {:ok, adapter} <- Adapter.load(Faber.adapter_dir()),
+         {:ok, result, hazard} <- select_hazard(Scan.run(scan_opts), kind),
+         :ok <- stack_gate(adapter, result, opts[:force]),
+         :ok <- dry_run_gate(opts, [result], adapter, propose_cost(false)),
+         {:ok, proposal} <- propose_hook_with_status(result, hazard, adapter),
+         {:ok, eval} <- Eval.score(proposal, adapter: adapter) do
+      record = store_artifact(result, proposal, eval, adapter, :single)
+      IO.puts(render_proposal(proposal, eval, adapter) <> render_artifact(record))
+      maybe_install_hook(proposal, adapter, opts[:install], opts[:force])
+      0
+    else
+      {:dry_run, report} ->
+        IO.puts(report)
+        0
+
+      {:error, {:no_such_hazard, kind}} ->
+        IO.puts(
+          :stderr,
+          "faber propose: no session in this scan carries a `#{kind}` hazard.\n" <>
+            "Known hazard classes: #{Enum.map_join(Hazard.known_kinds(), ", ", &to_string/1)}.\n" <>
+            "Faber detects ONE class of frictionless hazard today — a clean scan here means that " <>
+            "class wasn't found, not that the sessions are hazard-free."
+        )
+
+        1
+
+      {:error, {:stack_mismatch, adapter, result}} ->
+        IO.puts(:stderr, stack_mismatch_message(adapter, result))
+        1
+
+      {:error, reason} ->
+        IO.puts(:stderr, "faber propose --hazard failed: #{humanize_error(reason)}")
+        1
+    end
+  end
+
+  # First session carrying `kind`, with the hazard summary that seeds the prompt. An unknown kind is
+  # reported as "not found" like any other — `known_kinds/0` is in the message, so a typo and a
+  # genuinely absent hazard are distinguishable by reading it.
+  defp select_hazard(results, kind) do
+    Enum.find_value(results, {:error, {:no_such_hazard, kind}}, fn result ->
+      case Enum.find(result.hazards, &(to_string(&1.kind) == kind)) do
+        nil -> nil
+        hazard -> {:ok, result, hazard}
+      end
+    end)
+  end
+
+  defp propose_hook_with_status(result, hazard, adapter) do
+    status("Proposing a hook for #{hazard.kind} (#{hazard.count}×) via #{impl_label()}…")
+    Propose.propose_hook(result, hazard, adapter)
+  end
+
+  defp maybe_install_hook(_proposal, _adapter, install, _force) when install in [nil, false],
+    do: :ok
+
+  defp maybe_install_hook(proposal, adapter, true, force) do
+    opts = [adapter: adapter] ++ if(force, do: [force: true], else: [])
+
+    case Install.Hook.install(proposal, opts) do
+      {:ok, %{script: script, settings: settings}} ->
+        IO.puts("installed → #{script}\npointed at it → #{settings}")
+        0
+
+      # Same refusal, same words, as every other surface: a safety veto is not an overwrite
+      # conflict, and `--force` must not read like the fix for it.
+      {:error, {:vetoed, vetoes}} ->
+        IO.puts(
+          :stderr,
+          "REFUSED — #{proposal.name} was not installed:\n" <>
+            Enum.map_join(vetoes, "\n", &"  #{&1.check_type}: #{&1.evidence}") <>
+            "\n\nThis is a safety refusal, not a score. `--force` overrides an existing install, " <>
+            "never this."
+        )
+
+        1
+
+      {:error, {:hand_edited, command}} ->
+        IO.puts(
+          :stderr,
+          "faber: this hook's pointer in settings.json has been hand-edited since Faber wrote it:\n" <>
+            "  #{command}\n" <>
+            "Re-run with --force to replace it, or keep your edit and skip the install."
+        )
+
+        1
+
+      {:error, reason} ->
+        IO.puts(:stderr, "faber: hook install failed: #{humanize_error(reason)}")
         1
     end
   end
@@ -1216,13 +1330,20 @@ defmodule Faber.CLI do
   defp verdict(%{passed: true}), do: Render.badge("PASS", :ok)
   defp verdict(eval), do: Render.badge("below threshold #{eval.threshold}", :bad)
 
+  # Kind-neutral (`render/2`): a hook's artifact is its script, and `render_skill_md/2` would raise on
+  # one. The header names the kind for anything that isn't a skill, so a wall of shell isn't a
+  # surprise — and the threshold shown is the hook gate's 0.90, straight off the eval.
   defp render_proposal(proposal, eval, adapter) do
-    verdict = verdict(eval)
+    label =
+      case proposal.kind do
+        :skill -> proposal.name
+        kind -> "#{proposal.name} (#{kind})"
+      end
 
     """
-    #{proposal.name} — composite #{Render.score(eval.composite)} (#{verdict})
+    #{label} — composite #{Render.score(eval.composite)} (#{verdict(eval)})
 
-    #{Propose.render_skill_md(proposal, adapter)}
+    #{Propose.render(proposal, adapter)}
     """
   end
 
@@ -1909,10 +2030,19 @@ defmodule Faber.CLI do
                                                      --base: transcript root override;
                                                      --json: raw values + the full signal vector;
                                                      --min-messages: skip shorter sessions)
-      faber propose [--rank N | --top N] [--cluster-threshold F] [--install] [--force] [--trigger]
+      faber propose [--rank N | --top N] [--hazard KIND] [--cluster-threshold F] [--install]
+                    [--force] [--trigger]
                     [--dry-run] [--source S] [--format F] [--db PATH] [--base DIR] [--all]
                     [--min-messages N]              Draft + eval a skill from your friction
-                                                    (--top N: draft the top-N sessions, cluster
+                                                    (--hazard KIND: draft a HOOK instead, for a
+                                                     frictionless hazard — a dangerous command shape
+                                                     a session ran without struggling, so it scores
+                                                     zero friction and no ranking would find it.
+                                                     Selects the first session carrying that class,
+                                                     so it combines with neither --rank nor --top.
+                                                     `faber scan --json` lists the hazards found
+                                                     per session; today: pipe_masks_exit;
+                                                     --top N: draft the top-N sessions, cluster
                                                      near-duplicates and LLM-merge each cluster —
                                                      every merge must pass the eval gate or the
                                                      originals are kept (--cluster-threshold F:

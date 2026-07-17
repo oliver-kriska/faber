@@ -64,8 +64,14 @@ defmodule Faber.MCP.Tools.ProposeSkillTest do
       assert reply["installed"] == false
     end
 
-    test "rank 2 (off-stack JS session) is gated; force: true bypasses it" do
-      msg = error_reply(ProposeSkill.execute(%{rank: 2}, frame()))
+    test "the off-stack JS session is gated; force: true bypasses it" do
+      # Found by what the test is ABOUT rather than pinned to a rank: the subject is "the session
+      # whose files are JS", and a hardcoded `rank: 2` silently becomes a different session the
+      # moment a fixture is added — which is how this test came to be asserting the stack gate
+      # against an on-stack Elixir session.
+      rank = rank_of_js_session()
+
+      msg = error_reply(ProposeSkill.execute(%{rank: rank}, frame()))
       assert msg =~ "stack"
 
       # The refusal cites the evidence, from the same `Propose.touched_extensions/1` the CLI's
@@ -76,8 +82,21 @@ defmodule Faber.MCP.Tools.ProposeSkillTest do
       assert msg =~ "force: true"
 
       # force bypasses the stack gate and proceeds to a real proposal.
-      reply = ok_reply(ProposeSkill.execute(%{rank: 2, force: true}, frame()))
+      reply = ok_reply(ProposeSkill.execute(%{rank: rank, force: true}, frame()))
       assert is_binary(reply["name"])
+    end
+
+    # The rank the JS session currently occupies, from the same scan the tool runs.
+    defp rank_of_js_session do
+      index =
+        Application.get_env(:faber, :mcp_scan_opts)
+        |> Faber.Scan.run()
+        |> Enum.find_index(
+          &Enum.any?(&1.file_paths, fn p -> Path.extname(p) in [".jsx", ".tsx"] end)
+        )
+
+      assert index, "no JS fixture session in test/fixtures — this test has lost its subject"
+      index + 1
     end
 
     test "an out-of-range rank is a clean structured error, not a crash" do

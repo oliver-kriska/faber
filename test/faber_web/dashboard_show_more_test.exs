@@ -33,22 +33,22 @@ defmodule FaberWeb.DashboardShowMoreTest do
     {:ok, view, _html} = live(conn, "/")
     html = render_async(view, @async_timeout)
 
-    # 5 fixture sessions, cap 2: the first slice shows 2, the paginating footer offers the rest.
+    # 6 fixture sessions, cap 2: the first slice shows 2, the paginating footer offers the rest.
     assert count_rows(html) == 2
     assert html =~ ~s(phx-click="show_more")
     assert html =~ "Show more"
-    assert html =~ "2 of 5 shown"
+    assert html =~ "2 of 6 shown"
 
-    # One reveal raises the limit by a cap: 4 of 5 now on screen, control still present.
+    # One reveal raises the limit by a cap: 4 of 6 now on screen, control still present.
     after_one = render_click(view, "show_more")
     assert count_rows(after_one) == 4
     assert after_one =~ ~s(phx-click="show_more")
-    assert after_one =~ "4 of 5 shown"
+    assert after_one =~ "4 of 6 shown"
 
-    # The next reveal outgrows the set: all 5 rows show and the control retires (its gate,
+    # The next reveal reaches the whole set: all 6 rows show and the control retires (its gate,
     # `@shown < @match_count`, no longer holds).
     after_two = render_click(view, "show_more")
-    assert count_rows(after_two) == 5
+    assert count_rows(after_two) == 6
     refute after_two =~ ~s(phx-click="show_more")
     refute after_two =~ "Show more"
   end
@@ -65,7 +65,7 @@ defmodule FaberWeb.DashboardShowMoreTest do
 
     assert count_rows(reset) == 2
     assert reset =~ ~s(phx-click="show_more")
-    assert reset =~ "2 of 5 shown"
+    assert reset =~ "2 of 6 shown"
   end
 
   # Count rendered ranked rows by their stable per-row id (`session-N`), independent of column markup.

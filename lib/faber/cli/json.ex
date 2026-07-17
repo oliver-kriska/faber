@@ -68,6 +68,10 @@ defmodule Faber.CLI.JSON do
         dominant_signal: r.dominant_signal,
         signals: r.signals
       },
+      # Deliberately a sibling of `friction`, not a member of it: a hazard is a frictionless
+      # SUCCESS, so it contributes nothing to the score and a session carrying one may rank last.
+      # This is the discovery surface for `faber propose --hazard <kind>`.
+      hazards: r.hazards,
       fingerprint: %{type: r.fingerprint, confidence: r.fingerprint_confidence},
       opportunity: %{score: r.opportunity, missed: r.missed, skills_used: r.skills_used},
       counts: %{

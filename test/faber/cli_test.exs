@@ -160,10 +160,65 @@ defmodule Faber.CLITest do
       assert stderr =~ "faber propose"
     end
 
+    test "--hazard and --top together is a refusal too" do
+      # Same reason as --rank/--top: both name what to propose for, and --hazard draws a HOOK from
+      # one session while --top batches SKILLS across many. There is no coherent merge.
+      assert CLI.parse(["propose", "--hazard", "pipe_masks_exit", "--top", "5"]) ==
+               {:conflicting_opts, :propose, ["--hazard", "--top"]}
+    end
+
     test "consolidate still parses every flag it used to" do
       # The alias is deprecated, not broken: a script that pins the old spelling keeps working.
       assert CLI.parse(["consolidate", "--top", "4", "--cluster-threshold", "0.6"]) ==
                {:consolidate, [top: 4, cluster_threshold: 0.6]}
+    end
+  end
+
+  describe "propose --hazard KIND (a hook, not a skill)" do
+    test "the flag parses, and takes the hazard class as its value" do
+      assert CLI.parse(["propose", "--hazard", "pipe_masks_exit"]) ==
+               {:propose, [hazard: "pipe_masks_exit"]}
+
+      assert CLI.parse(["propose", "--hazard", "pipe_masks_exit", "--install"]) ==
+               {:propose, [hazard: "pipe_masks_exit", install: true]}
+    end
+
+    test "--hazard combines with neither ranking flag" do
+      # A hazard is orthogonal to the friction ranking by construction, so honouring `--rank`
+      # alongside it would silently discard whichever the user meant.
+      for ranking <- [["--rank", "3"], ["--top", "5"]] do
+        assert {:conflicting_opts, :propose, flags} =
+                 CLI.parse(["propose", "--hazard", "pipe_masks_exit"] ++ ranking)
+
+        assert "--hazard" in flags
+        assert hd(ranking) in flags
+      end
+    end
+
+    test "a scan with no such hazard exits non-zero, and says what a clean scan does NOT mean" do
+      # These sessions carry no hazard. The distinction the message has to carry: Faber detects ONE
+      # class today, so "not found" means that class was absent — not that the sessions are safe.
+      stderr =
+        capture_io(:stderr, fn ->
+          assert CLI.run(:propose, hazard: "pipe_masks_exit", base: "test/fixtures/nonelixir") ==
+                   1
+        end)
+
+      assert stderr =~ "no session in this scan carries a `pipe_masks_exit` hazard"
+      assert stderr =~ "Known hazard classes: pipe_masks_exit"
+      assert stderr =~ "ONE class of frictionless hazard today"
+    end
+
+    test "a typo'd class is reported as not-found, with the known list to correct it against" do
+      # No id-minting means no id to typo — but the class name is still typed by hand, and a bare
+      # "not found" would leave no way to tell a typo from a genuinely absent hazard.
+      stderr =
+        capture_io(:stderr, fn ->
+          assert CLI.run(:propose, [hazard: "pipe_masks_exti"] ++ @fixtures) == 1
+        end)
+
+      assert stderr =~ "`pipe_masks_exti`"
+      assert stderr =~ "Known hazard classes: pipe_masks_exit"
     end
   end
 
@@ -698,9 +753,10 @@ defmodule Faber.CLITest do
     test "scan's header counts sessions AND distinct projects" do
       out = capture_io(fn -> assert CLI.run(:scan, @fixtures ++ [limit: 5]) == 0 end)
 
-      # test/fixtures spans fixtures/, nonelixir/ and codex/ — a count of 1 would mean the project
-      # label collapsed, which is what made the scribe-run scope surprise invisible.
-      assert out =~ ~r/5 sessions across 3 projects/
+      # test/fixtures spans fixtures/, nonelixir/, codex/ and the hazard fixture's own cwd — a count
+      # of 1 would mean the project label collapsed, which is what made the scribe-run scope
+      # surprise invisible.
+      assert out =~ ~r/5 sessions across 4 projects/
     end
 
     # The first-run outcome for anyone whose transcripts aren't where faber looked. "No sessions
@@ -1062,6 +1118,33 @@ defmodule Faber.CLITest do
       assert is_float(session["friction"]["score"])
       assert Map.has_key?(session["fingerprint"], "confidence")
       assert Map.has_key?(session["counts"], "turns")
+    end
+
+    # `--hazard KIND` has to be discoverable, and the table can't carry hazards: it is sorted by
+    # friction, and a hazard is orthogonal to that (the fixture below scores 0.0 raw and still has
+    # one). --json is therefore the only surface that lists them, which the help text points at.
+    test "scan lists each session's hazards, as a sibling of friction rather than a signal" do
+      json = json_out(:scan, @fixtures ++ [limit: 20])
+
+      session = Enum.find(json["sessions"], &(&1["session_id"] == "hazard"))
+      assert session, "the seeded hazard fixture did not survive the scan"
+
+      assert [hazard] = session["hazards"]
+      assert hazard["kind"] == "pipe_masks_exit"
+      assert hazard["count"] == 1
+      assert hazard["evidence"] =~ "mix verify | tail -5"
+      # The pointer the hazard implies — what `propose --hazard` turns into a hook.
+      assert hazard["suggested_event"] == "PreToolUse"
+      assert hazard["matcher"] == "Bash"
+
+      # Never folded into the score: this session struggled with nothing, and must not be ranked as
+      # though it did. `hazards` is a sibling key, and no signal named it.
+      assert session["friction"]["raw"] == 0.0
+      refute Map.has_key?(session["friction"], "hazards")
+      refute Enum.any?(Map.keys(session["friction"]["signals"]), &(&1 =~ "hazard"))
+
+      # And a session without one says so with an empty list, not a missing key.
+      assert Enum.all?(json["sessions"], &is_list(&1["hazards"]))
     end
 
     # `ctx` renders as "—" in the table for a session with no reading. A dash is not a number, and a
