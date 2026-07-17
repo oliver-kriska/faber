@@ -115,6 +115,27 @@ defmodule Faber.InstallTest do
     end
 
     @tag :tmp_dir
+    test "rejects a name carrying a newline or control character", %{tmp_dir: dir} do
+      # `@name_re` uses `\z`, not `\Z` — so it does NOT tolerate a trailing newline. Pinned because
+      # the difference is one character and the failure mode is silent: a name is rendered into a
+      # hook's `#` comment header, and a newline there ends the comment.
+      #
+      # This is the SECOND line of defence, not the first. `Install.install/2` renders the artifact
+      # on its first line and validates the name ~30 lines later, so `p.name` reaches the template
+      # raw and the renderer cannot rely on this check — see `Faber.ProposeHookRenderTest`, which
+      # covers the render side. Validation still rejects before anything is written, so a bad name
+      # is not an install vector; both layers are deliberate.
+      assert {:error, {:invalid_name, _}} = Install.install({"ok\n", "x"}, dir: dir)
+      assert {:error, {:invalid_name, _}} = Install.install({"ok\necho pwned\n#", "x"}, dir: dir)
+      assert {:error, {:invalid_name, _}} = Install.install({"ok\trm -rf /", "x"}, dir: dir)
+
+      assert {:error, {:invalid_name, _}} =
+               Install.install({"a" <> <<0x202E::utf8>> <> "b", "x"}, dir: dir)
+
+      assert dir |> File.ls!() |> Enum.empty?(), "an invalid name wrote something to disk"
+    end
+
+    @tag :tmp_dir
     test "renders and installs a %Proposal{}", %{tmp_dir: dir} do
       p = %Proposal{
         name: "tidy-thing",

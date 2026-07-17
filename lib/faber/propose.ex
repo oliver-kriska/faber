@@ -385,16 +385,22 @@ defmodule Faber.Propose do
 
   # String-keyed context for a hook scaffold. A hook's artifact IS its script, so the template is a
   # thin wrapper (provenance header + the body) rather than a document with sections.
+  #
+  # **Every token here except `script` lands in a `#` comment, so every one of them is
+  # `comment_safe/1`.** That is the invariant, and it is meant to be checkable by eye: a reviewer
+  # should be able to see at a glance that nothing raw reaches the template. `event`, `matcher` and
+  # `hook_name` were raw until 2026-07-17, which is exactly how a newline in `matcher` turned into a
+  # live shell line under a *perfect* 1.0 eval score.
   defp template_context(%Proposal{kind: :hook} = p) do
     %{
-      "hook_name" => p.name,
-      "description" => escape(p.description),
-      "one_line_purpose" => oneline(p.rationale),
-      "event" => p.event,
-      "matcher" => p.matcher,
+      "hook_name" => comment_safe(p.name),
+      "description" => comment_safe(p.description),
+      "one_line_purpose" => comment_safe(p.rationale),
+      "event" => comment_safe(p.event),
+      "matcher" => comment_safe(p.matcher),
       "script" => script_body(p.script),
-      "hazard" => to_string(p.source[:hazard] || ""),
-      "hazard_evidence" => oneline(p.source[:hazard_evidence] || "")
+      "hazard" => comment_safe(p.source[:hazard] || ""),
+      "hazard_evidence" => comment_safe(p.source[:hazard_evidence] || "")
     }
   end
 
@@ -537,6 +543,36 @@ defmodule Faber.Propose do
   # Flatten a list item to a single line — a multi-line workflow step or pattern would otherwise
   # inject extra markdown structure into the numbered list / bullet.
   defp oneline(text), do: text |> to_string() |> String.replace(~r/\s+/, " ") |> String.trim()
+
+  # Make an LLM value safe to sit inside a `#` shell comment. Used for EVERY non-`{{script}}` token
+  # of a hook (`template_context/1`), because `Faber.Template.render_vars/2` does `to_string(v)` with
+  # no escaping — correct, since `{{script}}` is raw by necessity — which leaves this function as the
+  # only place the defence can live. A renderer guarantee, per CLAUDE.md: safe by construction, not
+  # because the model declined to send a newline.
+  #
+  # Two classes of character come out, and the second is the less obvious one:
+  #
+  #   * `\p{Cc}` (control) — a `#` comment ends at a newline, so a token carrying one stops being a
+  #     comment and becomes a command. This is B1, reproduced live: `matcher: "Bash\n<payload>\n#"`
+  #     rendered the payload as a live line and still scored `composite: 1.0, vetoed: []`.
+  #
+  #   * `\p{Cf}` (format: bidi overrides, zero-width joiners) — these change what a terminal
+  #     *displays* without changing the bytes. That matters here more than it looks: Faber's install
+  #     posture makes the human reading ~15 lines of bash THE security boundary (the veto is a
+  #     backstop that 7 of 8 known vectors walk past). A character that can make the displayed script
+  #     differ from the executed script is therefore an attack on the boundary itself, not a
+  #     cosmetic issue. Same family as the bidi checks `/phx:deps-audit` already runs on Hex deps.
+  #
+  # Replaced with a space rather than deleted: deletion would silently splice two words together
+  # ("Pre\nToolUse" -> "PreToolUse", a *valid*-looking event), which hides the tampering instead of
+  # showing it. The remaining `\s+` collapse then flattens the lot to one line.
+  defp comment_safe(text) do
+    text
+    |> to_string()
+    |> String.replace(~r/[\p{Cc}\p{Cf}]/u, " ")
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+  end
 
   # "Name: guidance" → "**Name**: guidance" (a bold-bulleted, actionable do/don't line); a line with
   # no colon is bolded whole. Collapsed to one line first (both render paths go through here).
